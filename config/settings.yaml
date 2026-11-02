@@ -1,60 +1,109 @@
-# Configuration settings for AI-Powered Photo & RAW Archival System
-
 paths:
-  source_dir: "~/Desktop/Photo"
-  destination_dir: "~/Desktop/Organized_Photos"
-  cache_dir: "./cache"
-  data_dir: "./data"
-  logs_dir: "./logs"
-  ref_faces_dir: "./reference_faces"
-  directive_file: "./config/directive.txt"
-  db_path: "./data/photo_archive.db"
-
+  source_dir: ~/Desktop/Photo
+  cache_dir: ./cache
+  data_dir: ./data
+  logs_dir: ./logs
+  ref_faces_dir: ./reference_faces
+  directive_file: ./config/directive.txt
+  db_path: ./data/photo_archive.db
+  vectors_path: ./data/vectors.npy
+  previews_dir: ./data/previews
+  thumbs_360_dir: ./data/previews/thumbs_360
+  previews_1600_dir: ./data/previews/previews_1600
+  models_dir: ./data/models
+  das_backup_dir: ~/Desktop/DAS_Catalog_Backup
+catalogs:
+- name: Keepers
+  path: /Volumes/AerialCatalog/4_Landscape_Keepers
+  lrcat_path: /Volumes/AerialCatalog/4_Landscape_Keepers/Terestrial -2.lrcat
+  description: Mitch Rouse Master Landscape Keepers
+exclusion_rules:
+  excluded_dir_patterns:
+  - '*.lrdata'
+  - '*.lrcat*'
+  - Smart Previews*
+  - Backups
+  - .Spotlight-V100
+  - .Trashes
+  - .fseventsd
+  - __MACOSX
+  - cache
+  - thumbs_360
+  - previews_1600
+  excluded_file_patterns:
+  - Pre-views.db
+  - Previews.db
+  - '*.lrcat'
+  - '*.lrcat-wal'
+  - '*.lrcat-shm'
+  - '*.lrcat.lock'
+  - .DS_Store
+  - ._*
 processing:
-  vlm_model: "qwen2.5vl:7b"
   supported_extensions:
-    - ".jpg"
-    - ".jpeg"
-    - ".png"
-    - ".heic"
-    - ".heif"
-    - ".webp"
-    - ".tif"
-    - ".tiff"
-    - ".bmp"
-    - ".nef"
-    - ".iiq"
-    - ".arw"
-    - ".cr2"
-    - ".cr3"
-    - ".dng"
-    - ".raf"
-    - ".orf"
-    - ".rw2"
-    - ".pef"
-    - ".srw"
-    - ".3fr"
-  queue_maxsize: 200
+  - .iiq
+  - .nef
+  - .arw
+  - .cr2
+  - .cr3
+  - .dng
+  - .raf
+  - .orf
+  - .rw2
+  - .pef
+  - .srw
+  - .3fr
+  - .tif
+  - .tiff
+  - .jpg
+  - .jpeg
+  - .png
+  - .heic
+  - .heif
+  - .webp
+  - .bmp
+  raw_priority_extensions:
+  - .iiq
+  - .dng
+  - .nef
+  - .arw
+  - .cr2
+  - .cr3
+  - .raf
+  - .orf
+  - .rw2
+  - .pef
+  - .srw
+  - .3fr
+  derivative_extensions:
+  - .tif
+  - .tiff
+  - .dng
+  - .jpg
+  - .jpeg
+  thumb_short_px: 360
+  preview_long_px: 1600
+  webp_thumb_quality: 82
+  webp_preview_quality: 86
+  sharpness_grid_size: 8
+  sharpness_inner_grid: 6
+  sharpness_percentile: 90
+  sharpness_unsharp_threshold: 3.5
+  clip_model: ViT-L-14
+  clip_pretrained: openai
+  vector_dim: 768
+  sequence_max_delta_seconds: 10.0
+  sequence_min_clip_similarity: 0.87
+  keepers_phash_max_dist: 2
+  vlm_model: qwen2.5vl:7b
   vram_flush_interval: 1000
-  phash_similarity_threshold: 4
-  burst_timeline_window_seconds: 6.0
-  confidence_review_threshold: 0.70
+  strafing_min_frames_for_stride: 10
+  strafing_vlm_stride: 35
+  strafing_sim_drop_threshold: 0.85
+  orbit_time_window_seconds: 180.0
+  centroid_similarity_threshold: 0.84
+  confidence_review_threshold: 0.7
   aspect_ratio_pano_threshold: 2.1
-
-taxonomy:
-  Landscape: "01_Landscapes_&_Travel"
-  Travel: "01_Landscapes_&_Travel"
-  Ranch: "02_Ranch_&_Western"
-  Family: "03_Family_&_Personal"
-  Pets: "04_Pets_&_Animals"
-  Wildlife: "05_Wildlife_&_Nature"
-  Macro: "06_Macro_&_Details"
-  Food: "07_Food_&_Culinary"
-  Documents: "08_Documents_&_Tech"
-  Technology: "08_Documents_&_Tech"
-  Architecture: "09_Architecture_&_Interiors"
-  Interior: "09_Architecture_&_Interiors"
-  Aerial: "10_Aerial_&_Aviation"
-  Panoramas: "11_Panoramas"
-  Review: "99_Review_Queue"
-  Unclassified: "00_Unclassified"
+  xmp_sync_mode: on_demand
+  xmp_sync_batch_size: 25
+  iiq_use_sidecar_only: true

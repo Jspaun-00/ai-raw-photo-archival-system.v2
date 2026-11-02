@@ -6,8 +6,18 @@ __pycache__/
 *.py[cod]
 *$py.class
 *.egg-info/
-dist/
-build/
+/dist/
+/dist_app/
+/build/
+
+# Node & Frontend
+node_modules/
+ui/node_modules/
+.npm/
+
+# Explicitly allow pre-built frontend bundle in ui/dist/ for 1-click Git updates
+!ui/dist/
+!ui/dist/**
 
 # Heavy local binaries (installed via install_tools.sh)
 bin/ollama
@@ -15,7 +25,9 @@ bin/exiftool
 bin/lib/
 bin/
 
-# Local databases, caches & logs
+# Local databases, caches & logs (stored in ~/Library/Application Support/MRDarkroom)
+data
+data/
 data/*.db*
 *.db
 *.db-shm
@@ -36,4 +48,3 @@ Icon?
 Thumbs.db
 .vscode/
 .idea/
-
