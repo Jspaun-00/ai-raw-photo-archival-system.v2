@@ -1,5 +1,5 @@
 # 📸 MR Darkroom (v3.2)
-### Professional AI-Powered Archival, Semantic Search & Book Curation Studio
+### Local AI-Assisted RAW Photo Archival, Vector Search & Curation Studio
 
 [![macOS](https://img.shields.io/badge/Platform-macOS%2013%2B%20(Apple%20Silicon)-000000?style=for-the-badge&logo=apple&logoColor=white)](#)
 [![Python](https://img.shields.io/badge/Python-3.11+-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://python.org)
@@ -12,11 +12,17 @@
 
 ---
 
-## 🌟 Executive Overview
+## 💡 Why This Exists
 
-**MR Darkroom** is a production-grade, 100% offline, privacy-first photo archival and AI curation studio built specifically for fine-art landscape photographers, large-format printmakers, and archival estates managing massive photographic vaults (100,000+ images across Phase One `.IIQ`, Hasselblad `.3FR`, Nikon `.NEF`, Canon `.CR2`/`.CR3`, Sony `.ARW`, Fujifilm `.RAF`, Leica `.DNG`, Apple `.HEIC`, and archival TIFFs/JPEGs).
+Managing a massive photo archive of **150,000+ high-resolution RAW images** (Phase One `.IIQ`, Hasselblad `.3FR`, Nikon `.NEF`, Canon `.CR2`/`.CR3`, Sony `.ARW`, Fujifilm `.RAF`, Leica `.DNG`, Apple `.HEIC`, and archival TIFFs) quickly breaks traditional catalog software. 
 
-Traditional photo organizers either lock photographer metadata into proprietary cloud silos, require recurring SaaS fees, or rely on naive keyword matching that fails on fine-art landscapes and multi-subject scenes. **MR Darkroom** delivers a zero-cloud, hardware-accelerated local engine running natively on Apple Silicon (M1/M2/M3/M4) that unifies **sub-millisecond OpenCLIP vector search**, **high-tension spatial Vision-Language reasoning**, **natural voice/text AI teaching**, **strict location provenance**, and **multi-level atomic undo** into an ergonomic 60 FPS studio interface.
+Tools like Adobe Lightroom Classic become painfully sluggish at this scale:
+- Monolithic `.lrcat` catalog databases suffer from lock contention and slow query times across deep keyword hierarchies.
+- Preview caches swell to hundreds of gigabytes, fragmenting storage.
+- Keyword tagging requires hours of repetitive clicking through multi-level taxonomies.
+- Searching for visual concepts without pre-existing exact keyword tags is virtually impossible.
+
+**MR Darkroom** is a personal project built to solve this problem directly: a fast, local-first studio that stays fluid at 150,000+ images, indexes photos with Apple Silicon-accelerated vector search, supports speech-to-text / natural language prompt tagging, and operates **100% offline** with zero cloud dependencies and zero vendor lock-in.
 
 ---
 
@@ -25,12 +31,12 @@ Traditional photo organizers either lock photographer metadata into proprietary 
 <p align="center">
   <img src="docs/screenshots/01-studio-grid-workspace.png" width="100%" alt="MR Darkroom Studio Grid Workspace" />
 </p>
-<p align="center"><em>Figure 1: Main Studio Workspace — 16-inch MacBook Pro optimized 2-row Top Ribbon, Unified Catalog Selector Pill (Keepers 866), dynamic shoot dates, Curated Portfolio Quick-Pills, and high-DPI virtualized gallery grid.</em></p>
+<p align="center"><em>Figure 1: Main Studio Workspace — 16-inch MacBook Pro optimized 2-row Top Ribbon, Unified Catalog Selector Pill, dynamic shoot dates, Curated Portfolio Quick-Pills, and high-DPI virtualized gallery grid.</em></p>
 
 <p align="center">
   <img src="docs/screenshots/02-lightbox-inspector.png" width="100%" alt="MR Darkroom Lightbox Inspector Sidebar" />
 </p>
-<p align="center"><em>Figure 2: Lightbox Inspector Sidebar — High-resolution color-accurate photo canvas, verified GPS coordinates with offline reverse geocoding, verified camera EXIF telemetry, AI confidence gates, and instant sidecar sync.</em></p>
+<p align="center"><em>Figure 2: Lightbox Inspector Sidebar — High-resolution color-accurate photo canvas, verified GPS coordinates with offline reverse geocoding, camera EXIF telemetry, AI confidence scoring, and instant sidecar sync.</em></p>
 
 <p align="center">
   <img src="docs/screenshots/03-voice-teach-scout.png" width="100%" alt="MR Darkroom Voice Teach and Scout AI Modal" />
@@ -46,7 +52,7 @@ Traditional photo organizers either lock photographer metadata into proprietary 
 
 ## 🏗️ Technical Architecture
 
-MR Darkroom operates as an asynchronous, multi-process studio architecture decoupled into a high-performance **FastAPI backend** and an ultra-responsive **React 18 + TailwindCSS frontend**:
+MR Darkroom operates as an asynchronous, multi-process studio decoupled into a high-performance **FastAPI backend** and an ultra-responsive **React 18 + TailwindCSS frontend**:
 
 ```
 +--------------------------------------------------------------------------------------------------+
@@ -61,7 +67,7 @@ MR Darkroom operates as an asynchronous, multi-process studio architecture decou
 +-------------------------------------------------+------------------------------------------------+
 |                                     FASTAPI SERVER (server.py)                                   |
 |   - Asynchronous Job Manager (Cancel / Pause)   - Studio Jobs Multi-Step Atomic Undo             |
-|   - Catalog Filter & Multi-Tenant Isolation     - Native macOS Folder Picker & Ingest Runners    |
+|   - Isolated Multi-Catalog Management           - Native macOS Folder Picker & Ingest Runners    |
 +-------------------+-----------------------------+--------------------------+---------------------+
                     |                             |                          |
                     v                             v                          v
@@ -77,40 +83,40 @@ MR Darkroom operates as an asynchronous, multi-process studio architecture decou
 
 ---
 
-## ⚡ Core Innovations & Capabilities
+## ⚡ Core Technical Features
 
 ### 1. Dual-Stage Vision Intelligence Pipeline
 - **Stage 1 (Sub-Millisecond Vector Embedding):**
   - Extracts embedded full-resolution preview JPEGs directly from proprietary RAW formats in milliseconds via ExifTool without decoding multi-hundred-megabyte raw sensor bayer arrays.
   - Computes normalized 768-dimensional visual semantic vectors using Apple Silicon Metal-accelerated (`mps`) OpenCLIP ViT-L/14.
   - Generates 64-bit perceptual hashes (`pHash`) to cluster duplicate shots, bracketed exposures, and rapid burst sequences.
-  - Generates and memory-maps persistent vector matrices (`stage1_embeddings.npy`) allowing 100,000+ photos to be cosine-ranked in under 12 milliseconds.
+  - Memory-maps persistent vector matrices (`stage1_embeddings.npy`), allowing 150,000+ photos to be cosine-ranked in under 12 milliseconds.
 - **Stage 2 (High-Tension Spatial VLM & Contrastive Habitat Gating):**
-  - Employs local Vision-Language Models (Ollama Qwen2.5-VL 7B / local multimodal backends) using structured visual grounding.
-  - **Contrastive Habitat Gating:** Evaluates negative spatial probes and environmental foils to prevent "habitat bias" (e.g., stops dense forest paths from triggering false `Bird` tags, prevents wet river stones from hallucinating `Frog`, and halts distant silhouettes or statues from being labeled as live people).
-  - **Multi-Crop Subject Routing:** Analyzes central subjects, golden-ratio thirds, and foreground/background layers independently so indoor foreground subjects (dogs, cats, furniture) are never drowned out by background walls.
+  - Evaluates local Vision-Language Models (Ollama Qwen2.5-VL 7B / local multimodal backends) using structured visual grounding.
+  - **Contrastive Habitat Gating:** Evaluates negative spatial probes and environmental foils to eliminate "habitat bias" (e.g., stops dense forest paths from triggering false `Bird` tags, prevents wet river stones from hallucinating `Frog`, and halts distant silhouettes or statues from being labeled as live people).
+  - **Multi-Crop Subject Routing:** Analyzes central subjects, golden-ratio thirds, and foreground/background layers independently so indoor foreground subjects are never drowned out by background elements.
 
-### 2. Natural Voice & Text "Teach AI" and "Scout AI"
+### 2. Speech-to-Text & Prompt-Driven Curation ("Teach AI" & "Scout AI")
 - **Teach AI Mode:**
-  - Photographers can speak or type conversational instructions to re-anchor their archive: *"These shots are from our 2018 Iceland expedition around Kirkjufell at dusk; remove any Cuba tags."*
-  - Automatically isolates positive concept anchors (`Iceland`, `Kirkjufell`, `Dusk`, `Sunset`), purges contradictory or incorrect tags, and marks them with ground-truth human provenance (`user_taught`).
-  - **Pre-Commit Interactive Review:** Always opens with a 100% clean, blank input box. Real-time parsed tags appear with individual cross-out (`×`) chips, enabling instant visual pruning before committing with a single press of the `Enter` key.
+  - Instead of manual keywording, use natural speech or text prompts to re-anchor or correct image tags (e.g., *"These are from our 2018 Iceland trip around Kirkjufell at dusk; remove any Cuba tags"*).
+  - Automatically isolates positive concept anchors, purges contradictory tags, and marks them with human provenance (`user_taught`).
+  - **Pre-Commit Interactive Review:** Always opens with a clean, blank input box. Real-time parsed tags appear with individual cross-out (`×`) chips, enabling instant visual pruning before committing with a single press of the `Enter` key.
 - **Scout AI Mode:**
-  - Zero-shot visual semantic search across the entire archival vault. Enter natural queries like *"solitary tree in golden morning mist"* or *"winding coastal highway with breaking waves"* to instantly surface matching images even if they have never been tagged with those exact keywords.
+  - Zero-shot visual semantic search across the entire archive. Enter natural queries like *"solitary tree in golden morning mist"* or *"winding coastal highway with breaking waves"* to instantly surface matching images even if they have never been manually tagged.
 
 ### 3. Strict Location Provenance ("Blank by Default")
-- Prevents the chronic AI issue of hallucinating geographical locations based on generic scenery.
-- A photo of a mountain is tagged `Mountain`, `Ridge`, and `Conifers`—it is **never** assigned `Switzerland`, `Colorado`, or `Patagonia` unless confirmed by:
+- Prevents models from hallucinating geographical locations based on generic scenery (e.g., a mountain scene is tagged `Mountain` and `Ridge`, but is **never** assigned `Switzerland` or `Colorado` unless verified).
+- Location is strictly assigned only via:
   1. Valid hardware GPS coordinates in the EXIF block.
   2. Verified IPTC Country/State/City metadata from camera or original sidecar.
-  3. Direct human teaching via the Teach AI interface.
+  3. Direct user instruction via Teach AI.
 - **Offline Reverse Geocoding:** Automatically resolves latitude and longitude against a local spatial KD-tree (comprising all cities over 1,000 population worldwide) in sub-millisecond time with **zero network requests and zero third-party API exposure**.
 
-### 4. Enterprise-Grade Catalog Isolation & Data Vault
-- **Strict Catalog Boundaries:** Master archival collections (`Keepers (866)`) remain strictly isolated from personal phone imports, test folders, or secondary catalogs (`Austin 2024 - 2025`). Ingestion routines never leak photos across catalog boundaries.
-- **External Application Support Data Vault:**
+### 4. Isolated Multi-Catalog Management & macOS Data Vault
+- **Catalog Isolation:** Multiple catalogs and folder imports are strictly partitioned so individual roll groupings or project imports never bleed into one another.
+- **External Data Vault:**
   - System databases and embedding matrices are stored outside the Git repository in macOS standard application storage: `~/Library/Application Support/MRDarkroom/`.
-  - Ensures repository operations, branches, and commits never risk database locking or multi-gigabyte binary bloat.
+  - Decouples heavy binary files (`photo_archive.db`, `stage1_embeddings.npy`, `undo_snapshots.db`) from repository commits and branch switches.
 
 ### 5. Multi-Step Atomic Undo
 - Every visual operation—bulk tagging, tag clearing, single-photo inspection edits, Teach AI updates, and category reassignments—records atomic rollback snapshots in `undo_snapshots.db`.
@@ -133,7 +139,7 @@ MR Darkroom operates as an asynchronous, multi-process studio architecture decou
 
 ---
 
-## 🚀 Installation & Quickstart
+## 🚀 Installation & Setup
 
 ### Prerequisites
 - **Operating System:** macOS 13.0 (Ventura) or newer.
@@ -142,8 +148,8 @@ MR Darkroom operates as an asynchronous, multi-process studio architecture decou
 
 ---
 
-### Option A: 1-Click macOS Studio Installer (Recommended)
-Double-click `install_mr_darkroom.command` in the root folder, or execute:
+### Option A: 1-Click macOS Studio Installer
+Double-click `install_mr_darkroom.command` in the root folder, or run:
 ```bash
 ./install_mr_darkroom.command
 ```
@@ -155,7 +161,7 @@ This automatically:
 
 ---
 
-### Option B: Manual Developer Quickstart
+### Option B: Manual Terminal Setup
 
 #### 1. Clone the Repository
 ```bash
@@ -182,7 +188,7 @@ cd ..
 ```bash
 python server.py --port 8501
 ```
-Open your browser to `http://localhost:8501` to start curating.
+Open your browser to `http://localhost:8501`.
 
 ---
 
@@ -190,10 +196,10 @@ Open your browser to `http://localhost:8501` to start curating.
 
 ```
 ai-raw-photo-archival-system/
-├── server.py                  # High-performance FastAPI studio server & REST endpoints
+├── server.py                  # FastAPI studio server & REST endpoints
 ├── stage1_engine.py           # Stage 1 vector harvester, OpenCLIP ViT-L/14 & offline geocoder
-├── stage2_vlm.py              # Stage 2 High-Tension spatial VLM & contrastive gating engine
-├── domain_gazetteer.py        # Curated landscape ontology, spatial probes, and stopword gazetteer
+├── stage2_vlm.py              # Stage 2 spatial VLM & contrastive gating engine
+├── domain_gazetteer.py        # Visual ontology, spatial probes, and stopword gazetteer
 ├── studio_jobs_undo.py        # Background task orchestrator and atomic multi-step undo engine
 ├── config_paths.py            # macOS Data Vault (~/Library/Application Support/MRDarkroom) config
 ├── db_schema.py               # SQLite WAL table definitions and automatic migration utilities
@@ -218,12 +224,12 @@ ai-raw-photo-archival-system/
 │   │   │   └── TripsMapView.jsx         # Interactive geospatial Leaflet mapping view
 │   ├── dist/                  # Pre-compiled static production UI bundle
 │   └── package.json
-└── README.md                  # Executive studio documentation & architectural manual
+└── README.md                  # Studio documentation & architectural manual
 ```
 
 ---
 
-## 🔒 Privacy & Data Sovereignty
+## 🔒 Privacy & Non-Destructive Design
 
 - **Zero Cloud Reliance:** All neural network weights, vector index calculations, spatial geocoding lookups, and metadata updates run 100% on local silicon.
 - **Non-Destructive File Operations:** Master RAW files remain untouched on storage. All generated tags, IPTC rights, and ratings are written either to internal SQLite tables or companion `.xmp` sidecar files compatible with Adobe Lightroom Classic, Capture One, and Apple Photos.
@@ -231,6 +237,6 @@ ai-raw-photo-archival-system/
 
 ---
 
-## 📄 License & Attribution
+## 📄 License
 
-Designed and engineered for fine-art archival preservation. Distributed under the MIT License. See [LICENSE](LICENSE) for details.
+Distributed under the MIT License. See [LICENSE](LICENSE) for details.
