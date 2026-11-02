@@ -55,8 +55,24 @@ async function main() {
   });
   console.log('Verification data:', verifyData);
 
-  // 1. Studio Grid Workspace Screenshot
-  console.log('Capturing 01-studio-grid-workspace.png ...');
+  // Switch to Top 5% Aesthetic Filter
+  console.log('Selecting Top 5% aesthetic filter...');
+  await page.evaluate(() => {
+    const buttons = Array.from(document.querySelectorAll('button'));
+    const aestheticBtn = buttons.find((b) => b.innerText && b.innerText.includes('Aesthetic'));
+    if (aestheticBtn) aestheticBtn.click();
+  });
+  await sleep(500);
+
+  await page.evaluate(() => {
+    const buttons = Array.from(document.querySelectorAll('button'));
+    const top5Btn = buttons.find((b) => b.innerText && b.innerText.includes('Top 5%'));
+    if (top5Btn) top5Btn.click();
+  });
+  await sleep(3000);
+
+  // 1. Studio Grid Workspace Screenshot (Top 5% Masterpieces)
+  console.log('Capturing 01-studio-grid-workspace.png (Top 5% Showcase) ...');
   await page.screenshot({
     path: path.join(screenshotsDir, '01-studio-grid-workspace.png'),
   });
@@ -125,3 +141,4 @@ main().catch((err) => {
   console.error('Error capturing screenshots:', err);
   process.exit(1);
 });
+
