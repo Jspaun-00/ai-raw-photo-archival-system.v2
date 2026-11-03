@@ -12,11 +12,13 @@ Implements:
 """
 
 import os
+import sys
 import re
 import fnmatch
 import json
 import shutil
 import sqlite3
+import subprocess
 import tempfile
 import logging
 from pathlib import Path
@@ -356,7 +358,240 @@ def _ext_rank(ext: str) -> int:
     return 999
 
 
-def discover_catalog_files(root_dir: Path) -> Tuple[List[Dict[str, Optional[Path]]], List[Path]]:
+# Cache of auto-discovered active catalogs and preview bundles keyed by source_dir path
+_ACTIVE_LRCAT_CACHE: Dict[str, Tuple[Optional[Path], Optional[Path]]] = {}
+
+
+def find_active_lrcat_and_previews(
+    source_dir: Path,
+    sample_stems: Optional[List[str]] = None,
+) -> Tuple[Optional[Path], Optional[Path], List[Dict[str, Any]]]:
+    """
+    Intelligently discovers and ranks Lightroom Classic (.lrcat) catalogs and
+    associated Previews.lrdata bundles matching source_dir, strictly ignoring
+    old backup versions (e.g. Backups/, Backup/, _Temporary/, dated backups).
+
+    Ranking criteria:
+    1. Matching adjacent <Name> Previews.lrdata bundle (+100)
+    2. AgLibraryRootFolder / AgLibraryFolder path overlap (+150 for folder name, +75 for parent)
+    3. Basename overlap against sample photo stems (+20 per matched stem up to +300)
+    4. SQLite modification timestamp (mtime) as tie-breaker for version upgrades (-v13 vs -v11)
+    """
+    source_p = Path(source_dir).expanduser().resolve()
+    cache_key = str(source_p)
+    if cache_key in _ACTIVE_LRCAT_CACHE and not sample_stems:
+        best_c, best_p = _ACTIVE_LRCAT_CACHE[cache_key]
+        return best_c, best_p, []
+
+    backup_terms = {
+        "backup", "backups", "_temporary", ".trash", ".trashes",
+        "old versions", "corrupt", "corrupted", "crash", "pre-upgrade"
+    }
+
+    def _is_backup(p: Path) -> bool:
+        low_parts = {part.lower() for part in p.parts}
+        if low_parts.intersection(backup_terms):
+            return True
+        name_low = p.name.lower()
+        if any(term in name_low for term in backup_terms):
+            return True
+        # Match dated backup patterns like '2024-01-01 1234' or '2021_04_12' in folder parts
+        if any(re.search(r"\b20\d{2}[-_]\d{2}[-_]\d{2}\b", part) for part in p.parts[:-1]):
+            return True
+        return False
+
+    candidate_files: Set[Path] = set()
+
+    # 1. Search source_dir, parent (..), grandparent (../..) and immediate siblings
+    immediate_dirs: List[Path] = []
+    immediate_dirs.append(source_p)
+    if source_p.parent != source_p:
+        immediate_dirs.append(source_p.parent)
+        try:
+            for sib in source_p.parent.iterdir():
+                if sib.is_dir() and not sib.name.startswith(".") and not _is_backup(sib):
+                    immediate_dirs.append(sib)
+        except Exception:
+            pass
+    if source_p.parent.parent != source_p.parent:
+        immediate_dirs.append(source_p.parent.parent)
+        try:
+            for sib in source_p.parent.parent.iterdir():
+                if sib.is_dir() and not sib.name.startswith(".") and not _is_backup(sib):
+                    # Only include siblings that look like catalog or photography folders
+                    sib_low = sib.name.lower()
+                    if "catalog" in sib_low or "lightroom" in sib_low:
+                        immediate_dirs.append(sib)
+        except Exception:
+            pass
+
+    for d in immediate_dirs:
+        try:
+            with os.scandir(d) as it:
+                for entry in it:
+                    if entry.is_file() and entry.name.lower().endswith(".lrcat") and not entry.name.startswith("."):
+                        cand = Path(entry.path)
+                        if not _is_backup(cand):
+                            candidate_files.add(cand)
+        except Exception:
+            pass
+
+    # 2. Spotlight instantaneous lookup on macOS for any .lrcat across drives/iCloud
+    if sys.platform == "darwin":
+        try:
+            res = subprocess.run(
+                ["mdfind", 'kMDItemFSName == "*.lrcat"'],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                timeout=2.0,
+            )
+            if res.returncode == 0 and res.stdout:
+                for line in res.stdout.strip().split("\n"):
+                    line = line.strip()
+                    if line and line.lower().endswith(".lrcat"):
+                        cand = Path(line)
+                        if cand.exists() and not _is_backup(cand):
+                            candidate_files.add(cand)
+        except Exception:
+            pass
+
+    # 3. Known standard macOS Lightroom locations if not found via Spotlight
+    home = Path.home()
+    for known_loc in [
+        home / "Library/Mobile Documents/com~apple~CloudDocs/Documents/Lightroom Catalogs",
+        home / "Pictures/Lightroom",
+        home / "Documents/Lightroom Catalogs",
+        home / "Lightroom",
+    ]:
+        if known_loc.exists() and not _is_backup(known_loc):
+            try:
+                # Bounded shallow search (depth <= 2) to avoid unbounded iCloud/SMB traversal
+                for item in known_loc.iterdir():
+                    if item.is_file() and item.suffix.lower() == ".lrcat" and not _is_backup(item):
+                        candidate_files.add(item)
+                    elif item.is_dir() and not item.name.startswith(".") and not _is_backup(item):
+                        for sub in item.iterdir():
+                            if sub.is_file() and sub.suffix.lower() == ".lrcat" and not _is_backup(sub):
+                                candidate_files.add(sub)
+            except Exception:
+                pass
+
+    if not candidate_files:
+        _ACTIVE_LRCAT_CACHE[cache_key] = (None, None)
+        return None, None, []
+
+    # If no sample stems provided, quickly pick up to 25 file stems from source_dir
+    active_stems = list(sample_stems or [])
+    if not active_stems and source_p.exists():
+        try:
+            with os.scandir(source_p) as it:
+                for entry in it:
+                    if entry.is_file() and not entry.name.startswith("."):
+                        ext = os.path.splitext(entry.name)[1].lower()
+                        if ext in ALL_SUPPORTED_EXTENSIONS:
+                            active_stems.append(os.path.splitext(entry.name)[0].lower())
+                            if len(active_stems) >= 25:
+                                break
+        except Exception:
+            pass
+
+    # 4. Rank candidates
+    ranked: List[Dict[str, Any]] = []
+    for cand in candidate_files:
+        score = 0.0
+        details: List[str] = []
+
+        # Criterion A: Previews.lrdata adjacent bundle
+        matched_prev: Optional[Path] = None
+        exact_prev = cand.parent / f"{cand.stem} Previews.lrdata"
+        if (exact_prev / "previews.db").exists():
+            score += 100.0
+            matched_prev = exact_prev
+            details.append("adjacent_previews (+100)")
+        else:
+            for cand_dir in sorted(cand.parent.glob("*Previews.lrdata")):
+                if (cand_dir / "previews.db").exists():
+                    score += 50.0
+                    matched_prev = cand_dir
+                    details.append(f"parent_previews:{cand_dir.name} (+50)")
+                    break
+
+        # Criterion B: SQLite root folder and stem overlap
+        try:
+            conn = sqlite3.connect(str(cand), timeout=2.0)
+            cur = conn.cursor()
+
+            # Path overlap with AgLibraryRootFolder
+            tables = {r[0] for r in cur.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+            if "AgLibraryRootFolder" in tables:
+                root_folders = [
+                    str(r[0] or "").lower()
+                    for r in cur.execute("SELECT absolutePath FROM AgLibraryRootFolder").fetchall()
+                ]
+                s_name_low = source_p.name.lower()
+                s_parent_low = source_p.parent.name.lower() if source_p.parent != source_p else ""
+                for rf in root_folders:
+                    if s_name_low and s_name_low in rf:
+                        score += 150.0
+                        details.append(f"root_folder_match:{s_name_low} (+150)")
+                        break
+                    elif s_parent_low and s_parent_low in rf:
+                        score += 75.0
+                        details.append(f"parent_folder_match:{s_parent_low} (+75)")
+                        break
+
+            # Stem overlap with AgLibraryFile
+            if active_stems and "AgLibraryFile" in tables:
+                matched_cnt = 0
+                for st in active_stems:
+                    row = cur.execute(
+                        "SELECT 1 FROM AgLibraryFile WHERE lower(baseName) = ? LIMIT 1", (st,)
+                    ).fetchone()
+                    if row:
+                        matched_cnt += 1
+                if matched_cnt > 0:
+                    stem_pts = min(300.0, matched_cnt * 20.0)
+                    score += stem_pts
+                    details.append(f"stem_overlap:{matched_cnt}/{len(active_stems)} (+{stem_pts})")
+
+            conn.close()
+        except Exception as e:
+            details.append(f"err:{e}")
+
+        # Criterion C: Modification time tie-breaker (prefers newer version upgrades like -v13 vs -v11)
+        try:
+            mtime = cand.stat().st_mtime
+            score += (mtime / 1e9) * 10.0
+        except Exception:
+            pass
+
+        ranked.append({
+            "lrcat_path": cand,
+            "previews_path": matched_prev,
+            "score": score,
+            "details": details,
+        })
+
+    ranked.sort(key=lambda x: x["score"], reverse=True)
+    best_cand = ranked[0] if ranked and ranked[0]["score"] > 50.0 else None
+    best_lrcat = best_cand["lrcat_path"] if best_cand else None
+    best_previews = best_cand["previews_path"] if best_cand else None
+
+    if best_lrcat:
+        logging.info(
+            f"[LRCAT Discovery] Selected: {best_lrcat.name} (Score: {best_cand['score']:.1f}, "
+            f"Previews: {best_previews.name if best_previews else 'None'})"
+        )
+        _ACTIVE_LRCAT_CACHE[cache_key] = (best_lrcat, best_previews)
+
+    return best_lrcat, best_previews, ranked
+
+
+def discover_catalog_files(
+    root_dir: Path,
+    auto_discover_external_lrcat: bool = True,
+) -> Tuple[List[Dict[str, Optional[Path]]], List[Path]]:
     """
     Walks root_dir while strictly excluding Lightroom caches (*.lrdata, Smart Previews, Backups).
     Supports standalone folders (no .lrcat required) as well as Lightroom catalog folders.
@@ -410,6 +645,16 @@ def discover_catalog_files(root_dir: Path) -> Tuple[List[Dict[str, Optional[Path
             "sibling": sibling,
             "all_files": sorted_cands,
         })
+
+    if auto_discover_external_lrcat:
+        sample_stems = [item["primary"].stem.lower() for item in paired_items[:25]]
+        ext_lrcat, ext_previews, _ = find_active_lrcat_and_previews(root_dir, sample_stems=sample_stems)
+        if ext_lrcat:
+            if ext_lrcat not in lrcat_files:
+                lrcat_files.insert(0, ext_lrcat)
+            else:
+                lrcat_files.remove(ext_lrcat)
+                lrcat_files.insert(0, ext_lrcat)
 
     return paired_items, lrcat_files
 
@@ -471,7 +716,11 @@ def _sanitize_capture_time(
     return None
 
 
-def harvest_lrcat_metadata(lrcat_path: Path, db_path: Path = DEFAULT_DB_PATH) -> Dict[str, Dict[str, Any]]:
+def harvest_lrcat_metadata(
+    lrcat_path: Path,
+    db_path: Path = DEFAULT_DB_PATH,
+    previews_lrdata_path: Optional[Path] = None,
+) -> Dict[str, Any]:
     """
     Copies a Lightroom Classic (.lrcat) SQLite database (and any sibling *Previews.lrdata/previews.db)
     to a local temporary directory in tempfile.gettempdir() before querying so SMB mounts and
@@ -482,7 +731,7 @@ def harvest_lrcat_metadata(lrcat_path: Path, db_path: Path = DEFAULT_DB_PATH) ->
     """
     lrcat_path = Path(lrcat_path).expanduser().resolve()
     if not lrcat_path.exists():
-        return {}
+        return {"by_path": {}, "by_stem": {}}
 
     harvested_by_path: Dict[str, Dict[str, Any]] = {}
     harvested_by_stem: Dict[str, Dict[str, Any]] = {}
@@ -499,16 +748,25 @@ def harvest_lrcat_metadata(lrcat_path: Path, db_path: Path = DEFAULT_DB_PATH) ->
         tmp_lrcat = Path(tmp_lrcat_str)
         shutil.copy2(str(lrcat_path), str(tmp_lrcat))
 
-        # Check for sibling *Previews.lrdata/previews.db
+        # Check for previews.db
         previews_lrdata_dir: Optional[Path] = None
-        exact_prev_dir = lrcat_path.parent / f"{lrcat_path.stem} Previews.lrdata"
-        if (exact_prev_dir / "previews.db").exists():
-            previews_lrdata_dir = exact_prev_dir
+        if previews_lrdata_path is not None and (Path(previews_lrdata_path) / "previews.db").exists():
+            previews_lrdata_dir = Path(previews_lrdata_path)
         else:
-            for cand_dir in sorted(lrcat_path.parent.glob("*Previews.lrdata")):
-                if (cand_dir / "previews.db").exists():
-                    previews_lrdata_dir = cand_dir
+            # Check cache if discovery already located matching previews
+            for _k, (cached_c, cached_p) in _ACTIVE_LRCAT_CACHE.items():
+                if cached_c and cached_c.resolve() == lrcat_path.resolve() and cached_p and (cached_p / "previews.db").exists():
+                    previews_lrdata_dir = cached_p
                     break
+            if previews_lrdata_dir is None:
+                exact_prev_dir = lrcat_path.parent / f"{lrcat_path.stem} Previews.lrdata"
+                if (exact_prev_dir / "previews.db").exists():
+                    previews_lrdata_dir = exact_prev_dir
+                else:
+                    for cand_dir in sorted(lrcat_path.parent.glob("*Previews.lrdata")):
+                        if (cand_dir / "previews.db").exists():
+                            previews_lrdata_dir = cand_dir
+                            break
 
         prev_by_img_id: Dict[int, Tuple[str, str, str]] = {}
         prev_by_uuid: Dict[str, Tuple[str, str, str]] = {}
@@ -795,8 +1053,13 @@ def harvest_lrcat_metadata(lrcat_path: Path, db_path: Path = DEFAULT_DB_PATH) ->
                 if prev_match:
                     u_str, d_str, o_str = prev_match
                     cand_lrprev = previews_lrdata_dir / u_str[0] / u_str[0:4] / f"{u_str}-{d_str}.lrprev"
-                    lrprev_path_str = str(cand_lrprev)
-                    lrprev_orient = o_str
+                    if not cand_lrprev.exists():
+                        cand_fallback = previews_lrdata_dir / u_str[0] / u_str[0:4] / f"{u_str}.lrprev"
+                        if cand_fallback.exists():
+                            cand_lrprev = cand_fallback
+                    if cand_lrprev.exists():
+                        lrprev_path_str = str(cand_lrprev)
+                        lrprev_orient = o_str
 
             entry = {
                 "star_rating": max(0, min(5, rating)),
@@ -866,6 +1129,8 @@ def harvest_lrcat_metadata(lrcat_path: Path, db_path: Path = DEFAULT_DB_PATH) ->
     return {
         "by_path": harvested_by_path,
         "by_stem": harvested_by_stem,
+        "lrcat_path": str(lrcat_path),
+        "previews_lrdata_path": str(previews_lrdata_dir) if previews_lrdata_dir else None,
     }
 
 

@@ -50,6 +50,10 @@ export default function PipelineModal({
   const [prescanLoading, setPrescanLoading] = useState(false);
   const [prescanResult, setPrescanResult] = useState(null);
 
+  // Multi-Catalog Subfolder Split Mode state
+  const [splitBySubfolder, setSplitBySubfolder] = useState(false);
+  const [selectedSubfolders, setSelectedSubfolders] = useState([]);
+
   // 1-Click AI Tagging options
   const [runAiTagging, setRunAiTagging] = useState(true);
   const [aiMode, setAiMode] = useState('fast_vectors'); // 'fast_vectors' | 'deep_vlm'
@@ -137,6 +141,12 @@ export default function PipelineModal({
           if (cancelled || !data) return;
           setPrescanResult(data);
           setPrescanLoading(false);
+          if (Array.isArray(data.subfolders) && data.subfolders.length > 0) {
+            setSelectedSubfolders(data.subfolders.map((s) => s.name));
+          } else {
+            setSelectedSubfolders([]);
+            setSplitBySubfolder(false);
+          }
           if (
             destinationMode === 'new' &&
             data.suggested_catalog_name &&
@@ -215,6 +225,12 @@ export default function PipelineModal({
         setFolderPath(data.path);
         if (data.prescan) {
           setPrescanResult(data.prescan);
+          if (Array.isArray(data.prescan.subfolders) && data.prescan.subfolders.length > 0) {
+            setSelectedSubfolders(data.prescan.subfolders.map((s) => s.name));
+          } else {
+            setSelectedSubfolders([]);
+            setSplitBySubfolder(false);
+          }
         }
         const suggested = data.suggested_catalog_name || data.folder_name || '';
         if (
@@ -249,7 +265,9 @@ export default function PipelineModal({
     const targetCatalog = resolveTargetCatalogName();
     const targetPath = (folderPath || '').trim();
 
-    if (!targetCatalog) {
+    const isSplitting = destinationMode === 'new' && splitBySubfolder && selectedSubfolders.length > 0;
+
+    if (!targetCatalog && !isSplitting) {
       setActionMessage({
         type: 'error',
         text: 'Please enter a Catalog Name or browse to a source folder first.',
@@ -266,20 +284,23 @@ export default function PipelineModal({
     }
 
     try {
-      lastStartedCatalogRef.current = targetCatalog;
+      const effectiveTargetCat = isSplitting ? selectedSubfolders[0] : targetCatalog;
+      lastStartedCatalogRef.current = effectiveTargetCat;
       prevRunningRef.current = true;
 
       const res = await fetch('/api/pipeline/run', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          catalog_name: targetCatalog,
+          catalog_name: effectiveTargetCat,
           root_path: targetPath || undefined,
           stage: stageOverride,
           run_ai_tagging: stageOverride === 0 ? runAiTagging : stageOverride === 2,
           ai_mode: aiMode,
           extract_sharpness: true,
           fast_only: false,
+          split_by_subfolder: isSplitting,
+          selected_subfolders: isSplitting ? selectedSubfolders : undefined,
         }),
       });
       const data = await res.json();
@@ -289,11 +310,13 @@ export default function PipelineModal({
       }
 
       if (onRefreshCatalogs) onRefreshCatalogs();
-      if (onSelectCatalog) onSelectCatalog(targetCatalog);
+      if (onSelectCatalog && effectiveTargetCat) onSelectCatalog(effectiveTargetCat);
       fetchPipelineStatus();
       setActionMessage({
         type: 'success',
-        text: `Started import for "${targetCatalog}". You can watch live progress below or close this window and continue working.`,
+        text: isSplitting
+          ? `Started split-catalog import for ${selectedSubfolders.length} subfolders (${selectedSubfolders.join(', ')}).`
+          : `Started import for "${targetCatalog}". You can watch live progress below or close this window and continue working.`,
       });
     } catch (err) {
       setActionMessage({ type: 'error', text: err.message });
@@ -576,6 +599,18 @@ export default function PipelineModal({
                       )}
                     </div>
 
+                    {!prescanLoading && (prescanResult?.has_previews_ready || prescanResult?.lrcat_found) && (
+                      <div className="px-2.5 py-1.5 rounded bg-emerald-500/20 border border-emerald-500/50 text-emerald-200 text-[11px] font-mono flex items-center justify-between gap-2 flex-wrap">
+                        <span className="font-semibold">
+                          ⚡ Lightroom Previews Detected: {prescanResult.lrcat_name || 'Active Catalog'}{' '}
+                          {prescanResult.previews_name ? `+ ${prescanResult.previews_name}` : ''} (~1.5ms / photo zero-copy extraction)
+                        </span>
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-600/40 text-white uppercase tracking-wider">
+                          Tier A Zero-Copy Active
+                        </span>
+                      </div>
+                    )}
+
                     {!prescanLoading &&
                       prescanResult?.extension_counts &&
                       Object.keys(prescanResult.extension_counts).length > 0 && (
@@ -638,20 +673,118 @@ export default function PipelineModal({
                 </div>
 
                 {destinationMode === 'new' ? (
-                  <div>
-                    <label className="block text-[11px] font-mono text-studio-textDim mb-1">
-                      New Catalog Name (auto-filled from folder name if left blank)
-                    </label>
-                    <input
-                      type="text"
-                      value={newCatalogName}
-                      onChange={(e) => setNewCatalogName(e.target.value)}
-                      placeholder={
-                        prescanResult?.suggested_catalog_name ||
-                        'e.g. Family_iPhone_2025 or Utah_Expedition'
-                      }
-                      className="w-full bg-studio-panel border border-studio-border px-3 py-2 text-xs font-mono text-white rounded-sm focus:border-studio-accent focus:outline-none select-text"
-                    />
+                  <div className="space-y-3">
+                    {!splitBySubfolder && (
+                      <div>
+                        <label className="block text-[11px] font-mono text-studio-textDim mb-1">
+                          New Catalog Name (auto-filled from folder name if left blank)
+                        </label>
+                        <input
+                          type="text"
+                          value={newCatalogName}
+                          onChange={(e) => setNewCatalogName(e.target.value)}
+                          placeholder={
+                            prescanResult?.suggested_catalog_name ||
+                            'e.g. Family_iPhone_2025 or Utah_Expedition'
+                          }
+                          className="w-full bg-studio-panel border border-studio-border px-3 py-2 text-xs font-mono text-white rounded-sm focus:border-studio-accent focus:outline-none select-text"
+                        />
+                      </div>
+                    )}
+
+                    {/* Multi-Catalog Subfolder Split Mode Toggle & Checklist */}
+                    {Array.isArray(prescanResult?.subfolders) && prescanResult.subfolders.length > 0 && (
+                      <div className="p-3 rounded-sm bg-studio-panel/70 border border-studio-border space-y-2.5">
+                        <div className="flex items-center justify-between gap-2 flex-wrap">
+                          <label className="flex items-center gap-2 font-mono text-xs text-white font-semibold cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={splitBySubfolder}
+                              onChange={(e) => setSplitBySubfolder(e.target.checked)}
+                              className="accent-purple-500"
+                            />
+                            <span>
+                              📂 Split by Subfolder (Create 1 Catalog per Child Folder —{' '}
+                              {prescanResult.subfolders.length} child folders detected)
+                            </span>
+                          </label>
+                          {splitBySubfolder && (
+                            <div className="flex items-center gap-1.5 font-mono text-[11px]">
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setSelectedSubfolders(prescanResult.subfolders.map((s) => s.name))
+                                }
+                                className="px-2 py-0.5 rounded bg-studio-bg hover:bg-studio-hover border border-studio-border text-zinc-200 cursor-pointer"
+                              >
+                                Select All
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setSelectedSubfolders([])}
+                                className="px-2 py-0.5 rounded bg-studio-bg hover:bg-studio-hover border border-studio-border text-zinc-400 cursor-pointer"
+                              >
+                                Deselect All
+                              </button>
+                            </div>
+                          )}
+                        </div>
+
+                        {!splitBySubfolder ? (
+                          <p className="text-[11px] font-mono text-studio-textDim">
+                            Single Catalog Mode: Imports all child folders into{' '}
+                            <span className="text-white font-semibold">
+                              {newCatalogName || prescanResult?.suggested_catalog_name || 'this catalog'}
+                            </span>{' '}
+                            and tags each photo with <code className="text-emerald-300">folder:&lt;subfolder_name&gt;</code>.
+                          </p>
+                        ) : (
+                          <div className="space-y-2">
+                            <p className="text-[11px] font-mono text-purple-300">
+                              Multi-Catalog Split Mode: Each checked child folder below will be created and AI-tagged as its own distinct catalog in MR Darkroom:
+                            </p>
+                            <div className="max-h-36 overflow-y-auto grid grid-cols-1 sm:grid-cols-2 gap-1.5 pr-1">
+                              {prescanResult.subfolders.map((sub) => {
+                                const checked = selectedSubfolders.includes(sub.name);
+                                return (
+                                  <label
+                                    key={sub.name}
+                                    className={`flex items-center justify-between gap-2 px-2.5 py-1.5 rounded border font-mono text-xs cursor-pointer transition-colors ${
+                                      checked
+                                        ? 'bg-purple-950/30 border-purple-500/50 text-white'
+                                        : 'bg-studio-bg/60 border-studio-border text-studio-textDim'
+                                    }`}
+                                  >
+                                    <span className="flex items-center gap-2 truncate">
+                                      <input
+                                        type="checkbox"
+                                        checked={checked}
+                                        onChange={(e) => {
+                                          if (e.target.checked) {
+                                            setSelectedSubfolders((prev) => [...prev, sub.name]);
+                                          } else {
+                                            setSelectedSubfolders((prev) =>
+                                              prev.filter((n) => n !== sub.name)
+                                            );
+                                          }
+                                        }}
+                                        className="accent-purple-500"
+                                      />
+                                      <span className="truncate" title={sub.name}>
+                                        {sub.name}
+                                      </span>
+                                    </span>
+                                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-black/40 text-purple-200 shrink-0">
+                                      {sub.photo_count} photos
+                                    </span>
+                                  </label>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                 ) : (
                   <div>

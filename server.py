@@ -57,7 +57,11 @@ from domain_gazetteer import (
     US_STATE_NAMES,
     deduplicate_singular_plural_tags,
 )
-from harvester import discover_catalog_files, resolve_offline_gps_location
+from harvester import (
+    discover_catalog_files,
+    find_active_lrcat_and_previews,
+    resolve_offline_gps_location,
+)
 from pipeline import load_settings, run_pipeline
 from stage1_engine import (
     DEFAULT_COLOR_SIGS_PATH,
@@ -662,6 +666,15 @@ def _run_folder_prescan(raw_path: str) -> Dict[str, Any]:
             "summary_text": "Select or browse to a folder to preview photo count.",
             "has_lrcat": False,
             "lrcat_files": [],
+            "lrcat_found": False,
+            "lrcat_name": "",
+            "lrcat_path": "",
+            "previews_found": False,
+            "previews_name": "",
+            "previews_path": "",
+            "has_previews_ready": False,
+            "subfolders": [],
+            "can_split_subfolders": False,
         }
 
     p = Path(clean_raw).expanduser()
@@ -677,10 +690,51 @@ def _run_folder_prescan(raw_path: str) -> Dict[str, Any]:
             "summary_text": f"Folder not found on disk: {clean_raw}",
             "has_lrcat": False,
             "lrcat_files": [],
+            "lrcat_found": False,
+            "lrcat_name": "",
+            "lrcat_path": "",
+            "previews_found": False,
+            "previews_name": "",
+            "previews_path": "",
+            "has_previews_ready": False,
+            "subfolders": [],
+            "can_split_subfolders": False,
         }
 
     p_resolved = p.resolve()
     paired_items, lrcat_files = discover_catalog_files(p_resolved)
+
+    # 1. Discover active Lightroom .lrcat and Previews.lrdata bundle
+    sample_stems = [item["primary"].stem.lower() for item in paired_items[:25]] if paired_items else None
+    active_lrcat, active_previews, ranked_cands = find_active_lrcat_and_previews(p_resolved, sample_stems=sample_stems)
+
+    has_lrcat = bool(active_lrcat or lrcat_files)
+    lrcat_name = active_lrcat.name if active_lrcat else (lrcat_files[0].name if lrcat_files else "")
+    lrcat_path_str = str(active_lrcat) if active_lrcat else (str(lrcat_files[0]) if lrcat_files else "")
+    previews_name = active_previews.name if active_previews else ""
+    previews_path_str = str(active_previews) if active_previews else ""
+    has_previews_ready = bool(active_previews and (active_previews / "previews.db").exists())
+
+    # 2. Scan immediate child subfolders with photo counts
+    subfolders: List[Dict[str, Any]] = []
+    try:
+        with os.scandir(p_resolved) as it:
+            for entry in it:
+                if entry.is_dir() and not entry.name.startswith(".") and not entry.name.lower().endswith(".lrdata"):
+                    sub_low = entry.name.lower()
+                    if sub_low in {"backups", "backup", "_temporary", ".trash", ".trashes", "old versions"}:
+                        continue
+                    sub_p = Path(entry.path)
+                    sub_items, _ = discover_catalog_files(sub_p, auto_discover_external_lrcat=False)
+                    if sub_items:
+                        subfolders.append({
+                            "name": entry.name,
+                            "path": str(sub_p),
+                            "photo_count": len(sub_items),
+                        })
+    except Exception:
+        pass
+    subfolders.sort(key=lambda x: x["name"].lower())
 
     ext_counter: Counter = Counter()
     for item in paired_items:
@@ -711,8 +765,17 @@ def _run_folder_prescan(raw_path: str) -> Dict[str, Any]:
         "total_photos": total_count,
         "extension_counts": sorted_exts,
         "summary_text": summary_text,
-        "has_lrcat": bool(lrcat_files),
+        "has_lrcat": has_lrcat,
         "lrcat_files": [str(x) for x in lrcat_files],
+        "lrcat_found": has_lrcat,
+        "lrcat_name": lrcat_name,
+        "lrcat_path": lrcat_path_str,
+        "previews_found": bool(active_previews),
+        "previews_name": previews_name,
+        "previews_path": previews_path_str,
+        "has_previews_ready": has_previews_ready,
+        "subfolders": subfolders,
+        "can_split_subfolders": len(subfolders) >= 1,
     }
 
 
@@ -725,6 +788,13 @@ async def prescan_catalog_folder_get(path: str = Query(""), root_path: str = Que
 
 @app.post("/api/catalogs/prescan")
 async def prescan_catalog_folder_post(payload: PrescanFolderRequest):
+    target_path = payload.path or payload.root_path or ""
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, _run_folder_prescan, target_path)
+
+
+@app.post("/api/pipeline/inspect-folder")
+async def inspect_folder_post(payload: PrescanFolderRequest):
     target_path = payload.path or payload.root_path or ""
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, _run_folder_prescan, target_path)
@@ -3732,6 +3802,8 @@ class RunPipelineRequest(BaseModel):
     ai_mode: str = "fast_vectors"  # "fast_vectors" (fast 5-facet OpenCLIP + GPS + Ontology) or "deep_vlm"
     extract_sharpness: bool = True
     fast_only: Optional[bool] = None
+    split_by_subfolder: bool = False
+    selected_subfolders: Optional[List[str]] = None
 
 
 @app.post("/api/pipeline/run")
@@ -3741,27 +3813,29 @@ async def trigger_pipeline_run(payload: RunPipelineRequest, background_tasks: Ba
         raise HTTPException(status_code=409, detail="Pipeline scan already in progress")
 
     clean_cat_name = (payload.catalog_name or "").strip()
-    if not clean_cat_name:
+    if not clean_cat_name and not payload.split_by_subfolder:
         raise HTTPException(status_code=400, detail="Catalog name cannot be empty")
 
     explicit_root = (payload.root_path or payload.path or "").strip()
+    p_exp: Optional[Path] = None
     if explicit_root:
         p_exp = Path(explicit_root).expanduser().resolve()
         if not p_exp.exists() or not p_exp.is_dir():
             raise HTTPException(status_code=400, detail=f"Folder does not exist on disk: {explicit_root}")
-        conn_reg = get_db_connection(DEFAULT_DB_PATH)
-        conn_reg.execute(
-            """
-            INSERT INTO catalogs (catalog_name, root_path, description, created_at)
-            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-            ON CONFLICT(catalog_name) DO UPDATE SET
-                root_path = excluded.root_path,
-                description = COALESCE(excluded.description, catalogs.description)
-            """,
-            (clean_cat_name, str(p_exp), payload.description),
-        )
-        conn_reg.commit()
-        conn_reg.close()
+        if not payload.split_by_subfolder:
+            conn_reg = get_db_connection(DEFAULT_DB_PATH)
+            conn_reg.execute(
+                """
+                INSERT INTO catalogs (catalog_name, root_path, description, created_at)
+                VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(catalog_name) DO UPDATE SET
+                    root_path = excluded.root_path,
+                    description = COALESCE(excluded.description, catalogs.description)
+                """,
+                (clean_cat_name, str(p_exp), payload.description),
+            )
+            conn_reg.commit()
+            conn_reg.close()
 
     def _progress_cb(processed: int, total: int, current_file: str, phase: str = "Processing..."):
         PIPELINE_STATUS["processed"] = processed
@@ -3778,6 +3852,9 @@ async def trigger_pipeline_run(payload: RunPipelineRequest, background_tasks: Ba
         ai_mode: str,
         extract_sharpness: bool,
         fast_only: Optional[bool],
+        split_by_subfolder: bool = False,
+        selected_subfolders: Optional[List[str]] = None,
+        explicit_root_path: Optional[Path] = None,
     ):
         global PIPELINE_STATUS, VECTORS_MTIME, CROP_VECTORS_MTIME, COLOR_SIGS_MTIME
         initial_phase = (
@@ -3802,91 +3879,141 @@ async def trigger_pipeline_run(payload: RunPipelineRequest, background_tasks: Ba
             title=f"Import & AI Tag ({catalog_name})" if stage == 0 or run_ai_tagging else f"Catalog Scan ({catalog_name}) — Stage {stage}",
             total=0,
             phase=initial_phase,
-            extra={"catalog_name": catalog_name, "stage": stage},
+            extra={"catalog_name": catalog_name, "stage": stage, "split_by_subfolder": split_by_subfolder},
         )
         try:
             if stage in (0, 1):
-                root: Optional[Path] = None
-                conn = get_db_connection(DEFAULT_DB_PATH)
-                row = conn.execute(
-                    "SELECT root_path FROM catalogs WHERE catalog_name = ?", (catalog_name,)
-                ).fetchone()
-                conn.close()
-                if row and row["root_path"]:
-                    root = Path(row["root_path"])
-                else:
-                    cfg = load_settings()
-                    cats = cfg.get("catalogs", [])
-                    if isinstance(cats, list):
-                        cat_cfg = next(
-                            (c for c in cats if isinstance(c, dict) and c.get("name") == catalog_name),
-                            None,
-                        )
-                        if cat_cfg and cat_cfg.get("path"):
-                            root = Path(cat_cfg["path"])
+                root: Optional[Path] = explicit_root_path
+                if root is None:
+                    conn = get_db_connection(DEFAULT_DB_PATH)
+                    row = conn.execute(
+                        "SELECT root_path FROM catalogs WHERE catalog_name = ?", (catalog_name,)
+                    ).fetchone()
+                    conn.close()
+                    if row and row["root_path"]:
+                        root = Path(row["root_path"])
+                    else:
+                        cfg = load_settings()
+                        cats = cfg.get("catalogs", [])
+                        if isinstance(cats, list):
+                            cat_cfg = next(
+                                (c for c in cats if isinstance(c, dict) and c.get("name") == catalog_name),
+                                None,
+                            )
+                            if cat_cfg and cat_cfg.get("path"):
+                                root = Path(cat_cfg["path"])
 
                 if root is None or not root.exists():
                     raise FileNotFoundError(f"Catalog root_path not found or not mounted for '{catalog_name}': {root}")
 
                 use_fast_only = bool(fast_only) if fast_only is not None else False
 
-                run_stage1_pipeline(
-                    source_dir=root,
-                    catalog_name=catalog_name,
-                    db_path=DEFAULT_DB_PATH,
-                    vectors_path=DEFAULT_VECTORS_PATH,
-                    thumbs_360_dir=DEFAULT_THUMBS_360_DIR,
-                    previews_1600_dir=DEFAULT_PREVIEWS_1600_DIR,
-                    progress_callback=_progress_cb,
-                    fast_only=use_fast_only,
-                )
+                # Determine whether we are splitting into per-subfolder catalogs or running a single catalog import
+                target_catalog_pairs: List[Tuple[str, Path]] = []
+                if split_by_subfolder:
+                    sub_names = [s.strip() for s in (selected_subfolders or []) if s and s.strip()]
+                    if not sub_names:
+                        skip_dirs = {"backups", "backup", "_temporary", ".trash", ".trashes", "__macosx"}
+                        for child in sorted(root.iterdir()):
+                            if (
+                                child.is_dir()
+                                and not child.name.startswith(".")
+                                and child.name.lower() not in skip_dirs
+                                and not child.name.lower().endswith(".lrdata")
+                                and not child.name.lower().endswith(".lrcat-data")
+                            ):
+                                sub_names.append(child.name)
+                    for sub_name in sub_names:
+                        sub_dir = (root / sub_name).resolve()
+                        if sub_dir.exists() and sub_dir.is_dir():
+                            target_catalog_pairs.append((sub_name, sub_dir))
+                    if not target_catalog_pairs:
+                        target_catalog_pairs.append((catalog_name or root.name, root))
+                else:
+                    target_catalog_pairs.append((catalog_name, root))
 
-                # Invalidate in-memory vector & color signature caches so newly ingested rows are immediately available
-                VECTORS_MTIME = 0.0
-                CROP_VECTORS_MTIME = 0.0
-                COLOR_SIGS_MTIME = 0.0
-                invalidate_search_index_cache()
-
-                if stage == 0 or run_ai_tagging:
+                total_sub_cats = len(target_catalog_pairs)
+                for idx_cat, (sub_cat_name, sub_cat_root) in enumerate(target_catalog_pairs, 1):
                     if not JOB_MANAGER.check_pause_or_cancel():
                         raise RuntimeError("Import cancelled by user")
 
-                    # Invariant 2: Level 1 4-Pass Cascade runs automatically on every folder import
-                    PIPELINE_STATUS["phase"] = "Building multi-crop visual vectors on Apple Metal GPU..."
-                    try:
-                        build_or_update_crop_vectors_mps(db_path=DEFAULT_DB_PATH)
-                    except Exception as exc:
-                        logger.warning(f"build_or_update_crop_vectors_mps warning: {exc}")
+                    PIPELINE_STATUS["catalog_name"] = sub_cat_name
+                    cat_prefix = f"[{idx_cat}/{total_sub_cats}: {sub_cat_name}] " if total_sub_cats > 1 else ""
 
-                    mode_norm = (ai_mode or "fast_vectors").strip().lower()
-                    if mode_norm == "deep_vlm":
-                        # Always run fast 4-pass cascade first to establish macro anchors and clusters
-                        reassess_records_fast(
-                            db_path=DEFAULT_DB_PATH,
-                            vectors_path=DEFAULT_VECTORS_PATH,
-                            photo_ids=None,
-                            catalog_name=catalog_name,
-                            encode_text_batch_fn=encode_text_batch,
-                            progress_cb=_progress_cb,
-                            run_clustering=True,
-                        )
-                        PIPELINE_STATUS["phase"] = "Step 2: Deep AI Vision Scene Analysis..."
-                        run_stage2_vlm(
-                            db_path=DEFAULT_DB_PATH,
-                            catalog_name=catalog_name,
-                            progress_callback=_progress_cb,
-                        )
-                    else:
-                        PIPELINE_STATUS["phase"] = "Step 2: AI Visual Tagging, GPS Ground-Truth & Location Sync..."
-                        reassess_records_fast(
-                            db_path=DEFAULT_DB_PATH,
-                            vectors_path=DEFAULT_VECTORS_PATH,
-                            photo_ids=None,
-                            catalog_name=catalog_name,
-                            encode_text_batch_fn=encode_text_batch,
-                            progress_cb=_progress_cb,
-                            run_clustering=True,
-                        )
+                    # Register subfolder catalog in DB
+                    conn_sub = get_db_connection(DEFAULT_DB_PATH)
+                    conn_sub.execute(
+                        """
+                        INSERT INTO catalogs (catalog_name, root_path, description, created_at)
+                        VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                        ON CONFLICT(catalog_name) DO UPDATE SET
+                            root_path = excluded.root_path,
+                            description = COALESCE(excluded.description, catalogs.description)
+                        """,
+                        (sub_cat_name, str(sub_cat_root), payload.description),
+                    )
+                    conn_sub.commit()
+                    conn_sub.close()
+
+                    def _sub_progress_cb(processed: int, total: int, current_file: str, phase: str = "Processing..."):
+                        return _progress_cb(processed, total, current_file, f"{cat_prefix}{phase}")
+
+                    run_stage1_pipeline(
+                        source_dir=sub_cat_root,
+                        catalog_name=sub_cat_name,
+                        db_path=DEFAULT_DB_PATH,
+                        vectors_path=DEFAULT_VECTORS_PATH,
+                        thumbs_360_dir=DEFAULT_THUMBS_360_DIR,
+                        previews_1600_dir=DEFAULT_PREVIEWS_1600_DIR,
+                        progress_callback=_sub_progress_cb,
+                        fast_only=use_fast_only,
+                    )
+
+                    # Invalidate in-memory vector & color signature caches so newly ingested rows are immediately available
+                    VECTORS_MTIME = 0.0
+                    CROP_VECTORS_MTIME = 0.0
+                    COLOR_SIGS_MTIME = 0.0
+                    invalidate_search_index_cache()
+
+                    if stage == 0 or run_ai_tagging:
+                        if not JOB_MANAGER.check_pause_or_cancel():
+                            raise RuntimeError("Import cancelled by user")
+
+                        # Invariant 2: Level 1 4-Pass Cascade runs automatically on every folder import
+                        PIPELINE_STATUS["phase"] = f"{cat_prefix}Building multi-crop visual vectors on Apple Metal GPU..."
+                        try:
+                            build_or_update_crop_vectors_mps(db_path=DEFAULT_DB_PATH)
+                        except Exception as exc:
+                            logger.warning(f"build_or_update_crop_vectors_mps warning: {exc}")
+
+                        mode_norm = (ai_mode or "fast_vectors").strip().lower()
+                        if mode_norm == "deep_vlm":
+                            reassess_records_fast(
+                                db_path=DEFAULT_DB_PATH,
+                                vectors_path=DEFAULT_VECTORS_PATH,
+                                photo_ids=None,
+                                catalog_name=sub_cat_name,
+                                encode_text_batch_fn=encode_text_batch,
+                                progress_cb=_sub_progress_cb,
+                                run_clustering=True,
+                            )
+                            PIPELINE_STATUS["phase"] = f"{cat_prefix}Step 2: Deep AI Vision Scene Analysis..."
+                            run_stage2_vlm(
+                                db_path=DEFAULT_DB_PATH,
+                                catalog_name=sub_cat_name,
+                                progress_callback=_sub_progress_cb,
+                            )
+                        else:
+                            PIPELINE_STATUS["phase"] = f"{cat_prefix}Step 2: AI Visual Tagging, GPS Ground-Truth & Location Sync..."
+                            reassess_records_fast(
+                                db_path=DEFAULT_DB_PATH,
+                                vectors_path=DEFAULT_VECTORS_PATH,
+                                photo_ids=None,
+                                catalog_name=sub_cat_name,
+                                encode_text_batch_fn=encode_text_batch,
+                                progress_cb=_sub_progress_cb,
+                                run_clustering=True,
+                            )
             elif stage == 2:
                 PIPELINE_STATUS["phase"] = "Step 2: AI Visual Tagging & Scene Analysis..."
                 run_stage2_vlm(
@@ -3915,6 +4042,9 @@ async def trigger_pipeline_run(payload: RunPipelineRequest, background_tasks: Ba
             payload.ai_mode,
             payload.extract_sharpness,
             payload.fast_only,
+            payload.split_by_subfolder,
+            payload.selected_subfolders,
+            p_exp,
         ),
         daemon=True,
     ).start()
@@ -3924,6 +4054,8 @@ async def trigger_pipeline_run(payload: RunPipelineRequest, background_tasks: Ba
         "stage": payload.stage,
         "run_ai_tagging": payload.run_ai_tagging,
         "ai_mode": payload.ai_mode,
+        "split_by_subfolder": payload.split_by_subfolder,
+        "selected_subfolders": payload.selected_subfolders,
     }
 
 
