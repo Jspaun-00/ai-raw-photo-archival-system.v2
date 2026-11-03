@@ -621,7 +621,7 @@ MACRO_BIOME_DEFINITIONS: Dict[str, Dict[str, Any]] = {
             "cloverleaf interchange", "suspension bridge", "steel truss bridge", "viaduct",
             "center-pivot irrigation", "circular crop field", "oil derrick / pumpjack", "pumpjack",
             "oil rig", "refinery", "solar farm", "wind turbine", "grain silo", "silo", "tractor / combine",
-            "tractor", "combine", "mountain range", "sand dunes", "desert",
+            "tractor", "combine", "mountain range", "mountains", "mountain", "sand dunes", "desert", "highway", "freeway",
         },
         "allowed_domains": {
             "feline", "canine", "people", "indoor_decor_textiles", "indoor_flora", "studio_product",
@@ -637,7 +637,7 @@ MACRO_BIOME_DEFINITIONS: Dict[str, Dict[str, Any]] = {
             "skyscraper", "glass curtain wall", "construction scaffolding", "bridge", "highway overpass",
             "overpass", "alligator", "bison", "buffalo", "bear", "grizzly / black bear", "whale",
             "humpback whale", "pelican", "brown pelican", "frog", "frogs", "canyon", "butte", "buttes",
-            "mountain", "mountains", "horse", "horses", "cattle", "cow", "cows", "sand dunes", "desert",
+            "mountain", "mountains", "horse", "horses", "cattle", "cow", "cows", "sand dunes", "desert", "highway", "freeway",
         },
         "allowed_domains": {
             "closet_storage_wellness", "feline", "canine", "people", "studio_product",
@@ -645,29 +645,31 @@ MACRO_BIOME_DEFINITIONS: Dict[str, Dict[str, Any]] = {
     },
     "Studio / Tabletop, Product & Scientific Macro": {
         "prompts": [
-            "a studio tabletop product photograph of a bottle, spirits decanter, glass tumbler, cosmetic bottle, or luxury watch",
-            "a scientific macro or optical physics photograph of ferrofluid, magnetic spikes, light refraction prism, caustics, water droplets, or photomicrography",
+            "a studio tabletop product photograph of a bottle, wine bottle, wine glasses on a wine barrel, spirits decanter, glass tumbler, cosmetic bottle, or luxury watch",
+            "a studio macro or optical physics photograph of a translucent glass sculpture, crystal figurine on a pitch black background, ferrofluid, magnetic spikes, light refraction prism, caustics, or water droplets",
+            "a close-up culinary, winery, or tabletop still-life photograph of wine tasting glasses, vineyard bottles, gourmet food, or art glass isolated on a dark studio backdrop",
         ],
         "forbidden_tags_lower": {
             "alligator", "bison", "buffalo", "bear", "whale", "pelican", "frog", "frogs",
             "canyon", "butte", "buttes", "highway overpass", "center-pivot irrigation",
-            "mountain range", "sand dunes", "desert",
+            "mountain range", "mountains", "mountain", "sand dunes", "desert", "highway", "freeway",
         },
         "allowed_domains": {
-            "science_macro_optical", "studio_product", "closet_storage_wellness", "indoor_flora",
+            "science_macro_optical", "studio_product", "closet_storage_wellness", "indoor_flora", "people",
         },
     },
     "Portrait / Mirror & People": {
         "prompts": [
-            "a portrait of a person, man, woman, group photo, or mirror selfie holding a smartphone in front of a mirror",
-            "a close-up or medium portrait of people, friends, family, or photographer",
+            "a portrait of a person, man, woman, group photo, event gathering, winery tasting guests, or mirror selfie holding a smartphone in front of a mirror",
+            "a close-up or medium portrait of people, woman in a dress with necklace, friends, family, or photographer",
         ],
         "forbidden_tags_lower": {
             "alligator", "bison", "buffalo", "whale", "humpback whale", "frog", "frogs",
             "center-pivot irrigation", "circular crop field", "oil derrick / pumpjack", "sand dunes", "desert",
+            "mountain range", "mountains", "mountain", "canyon", "canyons", "butte", "buttes", "highway overpass", "overpass", "highway", "freeway",
         },
         "allowed_domains": {
-            "people", "feline", "canine", "indoor_decor_textiles", "closet_storage_wellness",
+            "people", "feline", "canine", "indoor_decor_textiles", "closet_storage_wellness", "studio_product",
         },
     },
     "Urban / Automotive, Bridges & Architecture": {
@@ -1181,6 +1183,46 @@ SPECIALIST_DRILLDOWN_TAXONOMY: List[Dict[str, Any]] = [
     ]},
     {"tag": "Luxury Watch", "domain": "studio_product", "parent": "Still Life", "hierarchy": "Subjects|Studio_And_Product|Luxury_Watch", "min_cos": 0.255, "prompts": [
         "macro studio shot of a mechanical luxury wristwatch dial, bezel, and chronograph hands",
+    ]},
+    {"tag": "Glass Sculpture / Crystal", "domain": "science_macro_optical", "parent": "Macro Photography", "mids": ["Light Refraction", "Crystal", "Glass Art"], "hierarchy": "Subjects|Science_And_Macro|Glass_Sculpture", "min_cos": 0.238, "prompts": [
+        "studio macro photograph of a translucent blue and white art glass sculpture or crystal figurine glowing against a pitch black background with reflection",
+        "close-up of blown glass art, crystal sculpture, or translucent glass object with light refraction on a dark reflective surface",
+    ]},
+    {"tag": "Studio Black Backdrop", "domain": "studio_product", "parent": "Still Life", "hierarchy": "Subjects|Studio_And_Product|Studio_Black_Backdrop", "min_cos": 0.238, "prompts": [
+        "studio still-life subject isolated against a pitch black background with dramatic rim lighting and dark mirror reflection",
+    ]},
+    {"tag": "Wine Bottle", "domain": "studio_product", "parent": "Still Life", "mids": ["Wine"], "hierarchy": "Subjects|Culinary_And_Wine|Wine_Bottle", "min_cos": 0.224, "prompts": [
+        "glass wine bottles with vineyard labels standing on a wooden wine barrel or table at a winery tasting",
+        "close-up of red or white wine bottles with labels and foil capsules",
+        "a person holding a wine bottle next to wine glasses on a wooden barrel",
+    ]},
+    {"tag": "Wine Glass", "domain": "studio_product", "parent": "Still Life", "mids": ["Wine", "Glassware"], "hierarchy": "Subjects|Culinary_And_Wine|Wine_Glass", "min_cos": 0.235, "prompts": [
+        "stemmed crystal wine glasses or goblets on a wooden barrel or table at a wine tasting",
+        "clear stemmed wine glass next to wine bottles at a winery",
+    ]},
+    {"tag": "Wine Barrel", "domain": "studio_product", "parent": "Still Life", "mids": ["Winery"], "hierarchy": "Subjects|Culinary_And_Wine|Wine_Barrel", "min_cos": 0.222, "prompts": [
+        "rustic oak wine barrel with metal hoops used as a tasting table at a winery or cellar",
+        "wooden oak wine barrel tabletop with wine bottles and stemmed wine glasses",
+        "wine bottles with labels and wine glasses sitting on top of a wooden wine barrel",
+    ]},
+    {"tag": "Wine Tasting / Winery", "domain": "studio_product", "parent": "Still Life", "mids": ["Wine", "Winery"], "hierarchy": "Subjects|Culinary_And_Wine|Wine_Tasting", "min_cos": 0.230, "prompts": [
+        "winery tasting event with wine bottles, wine glasses on an oak barrel, and guests holding wine",
+        "a person holding a wine bottle next to wine glasses on a wooden barrel at a winery",
+    ]},
+    {"tag": "Cocktail / Beverage", "domain": "studio_product", "parent": "Still Life", "hierarchy": "Subjects|Culinary_And_Wine|Cocktail_Beverage", "min_cos": 0.245, "prompts": [
+        "a cocktail glass, craft beer pint, or beverage glass on a bar counter or restaurant table",
+    ]},
+    {"tag": "Culinary / Dining", "domain": "studio_product", "parent": "Still Life", "hierarchy": "Subjects|Culinary_And_Wine|Culinary_Dining", "min_cos": 0.245, "prompts": [
+        "plated gourmet food dish, charcuterie board, or restaurant dining table meal",
+    ]},
+    {"tag": "Floral / Purple Dress", "domain": "closet_storage_wellness", "parent": "People", "mids": ["Woman", "Necklace / Jewelry"], "hierarchy": "Subjects|People|Apparel|Dress", "min_cos": 0.222, "prompts": [
+        "a woman wearing a purple or floral patterned sleeveless dress and necklace at an event or winery",
+        "close-up of a woman in a purple patterned dress holding a wine bottle at a wine tasting",
+        "wine tasting table with wine bottles, wine glasses, wooden barrel, and a woman in a purple dress",
+    ]},
+    {"tag": "Necklace / Jewelry", "domain": "closet_storage_wellness", "parent": "People", "hierarchy": "Subjects|People|Apparel|Jewelry", "min_cos": 0.232, "prompts": [
+        "a woman wearing a pendant necklace or jewelry around her neck",
+        "a gold chain pendant necklace on a woman's neckline in a purple dress",
     ]},
     {"tag": "Bohemian Tapestry / Woven Throw", "domain": "indoor_decor_textiles", "parent": "Living Room", "hierarchy": "Architecture|Interiors|Bohemian_Tapestry_Throw", "min_cos": 0.232, "prompts": [
         "a patterned bohemian tapestry throw blanket or woven fringed textile draped over a living room couch or bed",

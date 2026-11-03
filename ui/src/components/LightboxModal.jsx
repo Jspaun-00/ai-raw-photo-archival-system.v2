@@ -39,6 +39,7 @@ export default function LightboxModal({
   const [reassessing, setReassessing] = useState(false);
   const [reassessMenuOpen, setReassessMenuOpen] = useState(false);
   const [clearingTags, setClearingTags] = useState(false);
+  const [actionHoverHint, setActionHoverHint] = useState(null);
   const [syncingEdits, setSyncingEdits] = useState(false);
   const [openInMenuOpen, setOpenInMenuOpen] = useState(false);
   const openInMenuRef = useRef(null);
@@ -1128,41 +1129,63 @@ export default function LightboxModal({
           {/* Prominent Keywords & Studio Tags + 3-Button AI Tag Control Group */}
           <div className="p-3.5 border-b border-studio-border space-y-2.5 bg-studio-bg/30">
             {/* 3-Button AI Tag Control Group */}
-            <div className="grid grid-cols-3 gap-1.5">
-              <button
-                type="button"
-                onClick={handleClearPhotoTags}
-                disabled={clearingTags || reassessing}
-                className="flex items-center justify-center gap-1 py-2 px-2 rounded-md bg-amber-950/40 hover:bg-amber-900/60 border border-amber-500/50 hover:border-amber-400 text-amber-200 hover:text-white font-mono text-[11px] font-semibold transition-colors disabled:opacity-50 cursor-pointer shadow-sm"
-                title="Clear all tags on this photo so you can start fresh (Undo snapshot saved automatically)"
-              >
-                <span>🧹</span>
-                <span>{clearingTags ? 'Clearing...' : 'Clear Tags'}</span>
-              </button>
+            <div className="space-y-1.5">
+              <div className="grid grid-cols-3 gap-1.5">
+                <button
+                  type="button"
+                  onClick={handleClearPhotoTags}
+                  onMouseEnter={() =>
+                    setActionHoverHint(
+                      '🧹 Clear Tags: Wipes AI-generated tags on this photo so you can start fresh (Undo snapshot saved automatically).'
+                    )
+                  }
+                  onMouseLeave={() => setActionHoverHint(null)}
+                  disabled={clearingTags || reassessing}
+                  className="flex items-center justify-center gap-1 py-2 px-2 rounded-md bg-amber-950/40 hover:bg-amber-900/60 border border-amber-500/50 hover:border-amber-400 text-amber-200 hover:text-white font-mono text-[11px] font-semibold transition-colors disabled:opacity-50 cursor-pointer shadow-sm"
+                >
+                  <span>🧹</span>
+                  <span>{clearingTags ? 'Clearing...' : 'Clear Tags'}</span>
+                </button>
 
-              <button
-                type="button"
-                onClick={() => handleReassessPhoto('fast_vectors')}
-                disabled={reassessing || clearingTags}
-                className="flex items-center justify-center gap-1 py-2 px-2 rounded-md bg-blue-950/50 hover:bg-blue-900/70 border border-blue-500/50 hover:border-blue-400 text-blue-200 hover:text-white font-mono text-[11px] font-semibold transition-colors disabled:opacity-50 cursor-pointer shadow-sm"
-                title="⚡ Fast Scan (Level 1 — 4-Pass Cascade): Runs Pass 1 Macro Biome Lock + Pass 2 GPU 4-Crop Saliency Scan + Pass 3 Specialist Breed/Species Drill-Down + Pass 4 Pet/Person Clustering (~6ms/photo)"
-              >
-                <span>⚡</span>
-                <span>{reassessing ? 'Scanning...' : 'Fast Scan (Level 1)'}</span>
-              </button>
+                <button
+                  type="button"
+                  onClick={() => handleReassessPhoto('fast_vectors')}
+                  onMouseEnter={() =>
+                    setActionHoverHint(
+                      '⚡ Fast Scan (Level 1 — 4-Pass Cascade): Re-evaluates Pass 1 Macro Biome + Pass 2 4-Crop Saliency + Pass 3 Specialist Subjects & replaces stale fallback tags (~6ms).'
+                    )
+                  }
+                  onMouseLeave={() => setActionHoverHint(null)}
+                  disabled={reassessing || clearingTags}
+                  className="flex items-center justify-center gap-1 py-2 px-2 rounded-md bg-blue-950/50 hover:bg-blue-900/70 border border-blue-500/50 hover:border-blue-400 text-blue-200 hover:text-white font-mono text-[11px] font-semibold transition-colors disabled:opacity-50 cursor-pointer shadow-sm"
+                >
+                  <span>⚡</span>
+                  <span>{reassessing ? 'Scanning...' : 'Fast Scan (Level 1)'}</span>
+                </button>
 
-              <button
-                type="button"
-                onClick={() =>
-                  onOpenVoiceTeachForPhoto && onOpenVoiceTeachForPhoto(details, true)
-                }
-                disabled={clearingTags || reassessing}
-                className="flex items-center justify-center gap-1 py-2 px-2 rounded-md bg-purple-900/60 hover:bg-purple-800/80 border border-purple-400/70 hover:border-purple-300 text-purple-100 hover:text-white font-mono text-[11px] font-bold transition-colors disabled:opacity-50 cursor-pointer shadow-sm"
-                title="Open AI Voice Tagging & immediately start listening to your microphone"
-              >
-                <span>🎙️</span>
-                <span>AI Voice Tag</span>
-              </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    onOpenVoiceTeachForPhoto && onOpenVoiceTeachForPhoto(details, true)
+                  }
+                  onMouseEnter={() =>
+                    setActionHoverHint(
+                      '🎙️ AI Voice Tag: Opens the interactive Voice & Natural-Language Tagging Studio and starts listening to your microphone.'
+                    )
+                  }
+                  onMouseLeave={() => setActionHoverHint(null)}
+                  disabled={clearingTags || reassessing}
+                  className="flex items-center justify-center gap-1 py-2 px-2 rounded-md bg-purple-900/60 hover:bg-purple-800/80 border border-purple-400/70 hover:border-purple-300 text-purple-100 hover:text-white font-mono text-[11px] font-bold transition-colors disabled:opacity-50 cursor-pointer shadow-sm"
+                >
+                  <span>🎙️</span>
+                  <span>AI Voice Tag</span>
+                </button>
+              </div>
+              {actionHoverHint && (
+                <div className="px-2.5 py-1.5 rounded bg-zinc-900/95 border border-studio-border text-[10px] font-mono text-zinc-200 leading-relaxed break-words shadow-sm">
+                  {actionHoverHint}
+                </div>
+              )}
             </div>
 
             {/* Verified Countable Subjects & Active Vector Boundary Controls */}

@@ -1,5 +1,5 @@
-# 📸 MR Darkroom (v4.0.0)
-### Local AI-Assisted RAW Photo Archival, 4-Pass Visual Cascade, Vector Search & Curation Studio
+# 📸 MR Darkroom (v4.3.0)
+### Local AI-Assisted RAW Photo Archival, 4-Pass Visual Cascade, Multi-Scale Spatio-Temporal Consensus & Curation Studio
 
 [![macOS](https://img.shields.io/badge/Platform-macOS%2013%2B%20(Apple%20Silicon)-000000?style=for-the-badge&logo=apple&logoColor=white)](#)
 [![Python](https://img.shields.io/badge/Python-3.11+-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://python.org)
@@ -52,7 +52,7 @@ Tools like Adobe Lightroom Classic become painfully sluggish at this scale:
 
 ---
 
-## 🏗️ Technical Architecture (v4.0.0)
+## 🏗️ Technical Architecture (v4.3.0)
 
 MR Darkroom operates as an asynchronous, multi-process studio decoupled into a high-performance **FastAPI backend** and an ultra-responsive **React 18 + TailwindCSS frontend**:
 
@@ -80,16 +80,16 @@ MR Darkroom operates as an asynchronous, multi-process studio decoupled into a h
 |    STAGE 1 & 4-PASS ENGINE  |   |       STAGE 2 VLM        |   |         DATA VAULT              |
 |      (stage1_engine.py)     |   |     (stage2_vlm.py)      |   | (~/Library/Application Support) |
 | - Pass 1: Macro Biome Lock  |   | - High-Tension Probes    |   |                                 |
-| - Pass 2: GPU 4-Crop Scan   |   | - Generative Reasoning   |   | - photo_archive.db (SQLite WAL) |
-| - Pass 3: Specialist Drill  |   | - Contrastive Habitat    |   | - stage1_embeddings.npy (768-d) |
-| - Pass 4: Identity Cluster  |   | - Ollama Qwen2.5-VL 7B   |   | - undo_snapshots.db             |
-| - OpenCLIP ViT-L/14 (MPS)   |   | - Neighbor Context Hint  |   | - thumbs_360 / previews_1600    |
+| - Pass 2: GPU 4-Crop Scan   |   | - 3-Scale Temporal Sync  |   | - photo_archive.db (SQLite WAL) |
+| - Pass 3: Specialist Drill  |   | - Gravitational Momentum |   | - stage1_embeddings.npy (768-d) |
+| - Pass 4: Identity Cluster  |   | - Contrastive Habitat    |   | - undo_snapshots.db             |
+| - OpenCLIP ViT-L/14 (MPS)   |   | - Ollama Qwen2.5-VL 7B   |   | - thumbs_360 / previews_1600    |
 +-----------------------------+   +--------------------------+   +---------------------------------+
 ```
 
 ---
 
-## ⚡ Core Technical Features (v4.0.0)
+## ⚡ Core Technical Features (v4.3.0)
 
 ### 1. The 4-Pass Top-Down Iterative Visual Cascade (< 8ms/photo on Apple Metal GPU)
 Solves why monolithic global vectors miss small focal subjects (e.g. pets, tools, rims) while guaranteeing zoomed sub-crops never hallucinate cross-biome objects:
@@ -101,6 +101,7 @@ Solves why monolithic global vectors miss small focal subjects (e.g. pets, tools
   - Evaluates local foil tension on the exact same sub-crop to confirm subject presence over background clutter.
 - **Pass 3 — Specialist Hierarchical Taxonomy Drill-Down:**
   - Fast, fine-grained classification over 10,000+ domain concepts:
+    - **Culinary & Winery:** Specialized still-life subjects (`Wine Bottle`, `Wine Glass`, `Wine Barrel`, `Wine Tasting / Winery`, `Cocktail / Beverage`, `Culinary / Dining`).
     - **Domestic Pets & Wildlife:** Cat and dog breeds (`Maine Coon`, `Tabby`, `Golden Retriever`), avian species (`Bald Eagle`, `Great Blue Heron`), marine/wildlife.
     - **Flora & Botanical:** Latin binomials and common names (`Monstera Deliciosa`, `Pothos`, `Majesty Palm`, `Sequoia / Redwood`, `Aspen`).
     - **Automotive & Craft:** Components (`Alloy Rims`, `Disc Brakes`, `Exhaust`), workshop tools (`Orbital Sander`, `Tripod`, `Medium Format Camera`).
@@ -111,13 +112,24 @@ Solves why monolithic global vectors miss small focal subjects (e.g. pets, tools
 
 ---
 
-### 2. Dual Rescan Depth Levels (`Level 1` vs. `Level 2`)
+### 2. Multi-Scale Spatio-Temporal Consensus & Gravitational Momentum (v4.3)
+Eliminates tagging flickering and inconsistent specialist recognition across identical sibling shots, bracketed bursts, and same-session activity envelopes:
+- **Scale 1 — Macro Shoot Day Envelope (10,000-Foot View):** Enforces day-level environmental constraints (e.g. aerial flight days ≥ 70% aerial lock ambiguous frames; indoor/culinary/studio days ≥ 40% indoor prevent fallbacks into National Parks & Mountains or Desert).
+- **Scale 2 — Rolling Session Momentum (1,000-Foot View — 15–45 min sliding window):** Chronological session grouping per camera & day ($\Delta t \le 30\text{ min}$). Dominant active specialist domains (winery/culinary, farmland, macro, pets) grant a soft domain prior boost (+0.025) to near-threshold candidates.
+- **Scale 3 — Micro-Burst / Sequence Consensus (10-Foot View — $\le 12\text{s}$ or matching `sequence_id`):** Sibling frames in the same sequence inherit verified specialist subjects when visual similarity satisfies the gravitational consensus threshold ($\text{raw\_sim} + \text{session\_boost} \ge \text{min\_cos} - 0.040$, floor 0.170).
+- **Database-Aware Context Loading (< 2ms):** When evaluating single photos or small batches in the Lightbox, MR Darkroom automatically retrieves sequence siblings and shoot-day envelopes from SQLite, providing full multi-scale consensus even for 1-photo re-scans.
+- **Strict Human Verification Gate:** Gating `Portraits & People` strictly behind verified human presence (`has_verified_person`), preventing bottle label illustrations or isolated portrait keywords from misclassifying tabletop still lifes.
+- **Gravitational Bias Invariant:** Temporal momentum strictly lowers the threshold for near-threshold candidates with genuine visual resemblance; it **never** invents tags out of thin air when visual similarity is at noise floor ($< 0.170$).
+
+---
+
+### 3. Dual Rescan Depth Levels (`Level 1` vs. `Level 2`)
 - **`⚡ Fast Scan (Level 1 — 4-Pass Cascade)`:** Runs Pass 1 Macro Biome Lock + Pass 2 GPU 4-Crop Saliency Scan + Pass 3 Specialist Breed/Species Drill-Down + Pass 4 Pet/Person Clustering (~6ms/photo). Ideal for rapid bulk tagging of 10,000+ photo imports.
 - **`🧠 Deep VLM (Level 2 — Qwen2.5-VL + Cascade)`:** Runs full generative VLM visual inspection + 4-Pass Cascade with structured prompt directives and neighbor context hints (~5–8s/photo).
 
 ---
 
-### 3. Studio Ergonomics: Top Navigation + Centered Bottom Studio Dock
+### 4. Studio Ergonomics: Top Navigation + Centered Bottom Studio Dock
 - **Top Navigation Bar (`TopRibbon.jsx`):**
   - Row 1: Brand logo, generous flex search input, Grid / Date / Trips view switchers, Catalog selector dropdown, and Import button.
   - Row 2: Full-width scrollable Portfolio Regions pills with Date Sort, Aesthetic ranking, and Multi-Criteria Filters on the right.
@@ -128,20 +140,20 @@ Solves why monolithic global vectors miss small focal subjects (e.g. pets, tools
 
 ---
 
-### 4. Speech-to-Text & Prompt-Driven Curation ("Teach AI" & "Scout AI")
+### 5. Speech-to-Text & Prompt-Driven Curation ("Teach AI" & "Scout AI")
 - **Teach AI Mode:** Use natural speech or text prompts to re-anchor or correct image tags (e.g. *"These are from our 2018 Iceland trip around Kirkjufell at dusk; remove any Cuba tags"*). Automatically purges contradictory tags and marks changes with human provenance (`user_taught`).
 - **Scout AI Mode:** Zero-shot visual semantic search across the entire archive. Search natural concepts like *"solitary tree in golden morning mist"* or *"black cat sleeping on bohemian throw blanket"*.
 
 ---
 
-### 5. Strict Location Provenance ("Blank by Default")
+### 6. Strict Location Provenance ("Blank by Default")
 - Prevents models from hallucinating geographical locations based on generic scenery.
 - Location is strictly assigned only via verified hardware GPS coordinates, verified IPTC camera metadata, or direct user instruction.
 - **Offline Reverse Geocoding:** Automatically resolves coordinates against a local spatial KD-tree (all cities over 1,000 population worldwide) in sub-millisecond time with **zero network requests and zero third-party API exposure**.
 
 ---
 
-### 6. Multi-Step Atomic Undo
+### 7. Multi-Step Atomic Undo
 - Every visual operation—bulk tagging, tag clearing, single-photo inspection edits, Teach AI updates, and category reassignments—records atomic rollback snapshots in `undo_snapshots.db`.
 - Hit `Cmd+Z` at any time to instantly restore previous tags, confidence scores, and provenance states.
 

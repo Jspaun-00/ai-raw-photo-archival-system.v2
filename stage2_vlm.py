@@ -950,6 +950,7 @@ def expand_hierarchical_ontology(
         "hawkeye", "hawkeye ranch", "deer creek", "deer_creek", "bighorn", "bighorn mountains",
         "mitch shooting", "mitch_shooting", "mitch rouse aerials", "aerials", "to print",
         "alice", "west coast imaging*  alice", "west coast imaging* alice", "elkhorn",
+        "highway 395", "eastern sierra & highway 395", "eastern sierra", "state route 183",
     }
     lrcat_subject_kws: List[str] = []
     for lk in _safe_json_list(record.get("lrcat_keywords")):
@@ -1280,6 +1281,16 @@ def expand_hierarchical_ontology(
             continue
         if k in ("car", "cars", "sports car", "sedan", "lexus") and not has_verified_vehicle:
             continue
+        if k in ("highway", "freeway", "overpass", "interchange", "road") and clip_probes is not None:
+            has_road_visual = (
+                float(probes.get("f2_road_pathway_sim", 0.0)) >= 0.220
+                or float(probes.get("f2_bridge_pier_sim", 0.0)) >= 0.220
+                or float(probes.get("lm_highway_interchange_sim", 0.0)) >= 0.240
+                or k in user_taught_low
+                or k in lrcat_subj_words
+            )
+            if not has_road_visual:
+                continue
         if _matches_in(k, scene_phrases, scene_words):
             _add_flat(spec)
             for m in mids:
@@ -1544,9 +1555,7 @@ def merge_ai_and_frame_metadata(
     sub_cat = str(ai_data.get("sub_category") or frame_record.get("sub_category") or "").strip()
     lighting = str(ai_data.get("lighting_atmosphere") or "").strip()
 
-    if primary_cat and primary_cat not in flat_kws:
-        flat_kws.append(primary_cat)
-    if sub_cat and sub_cat not in flat_kws:
+    if sub_cat and sub_cat.lower() not in ("archival", "general", "unknown", "none") and sub_cat not in flat_kws:
         flat_kws.append(sub_cat)
     if lighting:
         if lighting not in flat_kws:
@@ -1742,6 +1751,14 @@ def merge_ai_and_frame_metadata(
         list(dict.fromkeys(flat_kws)),
         subject_counts=(clip_probes or {}).get("subject_counts"),
     )
+
+    portfolio_cats_in_hier = [
+        hk.split("|", 1)[1].strip()
+        for hk in hier_kws
+        if str(hk).startswith("Portfolio|") and "|" in str(hk)
+    ]
+    if portfolio_cats_in_hier:
+        primary_cat = portfolio_cats_in_hier[0]
 
     conf_score = float(ai_data.get("confidence_score") or 0.85)
     if ground_truth and conf_score < 0.88:
@@ -1952,6 +1969,7 @@ def run_stage2_vlm(
         }
 
     probes_map = compute_clip_concept_probes_for_rows(rows=rows, vectors=vectors, db_path=db_path)
+    probes_map = propagate_temporal_and_sequence_consensus(rows=rows, probes_map=probes_map, vectors=vectors, db_path=db_path)
     resolved_geo_map = propagate_shoot_day_geography(rows=rows, probes_map=probes_map, vectors=vectors)
     for fp_k, g_val in resolved_geo_map.items():
         if fp_k in probes_map:
@@ -2325,7 +2343,7 @@ def decode_shorthand_geography(
 
     if "yellowstone" in fp_clean or "yellowstone" in kw_blob:
         return {
-            "source": "filename_or_lrcat",
+            "source": "lrcat_keyword" if "yellowstone" in kw_blob else "filename_stem",
             "specific_location": "Yellowstone National Park",
             "state_region": "Wyoming",
             "country": "United States",
@@ -2335,7 +2353,7 @@ def decode_shorthand_geography(
 
     if any(tok in fp_clean for tok in ("southfork", "hawkeye")) or any(tok in kw_blob for tok in ("southfork", "hawkeye")):
         return {
-            "source": "filename_or_lrcat",
+            "source": "lrcat_keyword" if any(tok in kw_blob for tok in ("southfork", "hawkeye")) else "filename_stem",
             "specific_location": "Hawkeye Ranch & Southfork Valley",
             "state_region": "Wyoming",
             "country": "United States",
@@ -2411,7 +2429,7 @@ def decode_shorthand_geography(
 
     if "savannah" in fp_clean or "savannah" in kw_blob:
         return {
-            "source": "filename_or_lrcat",
+            "source": "lrcat_keyword" if "savannah" in kw_blob else "filename_stem",
             "specific_location": "Savannah, Georgia",
             "state_region": "Georgia",
             "country": "United States",
@@ -2451,7 +2469,7 @@ def decode_shorthand_geography(
 
     if any(tok in fp_clean for tok in ("joshua", "jtree")) or "joshua tree" in kw_blob:
         return {
-            "source": "filename_or_lrcat",
+            "source": "lrcat_keyword" if "joshua tree" in kw_blob else "filename_stem",
             "specific_location": "Joshua Tree",
             "state_region": "California",
             "country": "United States",
@@ -2610,7 +2628,7 @@ def decode_shorthand_geography(
 
     if any(tok in fp_clean for tok in ("yosemite", "yospano")) or "yosemite" in kw_blob:
         return {
-            "source": "filename_or_lrcat",
+            "source": "lrcat_keyword" if "yosemite" in kw_blob else "filename_stem",
             "specific_location": "Yosemite National Park",
             "state_region": "California",
             "country": "United States",
@@ -2620,7 +2638,7 @@ def decode_shorthand_geography(
 
     if any(tok in fp_clean for tok in ("bigsur", "big_sur", "pfeiffer")) or "big sur" in kw_blob:
         return {
-            "source": "filename_or_lrcat",
+            "source": "lrcat_keyword" if "big sur" in kw_blob else "filename_stem",
             "specific_location": "Big Sur",
             "state_region": "California",
             "country": "United States",
@@ -2630,7 +2648,7 @@ def decode_shorthand_geography(
 
     if "pescadero" in fp_clean or "pescadero" in kw_blob:
         return {
-            "source": "filename_or_lrcat",
+            "source": "lrcat_keyword" if "pescadero" in kw_blob else "filename_stem",
             "specific_location": "Pescadero State Beach",
             "state_region": "California",
             "country": "United States",
@@ -2640,7 +2658,7 @@ def decode_shorthand_geography(
 
     if any(tok in fp_clean for tok in ("consumnes", "cosumnes")) or "cosumnes" in kw_blob:
         return {
-            "source": "filename_or_lrcat",
+            "source": "lrcat_keyword" if "cosumnes" in kw_blob else "filename_stem",
             "specific_location": "Cosumnes River Preserve",
             "state_region": "California",
             "country": "United States",
@@ -2650,7 +2668,7 @@ def decode_shorthand_geography(
 
     if any(tok in fp_clean for tok in ("alabama", "alabamahills", "lonepine")) or "alabama hills" in kw_blob:
         return {
-            "source": "filename_or_lrcat",
+            "source": "lrcat_keyword" if "alabama hills" in kw_blob else "filename_stem",
             "specific_location": "Alabama Hills",
             "state_region": "California",
             "country": "United States",
@@ -2660,7 +2678,7 @@ def decode_shorthand_geography(
 
     if any(tok in fp_clean for tok in ("mono_", "monolake", "tufa", "leevining", "grantlake")) or "mono lake" in kw_blob:
         return {
-            "source": "filename_or_lrcat",
+            "source": "lrcat_keyword" if "mono lake" in kw_blob else "filename_stem",
             "specific_location": "Mono Lake",
             "state_region": "California",
             "country": "United States",
@@ -2668,9 +2686,9 @@ def decode_shorthand_geography(
             "tags": ["Mono Lake", "Tufa Towers", "Eastern Sierra", "Highway 395", "California", "Sierra Nevada"],
         }
 
-    if any(tok in fp_clean for tok in ("whitney", "395")) or "395" in kw_blob:
+    if any(tok in fp_clean for tok in ("whitney", "hwy395", "hwy_395", "highway395", "highway_395", "easternsierra", "eastern_sierra")) or any(tok in kw_blob for tok in ("highway 395", "hwy 395", "eastern sierra", "mount whitney")):
         return {
-            "source": "filename_or_lrcat",
+            "source": "lrcat_keyword" if any(tok in kw_blob for tok in ("highway 395", "hwy 395", "eastern sierra", "mount whitney")) else "filename_stem",
             "specific_location": "Eastern Sierra & Highway 395",
             "state_region": "California",
             "country": "United States",
@@ -2680,7 +2698,7 @@ def decode_shorthand_geography(
 
     if any(tok in fp_clean for tok in ("zabriski", "zabrinksi", "deathv", "dthvly", "dvpano", "dv_dunes", "dv_stdy")) or "death valley" in kw_blob:
         return {
-            "source": "filename_or_lrcat",
+            "source": "lrcat_keyword" if "death valley" in kw_blob else "filename_stem",
             "specific_location": "Death Valley National Park",
             "state_region": "California",
             "country": "United States",
@@ -2700,7 +2718,7 @@ def decode_shorthand_geography(
 
     if any(tok in fp_clean for tok in ("anzabor", "borrego", "anzapan")) or "borrego" in kw_blob:
         return {
-            "source": "filename_or_lrcat",
+            "source": "lrcat_keyword" if "borrego" in kw_blob else "filename_stem",
             "specific_location": "Anza-Borrego Desert",
             "state_region": "California",
             "country": "United States",
@@ -2720,7 +2738,7 @@ def decode_shorthand_geography(
 
     if any(tok in fp_clean for tok in ("grand_canyon", "grandcanyon", "gc_newpict")) or "grand canyon" in fp_norm or "grand canyon" in kw_blob:
         return {
-            "source": "filename_or_lrcat",
+            "source": "lrcat_keyword" if "grand canyon" in kw_blob else "filename_stem",
             "specific_location": "Grand Canyon National Park",
             "state_region": "Arizona",
             "country": "United States",
@@ -2740,7 +2758,7 @@ def decode_shorthand_geography(
 
     if "whitesands" in fp_clean or "white sands" in kw_blob:
         return {
-            "source": "filename_or_lrcat",
+            "source": "lrcat_keyword" if "white sands" in kw_blob else "filename_stem",
             "specific_location": "White Sands National Park",
             "state_region": "New Mexico",
             "country": "United States",
@@ -2750,7 +2768,7 @@ def decode_shorthand_geography(
 
     if "bosque" in fp_clean or "bosque" in kw_blob:
         return {
-            "source": "filename_or_lrcat",
+            "source": "lrcat_keyword" if "bosque" in kw_blob else "filename_stem",
             "specific_location": "Bosque del Apache",
             "state_region": "New Mexico",
             "country": "United States",
@@ -2760,7 +2778,7 @@ def decode_shorthand_geography(
 
     if "santafe" in fp_clean or "santa fe" in kw_blob:
         return {
-            "source": "filename_or_lrcat",
+            "source": "lrcat_keyword" if "santa fe" in kw_blob else "filename_stem",
             "specific_location": "Santa Fe",
             "state_region": "New Mexico",
             "country": "United States",
@@ -2770,7 +2788,7 @@ def decode_shorthand_geography(
 
     if any(tok in fp_clean for tok in ("bandon", "coosbay")) or "bandon" in kw_blob:
         return {
-            "source": "filename_or_lrcat",
+            "source": "lrcat_keyword" if "bandon" in kw_blob else "filename_stem",
             "specific_location": "Bandon Coast",
             "state_region": "Oregon",
             "country": "United States",
@@ -2780,7 +2798,7 @@ def decode_shorthand_geography(
 
     if "chicago" in fp_clean or "chicago" in kw_blob:
         return {
-            "source": "filename_or_lrcat",
+            "source": "lrcat_keyword" if "chicago" in kw_blob else "filename_stem",
             "specific_location": "Chicago",
             "state_region": "Illinois",
             "country": "United States",
@@ -2800,7 +2818,7 @@ def decode_shorthand_geography(
 
     if "houma" in fp_clean or "houma" in kw_blob or any(tok in kw_blob for tok in ("louisiana", "lousiana", "louisana")):
         return {
-            "source": "filename_or_lrcat",
+            "source": "lrcat_keyword" if ("houma" in kw_blob or any(tok in kw_blob for tok in ("louisiana", "lousiana", "louisana"))) else "filename_stem",
             "specific_location": "Houma & Louisiana Bayous",
             "state_region": "Louisiana",
             "country": "United States",
@@ -2810,7 +2828,7 @@ def decode_shorthand_geography(
 
     if any(tok in fp_clean for tok in ("everglades", "tamiami")) or "everglades" in kw_blob:
         return {
-            "source": "filename_or_lrcat",
+            "source": "lrcat_keyword" if "everglades" in kw_blob else "filename_stem",
             "specific_location": "Everglades National Park",
             "state_region": "Florida",
             "country": "United States",
@@ -3067,8 +3085,11 @@ def propagate_shoot_day_geography(
         best_key, best_group = max(loc_counts.items(), key=lambda kv: len(kv[1]))
         count_anchored = len(best_group)
         frac_anchored = count_anchored / max(1, len(day_rows))
-        has_lrcat_source = any("lrcat" in str(a.get("source") or "") or a.get("source") == "gps_ground_truth" for _, a in best_group)
-        is_iceland_date = best_key[0] == "Iceland" or ("2016-06-10" <= sd <= "2016-06-17")
+        has_lrcat_source = any(str(a.get("source") or "") in ("lrcat_keyword", "gps_ground_truth") for _, a in best_group)
+        is_iceland_date = best_key[0] == "Iceland" or (
+            "2016-06-10" <= sd <= "2016-06-17"
+            and any(str(r_i.get("catalog_name") or "").lower() in ("keepers", "mitch_keepers", "") for r_i, _ in best_group)
+        )
 
         if (count_anchored >= 2 and frac_anchored >= 0.35) or has_lrcat_source or is_iceland_date:
             date_macro_override[sd] = best_group[0][1]
@@ -3163,6 +3184,10 @@ def propagate_shoot_day_geography(
                     "tags": list(dict.fromkeys(["Mexico", base_loc, base_st, "Colonial Architecture", "Latin America"] + door_tags)),
                 }
             elif existing_res is None:
+                # Never propagate an outdoor shoot-day location onto an indoor, studio macro, or portrait photo!
+                row_biome_id = str(probes.get("macro_biome_id") or "")
+                if row_biome_id in ("studio_tabletop_macro", "indoor_residential", "indoor_closet_storage", "portrait_mirror_people"):
+                    continue
                 # Require OpenCLIP cosine similarity >= 0.72 to at least one anchor photo on that date
                 rv = _row_vec(r)
                 max_sim = 0.0
@@ -3200,6 +3225,405 @@ def propagate_shoot_day_geography(
                 resolved_by_fp[fp] = dict(best_entry, source="clip_landmark_gazetteer")
 
     return resolved_by_fp
+
+
+def propagate_temporal_and_sequence_consensus(
+    rows: List[Dict[str, Any]],
+    probes_map: Dict[str, Dict[str, Any]],
+    vectors: np.ndarray,
+    db_path: Path = DEFAULT_DB_PATH,
+) -> Dict[str, Dict[str, Any]]:
+    """
+    v4.3 Multi-Scale Spatio-Temporal Consensus & Gravitational Momentum Engine:
+    Eliminates tagging flickering and inconsistent specialist recognition across identical sibling shots,
+    bracketed bursts, and same-session activity envelopes.
+
+    Operates across 3 Temporal Scales:
+    - Scale 1 (Macro Shoot Day / Expedition Envelope - 10,000-Foot View):
+        Enforces day-level environmental constraints (e.g. aerial flight days >= 70% aerial lock ambiguous frames;
+        indoor/culinary/studio days >= 40% indoor prevent fallbacks into National Parks & Mountains or Desert).
+    - Scale 2 (Rolling Session Momentum - 1,000-Foot View - 15–45 min sliding window):
+        Chronological session grouping per camera & day (delta_t <= 30m). Dominant active specialist domains
+        (winery/culinary, farmland, macro, pets) grant a soft domain prior boost (+0.025) to near-threshold candidates.
+    - Scale 3 (Micro-Burst / Sequence Consensus - 10-Foot View - <= 12s or matching sequence_id):
+        Sibling frames in the same sequence inherit verified specialist subjects (confidence >= 0.70 or VLM-discovered)
+        when visual similarity satisfies the gravitational consensus threshold (raw_sim + session_boost >= min_cos - 0.040, min 0.170).
+        Aligns sequence macro biome (e.g. studio_tabletop_macro) and purges contradictory fallback tags.
+
+    Gravitational Bias Invariant:
+    Temporal momentum strictly lowers the threshold for near-threshold candidates with genuine visual resemblance;
+    it NEVER invents tags out of thin air when visual similarity is at noise floor (< 0.170).
+    """
+    ctx = _get_openclip_probe_singleton()
+    sp_matrices = ctx.get("specialist_matrices", {})
+
+    spec_item_by_tag: Dict[str, Tuple[Dict[str, Any], np.ndarray]] = {}
+    for g_name, (items, mat) in sp_matrices.items():
+        for idx_item, item in enumerate(items):
+            t_low = str(item.get("tag") or "").lower().strip()
+            if t_low and t_low not in spec_item_by_tag:
+                spec_item_by_tag[t_low] = (item, mat[idx_item])
+
+    crop_vectors, _ = load_or_init_crop_vectors_matrix(
+        DEFAULT_CROP_VECTORS_PATH, DEFAULT_CROP_BOXES_PATH, n_rows=max(1, vectors.shape[0])
+    )
+    n_crops = crop_vectors.shape[0]
+
+    def _get_row_sim(r_item: Dict[str, Any], target_v: np.ndarray) -> float:
+        v_idx = r_item.get("vector_index")
+        if v_idx is None or int(v_idx) < 0 or int(v_idx) >= vectors.shape[0]:
+            return 0.0
+        vi = int(v_idx)
+        g_sim = float(np.dot(vectors[vi], target_v))
+        if vi < n_crops:
+            c_sim = float(np.max(np.dot(crop_vectors[vi], target_v)))
+            return max(g_sim, c_sim)
+        return g_sim
+
+    def _parse_ts(r_item: Dict[str, Any]) -> float:
+        et = str(r_item.get("exif_time") or "").strip()
+        if len(et) >= 19 and et[4] == ":" and et[7] == ":":
+            try:
+                parts = et.replace("T", " ").split()
+                date_p = parts[0].replace(":", "-")
+                time_p = parts[1]
+                dt_str = f"{date_p} {time_p}"
+                return datetime.fromisoformat(dt_str).timestamp()
+            except Exception:
+                pass
+        sd = str(r_item.get("shoot_date") or "").strip()
+        if sd:
+            try:
+                return datetime.fromisoformat(sd).timestamp()
+            except Exception:
+                pass
+        return 0.0
+
+    # For small batches or single-frame re-assessments, fetch day & sequence context from DB
+    all_consensus_rows: List[Dict[str, Any]] = list(rows)
+    existing_fps: Set[str] = {r["file_path"] for r in rows}
+    if len(rows) < 50 and db_path.exists():
+        needed_dates = list({str(r.get("shoot_date") or "").strip() for r in rows if str(r.get("shoot_date") or "").strip()})
+        needed_seqs = list({str(r.get("sequence_id") or "").strip() for r in rows if str(r.get("sequence_id") or "").strip()})
+        if needed_dates or needed_seqs:
+            try:
+                conn_ctx = get_db_connection(db_path)
+                c_ctx = conn_ctx.cursor()
+                w_parts = []
+                p_ctx: List[Any] = []
+                if needed_dates:
+                    w_parts.append(f"shoot_date IN ({','.join('?' for _ in needed_dates)})")
+                    p_ctx.extend(needed_dates)
+                if needed_seqs:
+                    w_parts.append(f"sequence_id IN ({','.join('?' for _ in needed_seqs)})")
+                    p_ctx.extend(needed_seqs)
+                if w_parts:
+                    sql_ctx = f"""
+                        SELECT file_path, sequence_id, vector_index, key_subjects, user_taught_tags, negated_tags,
+                               assessment_tier, macro_biome, primary_category, is_aerial, exif_time, shoot_date,
+                               camera_model, camera_make
+                        FROM photo_records
+                        WHERE {' OR '.join(w_parts)}
+                    """
+                    for qr in c_ctx.execute(sql_ctx, p_ctx).fetchall():
+                        d_r = dict(qr)
+                        if d_r["file_path"] not in existing_fps:
+                            all_consensus_rows.append(d_r)
+                            existing_fps.add(d_r["file_path"])
+                conn_ctx.close()
+            except Exception as e:
+                logging.warning(f"Error loading DB context rows for consensus: {e}")
+
+    def _get_probe_or_db(r_item: Dict[str, Any]) -> Dict[str, Any]:
+        fp_item = r_item["file_path"]
+        if fp_item in probes_map:
+            return probes_map[fp_item]
+        mb_str = str(r_item.get("macro_biome") or "").lower()
+        pc_str = str(r_item.get("primary_category") or "").lower()
+        is_studio = "studio" in mb_str or "still life" in pc_str
+        is_indoor = "indoor" in mb_str or "architecture & interiors" in pc_str
+        db_keys = _safe_json_list(r_item.get("key_subjects"))
+        has_p = any(w in " ".join(str(k).lower() for k in db_keys) for w in ("person", "people", "man", "woman", "portrait"))
+        return {
+            "is_aerial": bool(r_item.get("is_aerial")),
+            "macro_biome_id": "studio_tabletop_macro" if is_studio else "indoor_residential" if is_indoor else "outdoor_wilderness_flora",
+            "specialist_tags": db_keys,
+            "has_person": has_p,
+            "has_mirror_selfie": False,
+        }
+
+    # Scale 1: Macro Shoot Day Envelopes
+    by_date: Dict[str, List[Dict[str, Any]]] = {}
+    for r in all_consensus_rows:
+        sd = str(r.get("shoot_date") or "").strip()
+        if not sd:
+            et = str(r.get("exif_time") or "").strip()
+            if len(et) >= 10:
+                sd = et[:10].replace(":", "-")
+        sd = sd or "unknown_date"
+        by_date.setdefault(sd, []).append(r)
+
+    day_summaries: Dict[str, Dict[str, Any]] = {}
+    for sd, day_rows in by_date.items():
+        if sd == "unknown_date" or len(day_rows) < 4:
+            continue
+        n_aerial = 0
+        n_indoor_culinary = 0
+        for dr in day_rows:
+            p_dr = _get_probe_or_db(dr)
+            if p_dr.get("is_aerial"):
+                n_aerial += 1
+            if p_dr.get("macro_biome_id") in ("studio_tabletop_macro", "indoor_residential", "indoor_closet_storage", "portrait_mirror_people"):
+                n_indoor_culinary += 1
+        pct_aerial = n_aerial / len(day_rows)
+        pct_indoor = n_indoor_culinary / len(day_rows)
+        day_summaries[sd] = {
+            "pct_aerial": pct_aerial,
+            "pct_indoor_culinary": pct_indoor,
+            "count": len(day_rows),
+        }
+
+    # Scale 2: Rolling Session Momentum (30 min window per camera & day)
+    cam_date_groups: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
+    for r in all_consensus_rows:
+        cam = str(r.get("camera_model") or r.get("camera_make") or "unknown_cam").strip().lower()
+        sd = str(r.get("shoot_date") or "").strip()
+        cam_date_groups.setdefault((cam, sd), []).append(r)
+
+    session_active_domains: Dict[str, Dict[str, float]] = {}
+    for (cam, sd), cd_rows in cam_date_groups.items():
+        sorted_cd = sorted(cd_rows, key=_parse_ts)
+        sessions: List[List[Dict[str, Any]]] = []
+        cur_sess: List[Dict[str, Any]] = []
+        last_t = 0.0
+        for r_item in sorted_cd:
+            cur_t = _parse_ts(r_item)
+            if not cur_sess or (cur_t > 0 and last_t > 0 and (cur_t - last_t) <= 1800):
+                cur_sess.append(r_item)
+            else:
+                sessions.append(cur_sess)
+                cur_sess = [r_item]
+            if cur_t > 0:
+                last_t = cur_t
+        if cur_sess:
+            sessions.append(cur_sess)
+
+        for sess in sessions:
+            if len(sess) < 2:
+                continue
+            domain_counts: Dict[str, int] = {}
+            for sr in sess:
+                p_sr = _get_probe_or_db(sr)
+                for st in p_sr.get("specialist_tags", []):
+                    st_info = spec_item_by_tag.get(st.lower())
+                    if st_info:
+                        d = st_info[0].get("domain")
+                        if d:
+                            domain_counts[d] = domain_counts.get(d, 0) + 1
+                if sr.get("assessment_tier") == "level2_vlm":
+                    for vk in _safe_json_list(sr.get("key_subjects")):
+                        st_info = spec_item_by_tag.get(vk.lower())
+                        if st_info:
+                            d = st_info[0].get("domain")
+                            if d:
+                                domain_counts[d] = domain_counts.get(d, 0) + 2
+
+            boosts_for_sess: Dict[str, float] = {}
+            for d, cnt in domain_counts.items():
+                if cnt >= 2 or (cnt >= 1 and len(sess) <= 4):
+                    boosts_for_sess[d] = 0.025
+
+            for sr in sess:
+                if boosts_for_sess and sr["file_path"] in probes_map:
+                    session_active_domains[sr["file_path"]] = boosts_for_sess
+
+    # Scale 3: Micro-Burst / Sequence Consensus (<= 12s or matching sequence_id)
+    seq_groups: Dict[str, List[Dict[str, Any]]] = {}
+    no_seq_rows: List[Dict[str, Any]] = []
+    for r in all_consensus_rows:
+        sid = str(r.get("sequence_id") or "").strip()
+        if sid:
+            seq_groups.setdefault(sid, []).append(r)
+        else:
+            no_seq_rows.append(r)
+
+    if no_seq_rows:
+        no_seq_by_cam: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
+        for r in no_seq_rows:
+            cam = str(r.get("camera_model") or "unknown_cam").strip().lower()
+            sd = str(r.get("shoot_date") or "").strip()
+            no_seq_by_cam.setdefault((cam, sd), []).append(r)
+
+        fallback_seq_idx = 0
+        for (cam, sd), nsc_rows in no_seq_by_cam.items():
+            sorted_nsc = sorted(nsc_rows, key=_parse_ts)
+            cur_fb: List[Dict[str, Any]] = []
+            for r_item in sorted_nsc:
+                if not cur_fb:
+                    cur_fb.append(r_item)
+                else:
+                    prev_r = cur_fb[-1]
+                    dt = abs(_parse_ts(r_item) - _parse_ts(prev_r)) if (_parse_ts(r_item) > 0 and _parse_ts(prev_r) > 0) else 999.0
+                    v_p = r_item.get("vector_index")
+                    v_q = prev_r.get("vector_index")
+                    clip_sim = 0.0
+                    if v_p is not None and v_q is not None and 0 <= int(v_p) < vectors.shape[0] and 0 <= int(v_q) < vectors.shape[0]:
+                        clip_sim = float(np.dot(vectors[int(v_p)], vectors[int(v_q)]))
+                    if dt <= 12.0 and clip_sim >= 0.82:
+                        cur_fb.append(r_item)
+                    else:
+                        if len(cur_fb) >= 2:
+                            fallback_seq_idx += 1
+                            seq_groups[f"FB_SEQ_{sd}_{cam}_{fallback_seq_idx}"] = cur_fb
+                        cur_fb = [r_item]
+            if len(cur_fb) >= 2:
+                fallback_seq_idx += 1
+                seq_groups[f"FB_SEQ_{sd}_{cam}_{fallback_seq_idx}"] = cur_fb
+
+    for seq_id, s_rows in seq_groups.items():
+        if len(s_rows) < 2:
+            continue
+
+        target_in_seq = [r for r in s_rows if r["file_path"] in probes_map]
+        if not target_in_seq:
+            continue
+
+        seq_spec_anchors: Set[str] = set()
+        has_seq_studio = False
+        has_seq_indoor = False
+
+        for r in s_rows:
+            fp = r["file_path"]
+            p = _get_probe_or_db(r)
+            for st in p.get("specialist_tags", []):
+                seq_spec_anchors.add(st)
+            if r.get("assessment_tier") == "level2_vlm":
+                for vk in _safe_json_list(r.get("key_subjects")):
+                    seq_spec_anchors.add(vk)
+            for ut in _safe_json_list(r.get("user_taught_tags")):
+                seq_spec_anchors.add(ut)
+            for vk in _safe_json_list(r.get("key_subjects")):
+                if str(vk).lower() in spec_item_by_tag:
+                    seq_spec_anchors.add(vk)
+            if p.get("macro_biome_id") == "studio_tabletop_macro":
+                has_seq_studio = True
+            elif p.get("macro_biome_id") in ("indoor_residential", "indoor_closet_storage"):
+                has_seq_indoor = True
+
+        for anchor_tag in list(seq_spec_anchors):
+            a_low = anchor_tag.lower().strip()
+            spec_info = spec_item_by_tag.get(a_low)
+            if not spec_info:
+                continue
+            item_cfg, item_vec = spec_info
+            item_min_cos = float(item_cfg.get("min_cos") or 0.224)
+            item_dom = str(item_cfg.get("domain") or "")
+
+            for r in target_in_seq:
+                fp = r["file_path"]
+                p = probes_map.get(fp, {})
+                neg_low = {str(k).lower().strip() for k in _safe_json_list(r.get("negated_tags")) if str(k).strip()}
+                if a_low in neg_low or anchor_tag in p.get("specialist_tags", []):
+                    continue
+
+                sim = _get_row_sim(r, item_vec)
+                sess_boost = session_active_domains.get(fp, {}).get(item_dom, 0.0)
+                req_sim = max(0.170, item_min_cos - 0.040 - sess_boost)
+
+                if sim >= req_sim:
+                    p_spec = p.setdefault("specialist_tags", [])
+                    p_hier = p.setdefault("specialist_hier", [])
+                    p_spec.append(anchor_tag)
+                    for mid in item_cfg.get("mids", []):
+                        if mid not in p_spec and mid.lower() not in neg_low:
+                            p_spec.append(mid)
+                    for pr in item_cfg.get("parents", []):
+                        if pr not in p_spec and pr.lower() not in neg_low:
+                            p_spec.append(pr)
+                    h_str = item_cfg.get("hierarchy") or item_cfg.get("hier")
+                    if h_str and h_str not in p_hier:
+                        p_hier.append(h_str)
+
+                    p.setdefault("verified_subjects", []).append({
+                        "label": anchor_tag,
+                        "confidence": round(min(0.95, (sim / item_min_cos) * 0.88), 3),
+                        "raw_sim": round(sim, 4),
+                        "source": "sequence_consensus",
+                    })
+
+                    if item_dom in ("studio_product", "science_macro_optical") or has_seq_studio:
+                        if not p.get("has_person") and not p.get("has_mirror_selfie"):
+                            p["macro_biome_id"] = "studio_tabletop_macro"
+                            p["macro_biome"] = "Studio / Tabletop, Product & Scientific Macro"
+                            p["scene_context"] = "indoor_domestic"
+                            p["forbidden_tags_lower"] = {
+                                "alligator", "bison", "buffalo", "bear", "whale", "pelican", "frog", "frogs",
+                                "canyon", "butte", "buttes", "highway overpass", "center-pivot irrigation",
+                                "mountain range", "mountains", "mountain", "sand dunes", "desert", "highway", "freeway",
+                            }
+                    elif item_dom in ("feline", "canine", "indoor_decor_textiles") or has_seq_indoor:
+                        if not p.get("has_person") and not p.get("has_mirror_selfie"):
+                            p["macro_biome_id"] = "indoor_residential"
+                            p["macro_biome"] = "Indoor / Residential & Living Space"
+                            p["scene_context"] = "indoor_domestic"
+                            p["forbidden_tags_lower"] = {
+                                "alligator", "bison", "buffalo", "bear", "whale", "pelican", "frog", "frogs",
+                                "canyon", "butte", "buttes", "highway overpass", "center-pivot irrigation",
+                                "mountain range", "mountains", "mountain", "sand dunes", "desert", "highway", "freeway",
+                            }
+
+    # Step 5: Safe Fallback Guardrails & Shoot Day Constraints
+    for r in rows:
+        fp = r["file_path"]
+        p = probes_map.get(fp, {})
+        sd = str(r.get("shoot_date") or "").strip()
+        day_sum = day_summaries.get(sd, {})
+
+        p_has_person = bool(p.get("has_person"))
+        p_has_selfie = bool(p.get("has_mirror_selfie"))
+        taught_person = bool({str(t).lower().strip() for t in _safe_json_list(r.get("user_taught_tags"))} & {"portrait", "person", "people", "man", "woman", "selfie", "girl", "boy"})
+        if not p_has_person and not p_has_selfie and not taught_person:
+            if p.get("macro_biome_id") == "portrait_mirror_people":
+                has_product_tags = any(
+                    str(t).lower() in ("wine bottle", "wine glass", "wine barrel", "wine tasting / winery", "still life", "luxury watch", "glass sculpture / crystal")
+                    for t in p.get("specialist_tags", [])
+                )
+                if has_product_tags:
+                    p["macro_biome_id"] = "studio_tabletop_macro"
+                    p["macro_biome"] = "Studio / Tabletop, Product & Scientific Macro"
+                    p["scene_context"] = "indoor_domestic"
+                    p["forbidden_tags_lower"] = {
+                        "alligator", "bison", "buffalo", "bear", "whale", "pelican", "frog", "frogs",
+                        "canyon", "butte", "buttes", "highway overpass", "center-pivot irrigation",
+                        "mountain range", "mountains", "mountain", "sand dunes", "desert", "highway", "freeway",
+                    }
+                else:
+                    p["macro_biome_id"] = "indoor_residential"
+                    p["macro_biome"] = "Indoor / Residential & Living Space"
+                    p["scene_context"] = "indoor_domestic"
+                    p["forbidden_tags_lower"] = {
+                        "alligator", "bison", "buffalo", "bear", "whale", "pelican", "frog", "frogs",
+                        "canyon", "butte", "buttes", "highway overpass", "center-pivot irrigation",
+                        "mountain range", "mountains", "mountain", "sand dunes", "desert", "highway", "freeway",
+                    }
+
+        if day_sum.get("pct_aerial", 0.0) >= 0.70:
+            row_biome = str(p.get("macro_biome_id") or "")
+            if row_biome not in ("indoor_residential", "indoor_closet_storage", "studio_tabletop_macro", "portrait_mirror_people"):
+                p["is_aerial"] = True
+                p["scene_context"] = "aerial"
+                if row_biome == "outdoor_wilderness_flora":
+                    p["macro_biome_id"] = "aerial_infra_topo"
+                    p["macro_biome"] = "Aerial / Infrastructure & Topography"
+
+        if day_sum.get("pct_indoor_culinary", 0.0) >= 0.40:
+            is_gps = int(r.get("gps_ground_truth") or 0) == 1
+            sc_nature = float(p.get("sc_outdoor_nature_sim", 0.0))
+            if not is_gps and sc_nature < 0.235:
+                forb = p.setdefault("forbidden_tags_lower", set())
+                forb.update({"mountains", "mountain", "mountain range", "canyon", "canyons", "desert", "highway", "freeway", "sand dunes"})
+
+    return probes_map
 
 
 def load_vector_concept_boundaries(db_path: Path = DEFAULT_DB_PATH) -> List[Dict[str, Any]]:
@@ -3882,6 +4306,21 @@ def compute_clip_concept_probes_for_rows(
         biome_scores: Dict[str, float] = {}
         for b_id, (b_cfg, b_vec) in biome_vecs.items():
             biome_scores[b_id] = float(np.dot(vec, b_vec))
+        crop_studio_macro = 0.0
+        crop_indoor_res = 0.0
+        crop_portrait_mirror = 0.0
+        if valid_crops:
+            if "studio_tabletop_macro" in biome_vecs:
+                sm_vec = biome_vecs["studio_tabletop_macro"][1]
+                crop_studio_macro = max(float(np.dot(cv, sm_vec)) for _, cv, _ in valid_crops)
+            if "indoor_residential" in biome_vecs:
+                ir_vec = biome_vecs["indoor_residential"][1]
+                crop_indoor_res = max(float(np.dot(cv, ir_vec)) for _, cv, _ in valid_crops)
+            if "portrait_mirror_people" in biome_vecs:
+                pm_vec = biome_vecs["portrait_mirror_people"][1]
+                crop_portrait_mirror = max(float(np.dot(cv, pm_vec)) for _, cv, _ in valid_crops)
+
+        has_macro_lens = "macro" in str(r.get("lens_model") or "").lower()
         b_indoor_res = max(biome_scores.get("indoor_residential", 0.0), scene_indoor_sim)
         b_indoor_closet = biome_scores.get("indoor_closet_storage", 0.0)
         b_studio_macro = biome_scores.get("studio_tabletop_macro", 0.0)
@@ -3917,27 +4356,40 @@ def compute_clip_concept_probes_for_rows(
             is_aerial = True
         elif explicit_terrestrial_kw:
             is_aerial = False
-        elif max(b_indoor_res, b_indoor_closet, b_studio_macro, b_portrait_mirror, b_urban_auto) >= 0.220:
+        elif max(b_indoor_res, b_indoor_closet, b_studio_macro, crop_studio_macro, b_portrait_mirror, b_urban_auto) >= 0.200:
             is_aerial = False
         else:
             is_aerial = bool(aerial_sim > terrestrial_sim + 0.020 and aerial_sim >= 0.195)
 
         fp_low = fp.lower()
-        sub_kws = [k.lower().strip() for k in _safe_json_list(r.get("key_subjects"))]
-        all_kw_blob = (human_blob + " " + " ".join(sub_kws) + " " + fp_low).lower()
+        # Only use authoritative human keywords (lrcat_keywords / existing_keywords) and file path for Pass 1 biome hints;
+        # NEVER feed prior AI-generated key_subjects back into Pass 1 biome locking!
+        all_kw_blob = (human_blob + " " + fp_low).lower()
+        eff_studio_macro = max(b_studio_macro, crop_studio_macro * 0.96)
+        eff_portrait_mirror = max(b_portrait_mirror, crop_portrait_mirror * 0.95)
 
         # Lock Macro Biome (Pass 1)
         macro_biome_id = "outdoor_wilderness_flora"
-        if not is_aerial and b_portrait_mirror >= 0.232 and b_portrait_mirror >= b_outdoor + 0.020:
+        if not is_aerial and (
+            (b_studio_macro >= 0.220 and b_studio_macro >= b_outdoor + 0.015)
+            or (has_macro_lens and eff_studio_macro >= 0.168 and eff_studio_macro >= b_outdoor)
+            or (eff_studio_macro >= 0.185 and eff_studio_macro >= b_outdoor + 0.015 and eff_studio_macro >= eff_portrait_mirror and eff_studio_macro >= max(b_alpine, b_desert, b_coastal, b_agri))
+        ):
+            scene_context = "indoor_domestic"
+            macro_biome_id = "studio_tabletop_macro"
+        elif not is_aerial and (
+            (b_portrait_mirror >= 0.225 and b_portrait_mirror >= b_outdoor + 0.020)
+            or (eff_portrait_mirror >= 0.165 and eff_portrait_mirror >= b_outdoor + 0.020 and eff_portrait_mirror >= max(b_alpine, b_desert, b_coastal, b_agri))
+        ):
             scene_context = "mirror_portrait"
             macro_biome_id = "portrait_mirror_people"
         elif not is_aerial and b_indoor_closet >= 0.228 and b_indoor_closet >= b_outdoor + 0.022 and b_indoor_closet >= b_indoor_res + 0.005:
             scene_context = "indoor_domestic"
             macro_biome_id = "indoor_closet_storage"
-        elif not is_aerial and b_studio_macro >= 0.235 and b_studio_macro >= b_outdoor + 0.020 and b_studio_macro >= b_indoor_res + 0.010:
-            scene_context = "indoor_domestic"
-            macro_biome_id = "studio_tabletop_macro"
-        elif not is_aerial and b_indoor_res >= 0.212 and b_indoor_res >= b_outdoor + 0.012:
+        elif not is_aerial and (
+            (b_indoor_res >= 0.212 and b_indoor_res >= b_outdoor + 0.012)
+            or (max(b_indoor_res, crop_indoor_res * 0.95) >= 0.185 and max(b_indoor_res, crop_indoor_res * 0.95) >= b_outdoor + 0.015 and max(b_indoor_res, crop_indoor_res * 0.95) >= max(b_alpine, b_desert, b_coastal, b_agri))
+        ):
             scene_context = "indoor_domestic"
             macro_biome_id = "indoor_residential"
         elif b_urban_down >= 0.21 or (b_urban_down >= 0.18 and any(w in all_kw_blob for w in ("urban", "city", "skyline", "skyscraper", "chicago", "downtown", "metropolitan"))):
@@ -3962,17 +4414,27 @@ def compute_clip_concept_probes_for_rows(
             scene_context = "urban_automotive"
             macro_biome_id = "urban_automotive_arch"
         else:
-            scene_context = "outdoor_nature"
-            out_scores = [
-                (b_desert, "desert_canyon_badlands"),
-                (b_alpine, "alpine_mountain_forest"),
-                (b_coastal, "coastal_beach_pier"),
-                (b_agri, "agri_rolling_farmland"),
-                (b_urban_down, "urban_downtown_infra"),
-                (b_outdoor, "outdoor_wilderness_flora"),
+            all_candidates = [
+                (eff_studio_macro, "studio_tabletop_macro", "indoor_domestic"),
+                (eff_portrait_mirror, "portrait_mirror_people", "mirror_portrait"),
+                (max(b_indoor_res, crop_indoor_res * 0.95), "indoor_residential", "indoor_domestic"),
+                (b_indoor_closet, "indoor_closet_storage", "indoor_domestic"),
+                (b_urban_auto, "urban_automotive_arch", "urban_automotive"),
+                (b_desert, "desert_canyon_badlands", "outdoor_nature"),
+                (b_alpine, "alpine_mountain_forest", "outdoor_nature"),
+                (b_coastal, "coastal_beach_pier", "outdoor_nature"),
+                (b_agri, "agri_rolling_farmland", "outdoor_nature"),
+                (b_urban_down, "urban_downtown_infra", "urban_automotive"),
+                (b_outdoor, "outdoor_wilderness_flora", "outdoor_nature"),
             ]
-            out_scores.sort(key=lambda x: -x[0])
-            macro_biome_id = out_scores[0][1]
+            all_candidates.sort(key=lambda x: -x[0])
+            top_score, top_biome, top_ctx = all_candidates[0]
+            if top_biome in ("alpine_mountain_forest", "desert_canyon_badlands", "urban_downtown_infra") and top_score < 0.185:
+                scene_context = "outdoor_nature"
+                macro_biome_id = "outdoor_wilderness_flora"
+            else:
+                scene_context = top_ctx
+                macro_biome_id = top_biome
 
         locked_biome_cfg = biome_vecs.get(macro_biome_id, ({"label": "Outdoor / Wilderness, Ranch, Coastal & Flora", "forbidden_tags": set()}, None))[0]
         macro_biome_label = str(locked_biome_cfg.get("label") or "Outdoor / Wilderness, Ranch, Coastal & Flora")
@@ -4126,6 +4588,13 @@ def compute_clip_concept_probes_for_rows(
                 and (crop_person_ens_sim - crop_person_local_foil) >= 0.038
                 and person_sim >= 0.220
             )
+            or (
+                not is_aerial
+                and max(female_sim, crop_female_sim) >= 0.240
+                and (max(female_sim, crop_female_sim) - max(male_sim, crop_male_sim)) >= 0.025
+                and (person_sim >= 0.215 or crop_person_ens_sim >= 0.240)
+                and (max(person_sim, crop_person_ens_sim) - person_foil) >= 0.020
+            )
             or bool(user_taught_low & {"person", "people", "man", "woman", "portrait", "photographer", "mitch rouse (subject)", "mirror selfie", "selfie"})
             or bool(lrcat_words & {"portrait", "family", "person", "people", "cowboy", "rancher"})
         ) and not bool(neg_low & {"person", "people", "human"})
@@ -4146,7 +4615,7 @@ def compute_clip_concept_probes_for_rows(
             has_person
             and not is_male_person
             and (
-                (female_sim >= 0.265 and (female_sim - male_sim) >= 0.038 and (female_sim - effective_person_artifact_foil) >= 0.030)
+                (max(female_sim, crop_female_sim) >= 0.240 and (max(female_sim, crop_female_sim) - max(male_sim, crop_male_sim)) >= 0.025 and (max(female_sim, crop_female_sim) - effective_person_artifact_foil) >= 0.025)
                 or (has_mirror_selfie and eff_female >= 0.175 and (eff_female - eff_male) >= 0.015)
                 or bool(user_taught_low & {"woman", "female"})
             )
@@ -4297,13 +4766,13 @@ def compute_clip_concept_probes_for_rows(
         crop_framed_sim, _ = _best_crop("framed_art", ("upper_right", "upper_left", "center"))
         crop_carpet_sim, _ = _best_crop("foil_empty_room_carpet", ("lower_left", "lower_right", "center"))
         has_carpet_rug = bool(
-            (scene_context == "indoor_domestic" or macro_biome_id == "indoor_residential")
+            macro_biome_id == "indoor_residential"
             and (foil_empty_carpet >= 0.215 or crop_carpet_sim >= 0.220)
             and not bool(neg_low & {"carpet", "rug"})
         )
         has_framed_art = bool(
-            (scene_context == "indoor_domestic" or macro_biome_id == "indoor_residential")
-            and (framed_art_sim >= 0.215 or foil_framed_pic >= 0.215 or crop_framed_sim >= 0.160)
+            macro_biome_id == "indoor_residential"
+            and (framed_art_sim >= 0.215 or foil_framed_pic >= 0.215 or crop_framed_sim >= 0.185)
             and not bool(neg_low & {"framed art"})
         )
 
@@ -4468,20 +4937,30 @@ def compute_clip_concept_probes_for_rows(
             if group_name not in specialist_matrices:
                 return []
             items, mat = specialist_matrices[group_name]
-            sims = np.dot(mat, target_vec)
-            if also_check_crops and valid_crops:
-                for _, cv, _ in valid_crops:
-                    c_sims = np.dot(mat, cv)
-                    sims = np.maximum(sims, c_sims)
+            with np.errstate(divide="ignore", over="ignore", invalid="ignore"):
+                global_sims = np.dot(mat, target_vec)
+                sims = global_sims.copy()
+                if also_check_crops and valid_crops:
+                    for _, cv, _ in valid_crops:
+                        c_sims = np.dot(mat, cv)
+                        sims = np.maximum(sims, c_sims)
             ranked_idx = np.argsort(sims)[::-1]
             matched: List[Tuple[Dict[str, Any], float]] = []
             for idx_s in ranked_idx:
                 sc = float(sims[int(idx_s)])
+                g_sc = float(global_sims[int(idx_s)])
                 item = items[int(idx_s)]
                 tag_lbl = str(item["tag"])
                 if tag_lbl.lower() in forbidden_tags_lower or tag_lbl.lower() in neg_low:
                     continue
-                if sc >= min_sim and (sc - foil_ref) >= min_margin_over_foil:
+                item_min_cos = float(item.get("min_cos") or min_sim)
+                eff_min_sim = max(min_sim, item_min_cos - 0.008) if min_sim >= 0.200 else min_sim
+                if matched and matched[0][1] >= 0.280:
+                    # When a dominant primary specialist hit exists (e.g. Glass Sculpture 0.323),
+                    # secondary hits must either be close in similarity or have global frame support
+                    if sc < (matched[0][1] - 0.060) and g_sc < 0.205:
+                        continue
+                if sc >= eff_min_sim and (sc - foil_ref) >= min_margin_over_foil:
                     matched.append((item, sc))
                     for t_add in [tag_lbl] + list(item.get("mids", [])) + list(item.get("parents", [])):
                         if t_add and t_add.lower() not in forbidden_tags_lower and t_add.lower() not in neg_low and t_add not in specialist_tags:
@@ -4553,27 +5032,49 @@ def compute_clip_concept_probes_for_rows(
                 elif ih_item["tag"] in ("Framed Art", "Modern / Pop Wall Art"):
                     has_framed_art = True
 
-        if macro_biome_id == "indoor_closet_storage":
-            _run_specialist_group(
+        specialist_verified_hits: List[Tuple[str, float, float]] = []
+        if (
+            macro_biome_id in ("studio_tabletop_macro", "portrait_mirror_people", "indoor_residential")
+            or (not is_aerial and max(b_studio_macro, crop_studio_macro) >= 0.175)
+        ):
+            studio_hits = _run_specialist_group(
+                "studio_macro",
+                vec,
+                min_sim=0.220,
+                min_margin_over_foil=0.018,
+                foil_ref=min(bg_sim, foil_statue),
+                max_matches=5,
+                also_check_crops=True,
+            )
+            for sh_item, sh_sc in studio_hits:
+                specialist_verified_hits.append((str(sh_item["tag"]), float(sh_sc), float(min(bg_sim, foil_statue))))
+            # If concrete tabletop/winery/macro specialist objects were detected with high confidence on an outdoor_wilderness fallback biome,
+            # promote macro_biome to studio_tabletop_macro so outdoor mountain/desert tags are forbidden
+            if studio_hits and macro_biome_id == "outdoor_wilderness_flora" and not is_aerial:
+                scene_context = "indoor_domestic"
+                macro_biome_id = "studio_tabletop_macro"
+                locked_biome_cfg = biome_vecs.get(macro_biome_id, ({"label": "Studio / Tabletop, Product & Scientific Macro", "forbidden_tags": set()}, None))[0]
+                macro_biome_label = str(locked_biome_cfg.get("label") or "Studio / Tabletop, Product & Scientific Macro")
+                forbidden_tags_lower = {str(t).lower().strip() for t in locked_biome_cfg.get("forbidden_tags", set())}
+                is_everyday_non_nature = True
+                is_indoor_locked = True
+
+        if macro_biome_id in ("indoor_closet_storage", "portrait_mirror_people", "studio_tabletop_macro") or has_person:
+            closet_hits = _run_specialist_group(
                 "closet_personal",
                 vec,
-                min_sim=0.232,
-                min_margin_over_foil=0.020,
-                foil_ref=foil_statue,
+                min_sim=0.215,
+                min_margin_over_foil=0.016,
+                foil_ref=min(bg_sim, foil_statue),
                 max_matches=4,
                 also_check_crops=True,
             )
-
-        if macro_biome_id == "studio_tabletop_macro" or (not is_aerial and b_studio_macro >= 0.228):
-            _run_specialist_group(
-                "studio_macro",
-                vec,
-                min_sim=0.242,
-                min_margin_over_foil=0.025,
-                foil_ref=foil_statue,
-                max_matches=3,
-                also_check_crops=True,
-            )
+            for ch_item, ch_sc in closet_hits:
+                specialist_verified_hits.append((str(ch_item["tag"]), float(ch_sc), float(min(bg_sim, foil_statue))))
+                if str(ch_item.get("parent") or "") == "People" and not bool(neg_low & {"person", "people", "woman"}):
+                    has_person = True
+                    if "Dress" in str(ch_item.get("tag") or "") and not is_male_person:
+                        is_female_person = True
 
         if not is_indoor_locked:
             _run_specialist_group(
@@ -4612,6 +5113,16 @@ def compute_clip_concept_probes_for_rows(
                 entry_vs["crop_idx"] = int(crop_idx)
             verified_subjects.append(entry_vs)
             plural_hints[label.lower()] = is_plural_hint
+
+        for sp_lbl, sp_sc, sp_foil in specialist_verified_hits:
+            if sp_lbl.lower() not in {v["label"].lower() for v in verified_subjects}:
+                _add_vs(
+                    sp_lbl,
+                    sp_sc,
+                    sp_foil,
+                    is_plural_hint=False,
+                    source_override="specialist_cascade",
+                )
 
         if has_bison:
             _add_vs("Bison", bison_sim, bison_foil, is_plural_hint=True)
@@ -5087,7 +5598,10 @@ def assign_portfolio_categories(
             np_subs.extend(["Lake Tahoe", "Mountains"])
         if "bighorn" in blob:
             np_subs.extend(["Bighorn Mountains", "Mountains"])
-        if not np_subs:
+        if not np_subs and (
+            float(probes.get("f1_mountain_peak_sim", 0.0)) >= 0.220
+            or any(x in blob for x in ("mountain", "mountains", "alpine", "glacier", "sierra nevada", "wasatch", "front range", "bighorn", "teton", "yosemite", "half dome", "el capitan"))
+        ):
             np_subs.append("Mountains")
         _add_cat("National Parks & Mountains", np_subs)
 
@@ -5132,7 +5646,12 @@ def assign_portfolio_categories(
         ))
         or float(probes.get("f1_urban_skyline_sim", 0.0)) >= 0.235
     ):
-        urb_subs = ["Urban"]
+        urb_subs = []
+        if (
+            float(probes.get("f1_urban_skyline_sim", 0.0)) >= 0.210
+            or any(x in blob for x in ("urban", "city", "downtown", "metropolitan", "skyscraper", "cityscape", "chicago", "washington dc", "venice", "havana", "nashville", "savannah", "san miguel"))
+        ):
+            urb_subs.append("Urban")
         if "chicago" in blob:
             urb_subs.append("Chicago")
         if "washington dc" in blob or "washington monument" in blob or "capitol" in blob:
@@ -5154,9 +5673,15 @@ def assign_portfolio_categories(
     # 8. Still Life & Cultural Details
     doors_sim = max(float(probes.get("f2_doors_windows_sim", 0.0)), float(probes.get("lm_colonial_doors_sim", 0.0)))
     if (
-        doors_sim >= 0.225
-        or any(x in blob for x in ("doors & windows", "wooden door", "colonial doors", "colonial architecture", "wildflowers", "still life", "courtyard"))
-        or str(record.get("primary_category") or "") == "Still Life"
+        macro_id == "studio_tabletop_macro"
+        or doors_sim >= 0.225
+        or any(x in blob for x in (
+            "doors & windows", "wooden door", "colonial doors", "colonial architecture",
+            "wildflowers", "still life", "courtyard", "wine", "wine bottle", "wine glass",
+            "wine barrel", "winery", "crystal", "glass sculpture", "macro photography",
+            "ferrofluid", "refraction", "caustics", "decanter", "watch", "culinary",
+        ))
+        or str(record.get("primary_category") or "") in ("Still Life", "Still Life & Cultural Details")
     ):
         sl_subs = []
         if doors_sim >= 0.225 or "door" in blob or "window" in blob:
@@ -5208,11 +5733,16 @@ def assign_portfolio_categories(
         _add_cat("Wildlife & Animals", wl_subs)
 
     # 10. Portraits & People
-    if (
+    has_verified_person = (
         bool(probes.get("has_person"))
         or bool(probes.get("has_mirror_selfie"))
-        or bool(kw_words & {"person", "people", "man", "woman", "portrait", "selfie"})
-    ):
+        or bool(taught_low_set & {"person", "people", "man", "woman", "portrait", "selfie", "girl", "boy", "female", "male"})
+        or bool(kw_words & {"person", "people", "man", "woman", "selfie"})
+    )
+    if ("portrait" in forbidden_low or "person" in forbidden_low or "people" in forbidden_low) and not bool(taught_low_set & {"person", "people", "man", "woman", "portrait", "selfie"}):
+        has_verified_person = False
+
+    if has_verified_person:
         pp_subs = ["People"]
         if probes.get("has_mirror_selfie") or "selfie" in kw_words:
             pp_subs.append("Mirror Selfie")
@@ -5257,16 +5787,24 @@ def assign_portfolio_categories(
             _add_cat("Desert", ["Desert"])
         elif macro_id == "alpine_mountain_forest":
             _add_cat("National Parks & Mountains", ["Mountains"])
-        elif macro_id in ("indoor_residential", "indoor_closet_storage", "studio_tabletop_macro"):
+        elif macro_id in ("indoor_residential", "indoor_closet_storage"):
             _add_cat("Architecture & Interiors", [])
+        elif macro_id == "studio_tabletop_macro":
+            _add_cat("Still Life & Cultural Details", ["Still Life"])
         elif macro_id == "portrait_mirror_people":
-            _add_cat("Portraits & People", [])
+            if has_verified_person:
+                _add_cat("Portraits & People", ["People"])
+            else:
+                _add_cat("Still Life & Cultural Details", ["Still Life"])
         else:
             scene_ctx = str(probes.get("scene_context") or "outdoor_nature")
             if scene_ctx == "indoor_domestic":
                 _add_cat("Architecture & Interiors", [])
             elif scene_ctx == "mirror_portrait":
-                _add_cat("Portraits & People", [])
+                if has_verified_person:
+                    _add_cat("Portraits & People", ["People"])
+                else:
+                    _add_cat("Still Life & Cultural Details", ["Still Life"])
             elif scene_ctx == "urban_automotive":
                 _add_cat("Automotive & Urban", [])
             elif state in ("Utah", "Arizona", "New Mexico", "Nevada") and float(probes.get("sc_outdoor_nature_sim", 0.0)) >= 0.20:
@@ -5382,17 +5920,12 @@ def synthesize_5facet_visual_keywords(
         specific_location=spec,
     )
 
-    # 2. Only add named iconic landmarks (not reverse-geocoded GPS municipal addresses) and visual theme tags
-    if spec and not is_gps_record and spec.lower() not in HALLUCINATED_SPEC_LOCATIONS_LOWER:
-        _add_clean(spec)
-    for tt in theme_tags:
-        _add_clean(tt)
-
-    # 3. Add cleaned concrete subject & .lrcat keywords from flat_kws
-    for k in flat_kws:
-        _add_clean(k)
-
-    # 4. Add concrete high-confidence visual subjects & Pass 3 Specialist Drill-Down tags
+    # 2. Add concrete high-confidence visual subjects & Pass 3 Specialist Drill-Down tags FIRST so specific visual items lead key_subjects
+    for sp_tag in probes.get("specialist_tags", []):
+        _add_clean(sp_tag)
+    for sp_h in probes.get("specialist_hier", []):
+        if sp_h and sp_h not in clean_hier:
+            clean_hier.append(sp_h)
     if bool(probes.get("has_dog")):
         _add_clean("Dog")
         if probes.get("dog_breed"):
@@ -5409,14 +5942,15 @@ def synthesize_5facet_visual_keywords(
         _add_clean("Area Rug / Carpet")
     if bool(probes.get("has_framed_art")):
         _add_clean("Framed Art")
-    for sp_tag in probes.get("specialist_tags", []):
-        _add_clean(sp_tag)
-    for sp_h in probes.get("specialist_hier", []):
-        if sp_h and sp_h not in clean_hier:
-            clean_hier.append(sp_h)
     if bool(probes.get("has_mirror_selfie")):
         _add_clean("Mirror Selfie")
         _add_clean("Man")
+        _add_clean("Person")
+    elif bool(probes.get("has_person")):
+        if bool(probes.get("is_female_person")):
+            _add_clean("Woman")
+        elif bool(probes.get("is_male_person")):
+            _add_clean("Man")
         _add_clean("Person")
     if bool(probes.get("has_fitting_room")):
         _add_clean("Fitting Room")
@@ -5439,6 +5973,16 @@ def synthesize_5facet_visual_keywords(
         _add_clean("Snow & Ice")
     for boosted_lbl in probes.get("boosted_custom_labels", []):
         _add_clean(boosted_lbl)
+
+    # 3. Add cleaned concrete subject & .lrcat keywords from flat_kws
+    for k in flat_kws:
+        _add_clean(k)
+
+    # 4. Add named iconic landmarks (not reverse-geocoded GPS municipal addresses) and visual theme tags
+    if spec and not is_gps_record and spec.lower() not in HALLUCINATED_SPEC_LOCATIONS_LOWER:
+        _add_clean(spec)
+    for tt in theme_tags:
+        _add_clean(tt)
     if is_aerial:
         _add_clean("Aerial")
 
@@ -5446,48 +5990,71 @@ def synthesize_5facet_visual_keywords(
     # Populate top concrete OpenCLIP scene/feature tags so `⚡ Basic Tag` never leaves a photo with 0 tags.
     if not out_flat:
         scene_ctx = str(probes.get("scene_context") or "outdoor_nature")
-        if scene_ctx == "indoor_domestic":
+        macro_id = str(probes.get("macro_biome_id") or "")
+        taught_low_fallback = {str(k).lower().strip() for k in _safe_json_list(record.get("user_taught_tags"))}
+        has_verified_person_fallback = (
+            bool(probes.get("has_person"))
+            or bool(probes.get("has_mirror_selfie"))
+            or bool(taught_low_fallback & {"person", "people", "man", "woman", "portrait", "selfie", "girl", "boy", "female", "male"})
+        )
+        is_indoor_locked = (
+            scene_ctx == "indoor_domestic"
+            or macro_id in ("indoor_residential", "indoor_closet_storage", "studio_tabletop_macro")
+            or (macro_id == "portrait_mirror_people" and not has_verified_person_fallback)
+        )
+
+        if is_indoor_locked:
             _add_clean("Indoor")
-            _add_clean("Interior")
-        elif scene_ctx == "mirror_portrait":
-            _add_clean("Portrait")
-            _add_clean("Indoor")
+            if macro_id == "studio_tabletop_macro" or not has_verified_person_fallback:
+                _add_clean("Still Life")
+            else:
+                _add_clean("Interior")
+        elif scene_ctx == "mirror_portrait" or macro_id == "portrait_mirror_people":
+            if has_verified_person_fallback:
+                _add_clean("Portrait")
+                _add_clean("Indoor")
+            else:
+                _add_clean("Still Life")
+                _add_clean("Indoor")
         elif scene_ctx == "urban_automotive":
             _add_clean("Urban")
             _add_clean("Street")
-        fallback_probe_map = (
-            ("f1_mountain_peak_sim", ("Mountains", "Landscape")),
-            ("f1_canyon_mesa_sim", ("Canyon", "Sandstone")),
-            ("f1_coastline_surf_sim", ("Coastline", "Ocean")),
-            ("f1_river_waterway_sim", ("River", "Water")),
-            ("f1_lake_lagoon_sim", ("Lake", "Water")),
-            ("f1_forest_woods_sim", ("Forest", "Trees")),
-            ("f1_desert_arid_sim", ("Desert", "Landscape")),
-            ("f1_ranch_pasture_sim", ("Farmland", "Pasture")),
-            ("f1_barn_farmstead_sim", ("Barn", "Ranch")),
-            ("f1_colonial_facade_sim", ("Building", "Architecture")),
-            ("f1_industrial_facility_sim", ("Industrial", "Structure")),
-            ("f1_urban_skyline_sim", ("Urban", "Architecture")),
-            ("f2_doors_windows_sim", ("Doors & Windows", "Architecture")),
-            ("f2_archway_courtyard_sim", ("Archway", "Architecture")),
-            ("f2_fence_corral_sim", ("Fence", "Rural")),
-            ("f2_bridge_pier_sim", ("Bridge", "Structure")),
-            ("f2_rock_outcrop_sim", ("Rock Formation", "Geology")),
-            ("f2_foreground_flora_sim", ("Flora", "Plants")),
-            ("f2_water_reflection_sim", ("Water", "Reflection")),
-            ("f2_road_pathway_sim", ("Road", "Pathway")),
-            ("f2_clouds_sky_sim", ("Clouds", "Sky")),
-            ("f2_snow_ice_sim", ("Snow & Ice", "Winter")),
-        )
-        scored_fallbacks = sorted(
-            ((float(probes.get(pk, 0.0)), tags_tuple) for pk, tags_tuple in fallback_probe_map),
-            key=lambda x: x[0],
-            reverse=True,
-        )
-        for sim_val, tags_tuple in scored_fallbacks[:2]:
-            if sim_val >= 0.215:
-                for ft in tags_tuple:
-                    _add_clean(ft)
+
+        # Strictly prevent outdoor landscape fallback probes (Mountains, Canyon, Sandstone, etc.) from contaminating indoor scenes!
+        if not is_indoor_locked:
+            fallback_probe_map = (
+                ("f1_mountain_peak_sim", ("Mountains", "Landscape")),
+                ("f1_canyon_mesa_sim", ("Canyon", "Sandstone")),
+                ("f1_coastline_surf_sim", ("Coastline", "Ocean")),
+                ("f1_river_waterway_sim", ("River", "Water")),
+                ("f1_lake_lagoon_sim", ("Lake", "Water")),
+                ("f1_forest_woods_sim", ("Forest", "Trees")),
+                ("f1_desert_arid_sim", ("Desert", "Landscape")),
+                ("f1_ranch_pasture_sim", ("Farmland", "Pasture")),
+                ("f1_barn_farmstead_sim", ("Barn", "Ranch")),
+                ("f1_colonial_facade_sim", ("Building", "Architecture")),
+                ("f1_industrial_facility_sim", ("Industrial", "Structure")),
+                ("f1_urban_skyline_sim", ("Urban", "Architecture")),
+                ("f2_doors_windows_sim", ("Doors & Windows", "Architecture")),
+                ("f2_archway_courtyard_sim", ("Archway", "Architecture")),
+                ("f2_fence_corral_sim", ("Fence", "Rural")),
+                ("f2_bridge_pier_sim", ("Bridge", "Structure")),
+                ("f2_rock_outcrop_sim", ("Rock Formation", "Geology")),
+                ("f2_foreground_flora_sim", ("Flora", "Plants")),
+                ("f2_water_reflection_sim", ("Water", "Reflection")),
+                ("f2_road_pathway_sim", ("Road", "Pathway")),
+                ("f2_clouds_sky_sim", ("Clouds", "Sky")),
+                ("f2_snow_ice_sim", ("Snow & Ice", "Winter")),
+            )
+            scored_fallbacks = sorted(
+                ((float(probes.get(pk, 0.0)), tags_tuple) for pk, tags_tuple in fallback_probe_map),
+                key=lambda x: x[0],
+                reverse=True,
+            )
+            for sim_val, tags_tuple in scored_fallbacks[:2]:
+                if sim_val >= 0.215:
+                    for ft in tags_tuple:
+                        _add_clean(ft)
         if not out_flat:
             if scene_ctx == "indoor_domestic":
                 _add_clean("Indoor")
@@ -6289,7 +6856,7 @@ def reassess_records_fast(
         for r in cursor.execute(
             f"""
             SELECT file_path, file_hash, catalog_name, exif_time, shoot_date,
-                   camera_make, camera_model, camera_serial,
+                   camera_make, camera_model, camera_serial, lens_model,
                    gps_lat, gps_lon, gps_alt, gps_ground_truth, is_screenshot,
                    title, caption, sub_location, specific_location, city, state_region, country,
                    existing_keywords, lrcat_keywords, key_subjects, hierarchical_keywords,
@@ -6298,7 +6865,7 @@ def reassess_records_fast(
                    confidence_score, vector_index, status,
                    user_context_notes, user_taught_tags, negated_tags,
                    subject_boxes, verified_subjects, location_provenance,
-                   tag_authority_weight, assessment_tier, macro_biome
+                   tag_authority_weight, assessment_tier, macro_biome, sequence_id
             FROM photo_records
             WHERE {' AND '.join(where_clauses)}
             """,
@@ -6317,6 +6884,9 @@ def reassess_records_fast(
 
     probes_map = compute_clip_concept_probes_for_rows(
         rows=rows, vectors=vectors, encode_text_batch_fn=encode_text_batch_fn, db_path=db_path
+    )
+    probes_map = propagate_temporal_and_sequence_consensus(
+        rows=rows, probes_map=probes_map, vectors=vectors, db_path=db_path
     )
     resolved_geo_map = propagate_shoot_day_geography(rows=rows, probes_map=probes_map, vectors=vectors)
 
@@ -6448,14 +7018,31 @@ def reassess_records_fast(
             orig_flat = [k for k in orig_flat if str(k).strip().lower() not in ("england", "united kingdom", "denver trip 07" if "teton" in fp_stem_low else "")]
             orig_hier = [hk for hk in orig_hier if "united kingdom" not in hk.lower() and "england" not in hk.lower()]
 
-        base_flat = list(
-            dict.fromkeys(
-                own_lrcat
-                + own_exist
-                + orig_flat
-            )
-        )
-        base_hier = list(dict.fromkeys(orig_hier))
+        # For Level 1 Fast Scan records, recompute visual tags cleanly from authoritative human metadata (own_lrcat + own_exist)
+        # and current 4-pass visual probes, NEVER feeding stale AI-generated fallback tags (e.g. "Mountains", "Urban") back into base_flat!
+        # For Level 2 Deep VLM records, preserve VLM-discovered concrete subject tags while stripping unconfirmed fallback noise.
+        rec_tier = str(r.get("assessment_tier") or "level1").strip().lower()
+        if rec_tier == "level2_vlm":
+            authoritative_low = {str(x).strip().lower() for x in (own_lrcat + _safe_json_list(r.get("user_taught_tags")))}
+            filtered_vlm_flat: List[str] = []
+            for k in orig_flat:
+                kl = str(k).strip().lower()
+                if kl not in authoritative_low:
+                    if kl in ("mountains", "mountain") and float(probes.get("f1_mountain_peak_sim", 0.0)) < 0.215:
+                        continue
+                    if kl in ("urban", "highway", "road", "infrastructure") and float(probes.get("f1_urban_skyline_sim", 0.0)) < 0.215 and float(probes.get("f2_road_pathway_sim", 0.0)) < 0.220:
+                        continue
+                    if kl in ("landscape", "everyday", "lifestyle"):
+                        continue
+                filtered_vlm_flat.append(k)
+            base_flat = list(dict.fromkeys(own_lrcat + own_exist + filtered_vlm_flat))
+            base_hier = list(dict.fromkeys(orig_hier))
+        else:
+            base_flat = list(dict.fromkeys(own_lrcat + own_exist))
+            base_hier = [
+                hk for hk in orig_hier
+                if any(str(hk).startswith(pfx) for pfx in ("Subjects|Pets|Named|", "Subjects|People|Named|"))
+            ]
 
         # Enforce Pass 1 Biome Mutual-Exclusion Gate: purge legacy contradictory tags from earlier runs
         forbidden_tags_lower = set(probes.get("forbidden_tags_lower") or [])
@@ -7190,7 +7777,8 @@ def cluster_and_propagate_entities(
             top_breed_sim = 0.0
             breed_scores: Dict[str, float] = {}
             if sp_mat is not None and sp_mat.shape[0] > 0:
-                s_vec = sp_mat @ crop_v
+                with np.errstate(divide="ignore", over="ignore", invalid="ignore"):
+                    s_vec = sp_mat @ crop_v
                 for s_idx, item_cfg in enumerate(sp_list):
                     s_lbl = item_cfg["label"]
                     if s_lbl in ("Cat Tree", "Scratching Post"):
@@ -7817,6 +8405,9 @@ def reassess_records_deep(
 
     probes_map = compute_clip_concept_probes_for_rows(
         rows=rows, vectors=vectors, encode_text_batch_fn=encode_text_batch_fn, db_path=db_path
+    )
+    probes_map = propagate_temporal_and_sequence_consensus(
+        rows=rows, probes_map=probes_map, vectors=vectors, db_path=db_path
     )
     resolved_geo_map = propagate_shoot_day_geography(rows=rows, probes_map=probes_map, vectors=vectors)
     for fp_k, g_val in resolved_geo_map.items():
