@@ -534,7 +534,7 @@ export default function LightboxModal({
         }
         showToast(
           `Tags refreshed in ${data.elapsed_seconds || 0}s (${
-            mode === 'deep_vlm' ? 'Deep AI Re-Tag' : 'Basic Tag'
+            mode === 'deep_vlm' ? 'Deep VLM (Level 2)' : 'Fast Scan (Level 1)'
           })`
         );
       })
@@ -1145,10 +1145,10 @@ export default function LightboxModal({
                 onClick={() => handleReassessPhoto('fast_vectors')}
                 disabled={reassessing || clearingTags}
                 className="flex items-center justify-center gap-1 py-2 px-2 rounded-md bg-blue-950/50 hover:bg-blue-900/70 border border-blue-500/50 hover:border-blue-400 text-blue-200 hover:text-white font-mono text-[11px] font-semibold transition-colors disabled:opacity-50 cursor-pointer shadow-sm"
-                title="Immediately run a fast OpenCLIP vector & ontology probe on this photo (<1s)"
+                title="⚡ Fast Scan (Level 1 — 4-Pass Cascade): Runs Pass 1 Macro Biome Lock + Pass 2 GPU 4-Crop Saliency Scan + Pass 3 Specialist Breed/Species Drill-Down + Pass 4 Pet/Person Clustering (~6ms/photo)"
               >
                 <span>⚡</span>
-                <span>{reassessing ? 'Tagging...' : 'Basic Tag'}</span>
+                <span>{reassessing ? 'Scanning...' : 'Fast Scan (Level 1)'}</span>
               </button>
 
               <button
@@ -1316,10 +1316,10 @@ export default function LightboxModal({
                 onClick={() => handleReassessPhoto('deep_vlm')}
                 disabled={reassessing || clearingTags}
                 className="flex items-center gap-1 px-2 py-0.5 rounded-sm bg-studio-bg hover:bg-studio-hover border border-studio-borderLight text-emerald-300 hover:text-white text-[10px] font-mono transition-colors disabled:opacity-50 cursor-pointer"
-                title="Re-run Qwen2.5-VL 7B Deep Vision Model (~3s)"
+                title="🧠 Deep VLM (Level 2 — Qwen2.5-VL + Cascade): Runs full generative VLM visual inspection + 4-Pass Cascade (~5–8s/photo)"
               >
                 <Cpu className={`w-2.5 h-2.5 ${reassessing ? 'animate-spin' : ''}`} />
-                <span>🧠 Deep VLM</span>
+                <span>🧠 Deep VLM (Level 2)</span>
               </button>
             </div>
 
@@ -1378,8 +1378,8 @@ export default function LightboxModal({
             ) : (
               <div className="text-[11px] font-mono text-studio-textDim py-1">
                 {isSlateCleared
-                  ? '🧹 Tags cleared — click ⚡ Basic Tag or 🎙️ AI Voice Tag above'
-                  : 'No keywords on this frame — click ⚡ Basic Tag or 🎙️ AI Voice Tag'}
+                  ? '🧹 Tags cleared — click ⚡ Fast Scan (Level 1) or 🎙️ AI Voice Tag above'
+                  : 'No keywords on this frame — click ⚡ Fast Scan (Level 1) or 🎙️ AI Voice Tag'}
               </div>
             )}
 

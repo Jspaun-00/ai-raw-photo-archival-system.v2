@@ -198,6 +198,21 @@ export default function App() {
     prevJobRunningRef.current = isNowRunning;
   }, [jobStatus?.running]);
 
+  // Auto-dismiss completed job toast after 4 seconds while keeping manual '×' close responsive
+  useEffect(() => {
+    if (
+      jobStatus?.finished_at &&
+      !jobStatus?.running &&
+      jobStatus?.job_id &&
+      jobStatus.job_id !== dismissedJobId
+    ) {
+      const timer = setTimeout(() => {
+        setDismissedJobId(jobStatus.job_id);
+      }, 4000);
+      return () => clearTimeout(timer);
+    }
+  }, [jobStatus?.finished_at, jobStatus?.running, jobStatus?.job_id, dismissedJobId]);
+
   useEffect(() => {
     if (!jobStatus?.running) return undefined;
     const interval = setInterval(() => {
@@ -823,7 +838,7 @@ export default function App() {
     [selectedPhotosArray, loadCollections]
   );
 
-  // Batch Re-Assess selected photos (Pure-Vision Basic Tag or Deep VLM)
+  // Batch Re-Assess selected photos (Fast Scan Level 1 or Deep VLM Level 2)
   const handleBatchReassessSelected = useCallback(
     async (mode = 'fast_vectors') => {
       if (selectedPhotosArray.length === 0) return;
@@ -832,8 +847,8 @@ export default function App() {
       setIsBatchBusy(true);
       showGlobalToast(
         mode === 'deep_vlm'
-          ? `🧠 Running pure-vision Deep VLM on ${photoIds.length.toLocaleString()} photo(s)...`
-          : `⚡ Running pure-vision Basic Tag on ${photoIds.length.toLocaleString()} photo(s)...`
+          ? `🧠 Running Deep VLM (Level 2) on ${photoIds.length.toLocaleString()} photo(s)...`
+          : `⚡ Running Fast Scan (Level 1) on ${photoIds.length.toLocaleString()} photo(s)...`
       );
       try {
         const res = await fetch('/api/reassess', {
@@ -875,7 +890,7 @@ export default function App() {
             fetchUndoStatus();
           }
           showGlobalToast(
-            `${mode === 'deep_vlm' ? '🧠 Deep VLM' : '⚡ Basic Tag'} updated ${(
+            `${mode === 'deep_vlm' ? '🧠 Deep VLM (Level 2)' : '⚡ Fast Scan (Level 1)'} updated ${(
               data.reassessed_count || data.photos.length
             ).toLocaleString()} photo(s) (Cmd+Z to Undo)`
           );
@@ -887,6 +902,52 @@ export default function App() {
       }
     },
     [selectedPhotosArray, refreshJobStatus, fetchUndoStatus, applyUndoStatusPayload]
+  );
+
+  // Rescan active catalog or current archive view (Idle Bottom Dock Rescan)
+  const handleReassessCatalog = useCallback(
+    async (mode = 'fast_vectors') => {
+      const isAsync = true;
+      setIsBatchBusy(true);
+      const catLabel =
+        activeCatalog && activeCatalog !== 'All Catalogs' && activeCatalog !== 'ALL'
+          ? activeCatalog
+          : 'All Photos';
+      showGlobalToast(
+        mode === 'deep_vlm'
+          ? `🧠 Starting Deep VLM (Level 2) rescan on ${catLabel}...`
+          : `⚡ Starting Fast 4-Pass Cascade (Level 1) rescan on ${catLabel}...`
+      );
+      try {
+        const res = await fetch('/api/reassess', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            catalog_name:
+              activeCatalog && activeCatalog !== 'All Catalogs' && activeCatalog !== 'ALL'
+                ? activeCatalog
+                : null,
+            mode,
+            async_job: isAsync,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+        if (data.status === 'started') {
+          refreshJobStatus();
+          if (data.undo_status) {
+            applyUndoStatusPayload(data.undo_status);
+          } else {
+            fetchUndoStatus();
+          }
+        }
+      } catch (err) {
+        showGlobalToast(`Rescan failed: ${err.message}`);
+      } finally {
+        setIsBatchBusy(false);
+      }
+    },
+    [activeCatalog, refreshJobStatus, fetchUndoStatus, applyUndoStatusPayload]
   );
 
   // Open Voice Teach / Scout Modal
@@ -1288,23 +1349,46 @@ export default function App() {
         />
       )}
 
-      {/* Floating Multi-Photo Selection Action Bar */}
+      {/* Floating Centered Studio Dock (Idle Studio Tools & Active Selection Batch Actions) */}
       <SelectionActionBar
         selectedCount={selectedPhotosArray.length}
         totalVisibleCount={photos.length}
         totalCatalogCount={totalPhotos}
+        totalPhotos={totalPhotos}
         isSelectingAll={isSelectingAll}
         isBatchBusy={isBatchBusy}
+        undoStatus={undoStatus}
+        onTriggerUndo={handleTriggerUndo}
+        activeCatalog={activeCatalog}
+        searchQuery={searchQuery}
+        onSearchChange={(q) => {
+          setSearchQuery(q);
+          if (q && viewMode === 'trips') {
+            setViewMode('grid');
+          }
+        }}
+        onQueryChange={(q) => {
+          setSearchQuery(q);
+          if (q && viewMode === 'trips') {
+            setViewMode('grid');
+          }
+        }}
         onSelectAll={handleSelectAllLoaded}
         onSelectAllInCatalog={handleSelectAllInCatalog}
         onClearSelection={handleClearSelection}
         onBatchClearTags={handleBatchClearTags}
         onBatchReassess={handleBatchReassessSelected}
+        onReassessCatalog={handleReassessCatalog}
         onOpenVoiceTeach={() => handleOpenVoiceModal('teach', null, true)}
         onOpenVoiceScout={() => handleOpenVoiceModal('scout', null, false)}
         onOpenTeachModal={() => handleOpenVoiceModal('teach', null, true)}
         onOpenScoutModal={() => handleOpenVoiceModal('scout', null, false)}
         collections={collections}
+        collectionsCount={collections.length}
+        onOpenCollectionsModal={() => {
+          setCollectionsInitialMode('sequence');
+          setIsCollectionsModalOpen(true);
+        }}
         onBatchAddToCollection={handleBatchAddToCollection}
         onCreateCollectionWithSelected={handleBatchCreateCollectionWithSelected}
         onBatchCreateCollection={handleBatchCreateCollectionWithSelected}

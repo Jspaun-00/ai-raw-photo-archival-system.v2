@@ -64,33 +64,17 @@ export default function TopRibbon({
   onSortByChange,
   totalPhotos,
   totalFiltered,
-  collectionsCount = 0,
-  onOpenCollectionsModal,
   onOpenPipelineModal,
-  onOpenVoiceTeachScout,
   activePortfolioTheme = null,
   onSelectPortfolioTheme,
-  undoStatus = null,
-  onTriggerUndo,
-  selectedCount = 0,
-  isSelectingAll = false,
-  onSelectAllInView,
-  onClearSelection,
 }) {
   const [aestheticOpen, setAestheticOpen] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
-  const [peoplePetsOpen, setPeoplePetsOpen] = useState(false);
-  const [entityClusters, setEntityClusters] = useState([]);
-  const [loadingEntities, setLoadingEntities] = useState(false);
-  const [editingEntityId, setEditingEntityId] = useState(null);
-  const [editingNameVal, setEditingNameVal] = useState('');
-  const [savingEntityId, setSavingEntityId] = useState(null);
   const [updateInfo, setUpdateInfo] = useState(null);
   const [isUpdatingApp, setIsUpdatingApp] = useState(false);
 
   const aestheticRef = useRef(null);
   const filtersRef = useRef(null);
-  const peoplePetsRef = useRef(null);
 
   // Unified prop bindings supporting both App.jsx and legacy aliases
   const currentQuery = searchQuery !== undefined ? searchQuery : query || '';
@@ -116,13 +100,6 @@ export default function TopRibbon({
   const handleCollapseToggle =
     onToggleCollapseStrafing || onToggleCollapseSequences || (() => {});
 
-  const displayTotal =
-    typeof totalPhotos === 'number'
-      ? totalPhotos
-      : typeof totalFiltered === 'number'
-      ? totalFiltered
-      : 0;
-
   // Close popovers on outside click
   useEffect(() => {
     const handleClickOutside = (e) => {
@@ -132,55 +109,10 @@ export default function TopRibbon({
       if (filtersRef.current && !filtersRef.current.contains(e.target)) {
         setFiltersOpen(false);
       }
-      if (peoplePetsRef.current && !peoplePetsRef.current.contains(e.target)) {
-        setPeoplePetsOpen(false);
-        setEditingEntityId(null);
-      }
     };
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
-
-  const fetchEntityClusters = async (catName = activeCatalog) => {
-    setLoadingEntities(true);
-    try {
-      const r = await fetch(`/api/entities?catalog=${encodeURIComponent(catName || 'All Catalogs')}`);
-      if (r.ok) {
-        const data = await r.json();
-        setEntityClusters(Array.isArray(data.entities) ? data.entities : []);
-      }
-    } catch (_) {
-      // ignore
-    } finally {
-      setLoadingEntities(false);
-    }
-  };
-
-  useEffect(() => {
-    fetchEntityClusters(activeCatalog);
-  }, [activeCatalog]);
-
-  const handleRenameEntity = async (entityId, newName) => {
-    const clean = (newName || '').trim();
-    if (!clean) return;
-    setSavingEntityId(entityId);
-    try {
-      const r = await fetch(`/api/entities/${encodeURIComponent(entityId)}/rename`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ entity_name: clean }),
-      });
-      if (r.ok) {
-        await fetchEntityClusters(activeCatalog);
-        setEditingEntityId(null);
-        setEditingNameVal('');
-      }
-    } catch (_) {
-      // ignore
-    } finally {
-      setSavingEntityId(null);
-    }
-  };
 
   // Check for remote Git updates on mount
   useEffect(() => {
@@ -302,131 +234,69 @@ export default function TopRibbon({
           background: 'rgba(11, 13, 18, 0.96)',
           backdropFilter: 'blur(16px)',
           borderBottom: '1px solid #1f2430',
-          padding: '12px 20px',
+          padding: '10px 20px',
           display: 'flex',
           flexDirection: 'column',
-          gap: '12px',
+          gap: '10px',
         }}
       >
-        {/* Top Row: Brand & Catalog Silo Tabs + Primary Action Buttons */}
+        {/* Row 1: Primary Header: Brand Logo + Generous Search + View Switcher + Unified Catalog Dropdown + Import */}
         <div
           style={{
             display: 'flex',
             alignItems: 'center',
-            justifyContent: 'space-between',
-            flexWrap: 'wrap',
-            gap: '12px',
+            gap: '14px',
+            width: '100%',
           }}
         >
-          <div style={{ display: 'flex', alignItems: 'center', gap: '16px', flexWrap: 'wrap' }}>
-            {/* Studio Identity: MR Darkroom */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-              <div
-                style={{
-                  width: '34px',
-                  height: '34px',
-                  borderRadius: '9px',
-                  background: 'linear-gradient(135deg, #18181b 0%, #090b10 100%)',
-                  border: '1.5px solid #f59e0b',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  fontWeight: 800,
-                  fontSize: '14px',
-                  color: '#fbbf24',
-                  letterSpacing: '-0.03em',
-                  boxShadow: '0 2px 10px rgba(245, 158, 11, 0.2)',
-                }}
-              >
-                MR
-              </div>
-              <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px' }}>
-                <span
-                  style={{
-                    fontWeight: 700,
-                    fontSize: '17px',
-                    letterSpacing: '-0.01em',
-                    color: '#f8fafc',
-                  }}
-                >
-                  MR Darkroom
-                </span>
-                <span
-                  style={{
-                    fontSize: '11px',
-                    fontWeight: 600,
-                    color: '#94a3b8',
-                    background: '#161922',
-                    border: '1px solid #262b38',
-                    padding: '1px 6px',
-                    borderRadius: '5px',
-                  }}
-                >
-                  v{updateInfo?.version || '3.2'}
-                </span>
-              </div>
-            </div>
-          </div>
-
-          {/* Right Side: Total Counter + Select All + 1-Click Update + Collections & Books + Import & AI Tag */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
-            <span
+          {/* Studio Identity: MR Darkroom */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexShrink: 0 }}>
+            <div
               style={{
+                width: '34px',
+                height: '34px',
+                borderRadius: '9px',
+                background: 'linear-gradient(135deg, #18181b 0%, #090b10 100%)',
+                border: '1.5px solid #f59e0b',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                fontWeight: 800,
                 fontSize: '14px',
-                color: '#cbd5e1',
-                fontVariantNumeric: 'tabular-nums',
-                marginRight: '2px',
+                color: '#fbbf24',
+                letterSpacing: '-0.03em',
+                boxShadow: '0 2px 10px rgba(245, 158, 11, 0.2)',
               }}
             >
-              Showing <strong style={{ color: '#ffffff' }}>{displayTotal.toLocaleString()}</strong> photos
-            </span>
-
-            {onSelectAllInView && displayTotal > 0 && (
-              <button
-                type="button"
-                disabled={isSelectingAll}
-                onClick={() => {
-                  if (selectedCount >= displayTotal && onClearSelection) {
-                    onClearSelection();
-                  } else {
-                    onSelectAllInView();
-                  }
-                }}
-                title={
-                  selectedCount >= displayTotal
-                    ? 'Clear selection'
-                    : `Select all ${displayTotal.toLocaleString()} photos in current view (Cmd+A)`
-                }
+              MR
+            </div>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px' }}>
+              <span
                 style={{
-                  padding: '6px 11px',
-                  borderRadius: '8px',
-                  fontSize: '13px',
                   fontWeight: 700,
-                  cursor: isSelectingAll ? 'wait' : 'pointer',
-                  border:
-                    selectedCount > 0
-                      ? '1px solid rgba(129, 140, 248, 0.6)'
-                      : '1px solid rgba(255, 255, 255, 0.18)',
-                  background:
-                    selectedCount > 0
-                      ? 'rgba(99, 102, 241, 0.2)'
-                      : 'rgba(255, 255, 255, 0.06)',
-                  color: selectedCount > 0 ? '#c7d2fe' : '#e2e8f0',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '5px',
-                  transition: 'all 0.15s',
+                  fontSize: '17px',
+                  letterSpacing: '-0.01em',
+                  color: '#f8fafc',
+                  whiteSpace: 'nowrap',
                 }}
               >
-                <span>
-                  {isSelectingAll
-                    ? '⏳ Selecting...'
-                    : selectedCount >= displayTotal
-                    ? `☑ All ${displayTotal.toLocaleString()} Selected`
-                    : `☑ Select All`}
-                </span>
-              </button>
-            )}
+                MR Darkroom
+              </span>
+              <span
+                style={{
+                  fontSize: '11px',
+                  fontWeight: 600,
+                  color: '#94a3b8',
+                  background: '#161922',
+                  border: '1px solid #262b38',
+                  padding: '1px 6px',
+                  borderRadius: '5px',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                v{updateInfo?.version || '4.0'}
+              </span>
+            </div>
 
             {updateInfo?.update_available && (
               <button
@@ -434,512 +304,32 @@ export default function TopRibbon({
                 onClick={handleApplyUpdate}
                 title={`Update available (${updateInfo.commits_behind} new update${updateInfo.commits_behind === 1 ? '' : 's'}). Click to update MR Darkroom automatically.`}
                 style={{
-                  padding: '8px 15px',
-                  borderRadius: '8px',
-                  fontSize: '14px',
+                  padding: '4px 10px',
+                  borderRadius: '6px',
+                  fontSize: '12px',
                   fontWeight: 700,
                   cursor: 'pointer',
                   border: '1px solid #10b981',
                   background: 'linear-gradient(135deg, rgba(16, 185, 129, 0.28) 0%, rgba(5, 150, 105, 0.38) 100%)',
                   color: '#6ee7b7',
-                  boxShadow: '0 0 16px rgba(16, 185, 129, 0.35)',
+                  boxShadow: '0 0 12px rgba(16, 185, 129, 0.3)',
                   display: 'flex',
                   alignItems: 'center',
-                  gap: '6px',
+                  gap: '5px',
+                  whiteSpace: 'nowrap',
                 }}
               >
                 <span>✨ Update App</span>
               </button>
             )}
-
-            <button
-              type="button"
-              disabled={!undoStatus?.available || !onTriggerUndo}
-              onClick={() => onTriggerUndo && onTriggerUndo()}
-              title={
-                undoStatus?.available
-                  ? `Undo (Cmd+Z): ${undoStatus.latest?.description || 'Revert last studio change'}`
-                  : 'No studio actions to undo yet (Cmd+Z)'
-              }
-              style={{
-                padding: '8px 13px',
-                borderRadius: '8px',
-                fontSize: '13.5px',
-                fontWeight: 700,
-                cursor: undoStatus?.available ? 'pointer' : 'not-allowed',
-                border: undoStatus?.available ? '1px solid #38bdf8' : '1px solid #262b38',
-                background: undoStatus?.available
-                  ? 'rgba(56, 189, 248, 0.14)'
-                  : 'rgba(20, 23, 32, 0.6)',
-                color: undoStatus?.available ? '#7dd3fc' : '#64748b',
-                opacity: undoStatus?.available ? 1 : 0.65,
-                display: 'flex',
-                alignItems: 'center',
-                gap: '6px',
-                transition: 'all 0.15s',
-              }}
-            >
-              <span>↩ Undo</span>
-              {undoStatus?.count > 0 && (
-                <span
-                  style={{
-                    background: 'rgba(56, 189, 248, 0.25)',
-                    color: '#bae6fd',
-                    borderRadius: '999px',
-                    padding: '1px 6px',
-                    fontSize: '11.5px',
-                    fontWeight: 800,
-                  }}
-                >
-                  {undoStatus.count}
-                </span>
-              )}
-            </button>
-
-            <button
-              type="button"
-              onClick={onOpenVoiceTeachScout}
-              title="AI Archive Scout — Describe a theme, subject, or story to hunt across the entire archive and build a curated collection"
-              style={{
-                padding: '8px 15px',
-                borderRadius: '8px',
-                fontSize: '14px',
-                fontWeight: 700,
-                cursor: 'pointer',
-                border: '1px solid #38bdf8',
-                background: 'linear-gradient(135deg, rgba(16, 185, 129, 0.18) 0%, rgba(56, 189, 248, 0.22) 100%)',
-                color: '#e0f2fe',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '7px',
-              }}
-            >
-              <span>🔎 Scout Archive</span>
-            </button>
-
-            {/* 👥 People & Pets Identity Clustering & Naming Popover */}
-            <div ref={peoplePetsRef} style={{ position: 'relative' }}>
-              <button
-                type="button"
-                onClick={() => {
-                  const nextOpen = !peoplePetsOpen;
-                  setPeoplePetsOpen(nextOpen);
-                  if (nextOpen) fetchEntityClusters(activeCatalog);
-                }}
-                title="People & Pets — Recurring Cats, Dogs & People across months with 1-click breed & custom name filtering (e.g. Masha, Scout)"
-                style={{
-                  padding: '8px 15px',
-                  borderRadius: '8px',
-                  fontSize: '14px',
-                  fontWeight: 700,
-                  cursor: 'pointer',
-                  border: peoplePetsOpen ? '1.5px solid #a855f7' : '1px solid #8b5cf6',
-                  background: peoplePetsOpen
-                    ? 'rgba(168, 85, 247, 0.26)'
-                    : 'rgba(139, 92, 246, 0.16)',
-                  color: '#ede9fe',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '7px',
-                }}
-              >
-                <span>👥 People &amp; Pets</span>
-                {entityClusters.length > 0 && (
-                  <span
-                    style={{
-                      background: '#8b5cf6',
-                      color: '#ffffff',
-                      borderRadius: '999px',
-                      padding: '1px 7px',
-                      fontSize: '12px',
-                      fontWeight: 800,
-                    }}
-                  >
-                    {entityClusters.length}
-                  </span>
-                )}
-              </button>
-
-              {peoplePetsOpen && (
-                <div
-                  style={{
-                    position: 'absolute',
-                    top: 'calc(100% + 8px)',
-                    right: 0,
-                    width: '410px',
-                    maxHeight: '500px',
-                    overflowY: 'auto',
-                    background: '#11141d',
-                    border: '1px solid #2e364f',
-                    borderRadius: '12px',
-                    boxShadow: '0 20px 45px rgba(0, 0, 0, 0.78)',
-                    padding: '14px',
-                    zIndex: 120,
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: '10px',
-                  }}
-                >
-                  <div
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'space-between',
-                      borderBottom: '1px solid #1e2536',
-                      paddingBottom: '8px',
-                    }}
-                  >
-                    <div>
-                      <div style={{ fontSize: '14px', fontWeight: 800, color: '#f8fafc' }}>
-                        👥 People &amp; Pets Clusters
-                      </div>
-                      <div style={{ fontSize: '11.5px', color: '#94a3b8' }}>
-                        Click any cluster to filter photos, or name a pet/person (e.g. &quot;Masha&quot;, &quot;Scout&quot;)
-                      </div>
-                    </div>
-                  </div>
-
-                  {loadingEntities ? (
-                    <div style={{ padding: '18px', textAlign: 'center', color: '#94a3b8', fontSize: '13px' }}>
-                      Loading identity clusters...
-                    </div>
-                  ) : entityClusters.length === 0 ? (
-                    <div style={{ padding: '18px', textAlign: 'center', color: '#94a3b8', fontSize: '13px' }}>
-                      No recurring People or Pet clusters detected in this catalog view.
-                    </div>
-                  ) : (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                      {entityClusters.map((ent) => {
-                        const isEditing = editingEntityId === ent.entity_id;
-                        const displayName = ent.entity_name || ent.auto_breed || ent.entity_type;
-                        const filterQueryTerm = ent.entity_name || ent.auto_breed || ent.entity_type;
-                        const isActiveFilter =
-                          currentQuery &&
-                          filterQueryTerm &&
-                          currentQuery.trim().toLowerCase() === filterQueryTerm.trim().toLowerCase();
-
-                        return (
-                          <div
-                            key={ent.entity_id}
-                            style={{
-                              display: 'flex',
-                              alignItems: 'center',
-                              justifyContent: 'space-between',
-                              gap: '10px',
-                              padding: '8px 10px',
-                              borderRadius: '10px',
-                              background: isActiveFilter ? 'rgba(139, 92, 246, 0.22)' : '#171b26',
-                              border: isActiveFilter ? '1px solid #a855f7' : '1px solid #252c3d',
-                            }}
-                          >
-                            <div
-                              onClick={() => {
-                                handleQueryChange(filterQueryTerm);
-                                setPeoplePetsOpen(false);
-                              }}
-                              style={{
-                                display: 'flex',
-                                alignItems: 'center',
-                                gap: '10px',
-                                flex: 1,
-                                cursor: 'pointer',
-                                minWidth: 0,
-                              }}
-                              title={`Filter by ${displayName} (${ent.photo_count} photos)`}
-                            >
-                              {ent.thumb_url ? (
-                                <img
-                                  src={ent.thumb_url}
-                                  alt={displayName}
-                                  style={{
-                                    width: '46px',
-                                    height: '46px',
-                                    borderRadius: '50%',
-                                    objectFit: 'cover',
-                                    border: '2px solid #8b5cf6',
-                                    flexShrink: 0,
-                                  }}
-                                />
-                              ) : (
-                                <div
-                                  style={{
-                                    width: '46px',
-                                    height: '46px',
-                                    borderRadius: '50%',
-                                    background: '#262d40',
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    justifyContent: 'center',
-                                    fontSize: '20px',
-                                    flexShrink: 0,
-                                  }}
-                                >
-                                  {ent.entity_type === 'Cat' ? '🐱' : ent.entity_type === 'Dog' ? '🐶' : '🧑'}
-                                </div>
-                              )}
-                              <div style={{ minWidth: 0, flex: 1 }}>
-                                <div
-                                  style={{
-                                    fontSize: '14px',
-                                    fontWeight: 700,
-                                    color: '#f8fafc',
-                                    whiteSpace: 'nowrap',
-                                    overflow: 'hidden',
-                                    textOverflow: 'ellipsis',
-                                  }}
-                                >
-                                  {ent.entity_name ? (
-                                    <>
-                                      <span style={{ color: '#c084fc' }}>{ent.entity_name}</span>{' '}
-                                      <span style={{ fontSize: '12px', color: '#94a3b8', fontWeight: 500 }}>
-                                        ({ent.auto_breed || ent.entity_type})
-                                      </span>
-                                    </>
-                                  ) : (
-                                    <span>{ent.auto_breed || ent.entity_type}</span>
-                                  )}
-                                </div>
-                                <div style={{ fontSize: '12px', color: '#94a3b8' }}>
-                                  {ent.entity_type} • {ent.photo_count} photo{ent.photo_count === 1 ? '' : 's'}
-                                </div>
-                              </div>
-                            </div>
-
-                            {isEditing ? (
-                              <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
-                                <input
-                                  type="text"
-                                  value={editingNameVal}
-                                  onChange={(e) => setEditingNameVal(e.target.value)}
-                                  onKeyDown={(e) => {
-                                    e.stopPropagation();
-                                    if (e.key === 'Enter') {
-                                      handleRenameEntity(ent.entity_id, editingNameVal);
-                                    } else if (e.key === 'Escape') {
-                                      setEditingEntityId(null);
-                                    }
-                                  }}
-                                  placeholder="e.g. Masha, Scout"
-                                  autoFocus
-                                  style={{
-                                    width: '115px',
-                                    padding: '5px 8px',
-                                    borderRadius: '6px',
-                                    background: '#0d1017',
-                                    border: '1px solid #8b5cf6',
-                                    color: '#f8fafc',
-                                    fontSize: '12.5px',
-                                    outline: 'none',
-                                  }}
-                                />
-                                <button
-                                  type="button"
-                                  disabled={savingEntityId === ent.entity_id}
-                                  onClick={() => handleRenameEntity(ent.entity_id, editingNameVal)}
-                                  style={{
-                                    padding: '5px 8px',
-                                    borderRadius: '6px',
-                                    background: '#8b5cf6',
-                                    border: 'none',
-                                    color: '#ffffff',
-                                    fontSize: '12px',
-                                    fontWeight: 700,
-                                    cursor: 'pointer',
-                                  }}
-                                >
-                                  Save
-                                </button>
-                              </div>
-                            ) : (
-                              <button
-                                type="button"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setEditingEntityId(ent.entity_id);
-                                  setEditingNameVal(ent.entity_name || '');
-                                }}
-                                style={{
-                                  padding: '5px 9px',
-                                  borderRadius: '6px',
-                                  background: '#23293a',
-                                  border: '1px solid #384159',
-                                  color: '#cbd5e1',
-                                  fontSize: '12px',
-                                  fontWeight: 600,
-                                  cursor: 'pointer',
-                                  flexShrink: 0,
-                                }}
-                              >
-                                ✎ {ent.entity_name ? 'Rename' : 'Name'}
-                              </button>
-                            )}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-
-            <button
-              type="button"
-              onClick={onOpenCollectionsModal}
-              title="Open Curated Collections, Panoramic Book Preview & Desktop JPEG Export"
-              style={{
-                padding: '8px 15px',
-                borderRadius: '8px',
-                fontSize: '14px',
-                fontWeight: 700,
-                cursor: 'pointer',
-                border: '1px solid #f59e0b',
-                background: 'rgba(245, 158, 11, 0.16)',
-                color: '#fbbf24',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '7px',
-              }}
-            >
-              <span>📚 Collections</span>
-              {collectionsCount > 0 && (
-                <span
-                  style={{
-                    background: '#f59e0b',
-                    color: '#090b10',
-                    borderRadius: '999px',
-                    padding: '1px 7px',
-                    fontSize: '12px',
-                    fontWeight: 800,
-                  }}
-                >
-                  {collectionsCount}
-                </span>
-              )}
-            </button>
-
-            {/* Unified Catalog Selector & Manager positioned directly to the LEFT of Import & AI Tag */}
-            <div
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                background: '#141720',
-                border: isKeepersActive ? '1.5px solid rgba(245, 158, 11, 0.7)' : '1px solid #334155',
-                borderRadius: '8px',
-                overflow: 'hidden',
-                boxShadow: isKeepersActive ? '0 0 12px rgba(245, 158, 11, 0.2)' : 'none',
-              }}
-              title="Active Catalog Selector — Switch catalogs or create/manage catalog folders"
-            >
-              <button
-                type="button"
-                onClick={() => onOpenPipelineModal && onOpenPipelineModal('catalogs')}
-                style={{
-                  padding: '8px 11px',
-                  fontSize: '13.5px',
-                  fontWeight: 600,
-                  cursor: 'pointer',
-                  background: isKeepersActive ? 'rgba(245, 158, 11, 0.2)' : '#1e293b',
-                  color: isKeepersActive ? '#fbbf24' : '#cbd5e1',
-                  border: 'none',
-                  borderRight: isKeepersActive ? '1px solid rgba(245, 158, 11, 0.4)' : '1px solid #334155',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '6px',
-                }}
-              >
-                <span>{isKeepersActive ? '★' : '🗂️'}</span>
-                <span>Catalog:</span>
-              </button>
-              <select
-                value={
-                  isAllActive
-                    ? 'All Catalogs'
-                    : isKeepersActive
-                    ? 'Keepers'
-                    : activeCatalog
-                }
-                onChange={(e) => {
-                  const val = e.target.value;
-                  if (val === '__NEW_CATALOG__') {
-                    if (onOpenPipelineModal) onOpenPipelineModal('pipeline');
-                    return;
-                  }
-                  if (onSelectCatalog) onSelectCatalog(val);
-                }}
-                style={{
-                  padding: '8px 12px',
-                  background: '#141720',
-                  color: isKeepersActive ? '#fbbf24' : '#f8fafc',
-                  border: 'none',
-                  fontSize: '14px',
-                  fontWeight: 700,
-                  cursor: 'pointer',
-                  outline: 'none',
-                }}
-              >
-                <option value="All Catalogs">All Photos</option>
-                <option value="Keepers">
-                  ★ Keepers{typeof keepersCount === 'number' && keepersCount > 0 ? ` (${keepersCount.toLocaleString()})` : ''}
-                </option>
-                {cleanCatalogs.map((cat) => {
-                  const name = cat.catalog_name || cat.name;
-                  const count =
-                    typeof cat.photo_count === 'number'
-                      ? cat.photo_count
-                      : typeof cat.total_photos === 'number'
-                      ? cat.total_photos
-                      : null;
-                  return (
-                    <option key={name} value={name}>
-                      {name.replace(/_/g, ' ')}
-                      {typeof count === 'number' ? ` (${count.toLocaleString()})` : ''}
-                    </option>
-                  );
-                })}
-                <option value="__NEW_CATALOG__">＋ New Catalog / Import Folder...</option>
-              </select>
-            </div>
-
-            <button
-              type="button"
-              onClick={() => onOpenPipelineModal && onOpenPipelineModal('pipeline')}
-              title="Browse to any photo folder, create or select a catalog, and run 1-click Import + Offline GPS & AI Tagging"
-              style={{
-                padding: '8px 15px',
-                borderRadius: '8px',
-                fontSize: '14px',
-                fontWeight: 700,
-                cursor: 'pointer',
-                border: '1px solid #3b82f6',
-                background: 'linear-gradient(135deg, rgba(37, 99, 235, 0.28) 0%, rgba(30, 64, 175, 0.38) 100%)',
-                color: '#f8fafc',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '6px',
-              }}
-            >
-              <span>📥</span> Import &amp; AI Tag
-            </button>
           </div>
-        </div>
 
-        {/* Bottom Row: Large Search Bar + 3-Way View Switcher + Sort + Consolidated Dropdowns */}
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            flexWrap: 'wrap',
-            gap: '12px',
-          }}
-        >
-          {/* Large, High-Contrast Semantic + Keyword Search Bar */}
+          {/* Search Input (flex: 1, generous width) */}
           <div
             style={{
               position: 'relative',
-              flex: '1 1 380px',
-              minWidth: '320px',
-              maxWidth: '520px',
+              flex: '1 1 360px',
+              minWidth: '240px',
             }}
           >
             <span
@@ -949,7 +339,7 @@ export default function TopRibbon({
                 top: '50%',
                 transform: 'translateY(-50%)',
                 color: '#94a3b8',
-                fontSize: '16px',
+                fontSize: '15px',
                 pointerEvents: 'none',
               }}
             >
@@ -965,15 +355,15 @@ export default function TopRibbon({
                   handleQueryChange('');
                 }
               }}
-              placeholder="Search places, landmarks, dates, cameras, subjects..."
+              placeholder="Search places, landmarks, dates, cameras, breeds, subjects..."
               style={{
                 width: '100%',
-                padding: '10px 40px 10px 42px',
-                borderRadius: '10px',
+                padding: '9px 38px 9px 40px',
+                borderRadius: '9px',
                 background: '#141822',
                 border: currentQuery ? '1.5px solid #f59e0b' : '1.5px solid #2d3548',
                 color: '#ffffff',
-                fontSize: '16px',
+                fontSize: '15px',
                 fontWeight: 500,
                 outline: 'none',
                 userSelect: 'text',
@@ -990,7 +380,7 @@ export default function TopRibbon({
                 title="Clear search"
                 style={{
                   position: 'absolute',
-                  right: '10px',
+                  right: '9px',
                   top: '50%',
                   transform: 'translateY(-50%)',
                   background: '#262b38',
@@ -998,9 +388,9 @@ export default function TopRibbon({
                   borderRadius: '6px',
                   color: '#f8fafc',
                   cursor: 'pointer',
-                  fontSize: '13px',
+                  fontSize: '12px',
                   fontWeight: 700,
-                  padding: '3px 8px',
+                  padding: '2px 7px',
                 }}
               >
                 ✕
@@ -1008,132 +398,264 @@ export default function TopRibbon({
             )}
           </div>
 
-          {/* Right Controls Group: View Switcher + Sort + Aesthetic Popover + Filters Popover */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
-            {/* 3-Way View Mode Switcher: [ ⊞ Grid | 📅 By Date | 🧭 Trips ] */}
-            <div
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                background: '#141720',
-                padding: '3px',
-                borderRadius: '9px',
-                border: '1px solid #2a3040',
-              }}
-            >
-              {VIEW_MODES.map((vm) => {
-                const active = viewMode === vm.id;
-                return (
-                  <button
-                    type="button"
-                    key={vm.id}
-                    onClick={() => handleViewChange(vm.id)}
-                    title={vm.title}
-                    style={{
-                      padding: '7px 14px',
-                      borderRadius: '7px',
-                      fontSize: '14px',
-                      fontWeight: active ? 700 : 500,
-                      cursor: 'pointer',
-                      border: 'none',
-                      background: active ? '#3b82f6' : 'transparent',
-                      color: active ? '#ffffff' : '#cbd5e1',
-                      transition: 'all 0.15s',
-                    }}
-                  >
-                    {vm.label}
-                  </button>
-                );
-              })}
-            </div>
+          {/* View Switcher: [ ⊞ Grid | 📅 By Date | 🧭 Trips & Regions ] */}
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              background: '#141720',
+              padding: '3px',
+              borderRadius: '9px',
+              border: '1px solid #2a3040',
+              flexShrink: 0,
+            }}
+          >
+            {VIEW_MODES.map((vm) => {
+              const active = viewMode === vm.id;
+              return (
+                <button
+                  type="button"
+                  key={vm.id}
+                  onClick={() => handleViewChange(vm.id)}
+                  title={vm.title}
+                  style={{
+                    padding: '6px 12px',
+                    borderRadius: '7px',
+                    fontSize: '13.5px',
+                    fontWeight: active ? 700 : 500,
+                    cursor: 'pointer',
+                    border: 'none',
+                    background: active ? '#3b82f6' : 'transparent',
+                    color: active ? '#ffffff' : '#cbd5e1',
+                    transition: 'all 0.15s',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {vm.label}
+                </button>
+              );
+            })}
+          </div>
 
-            {/* Curated Portfolio Theme Quick-Pills */}
-            <div
+          {/* Unified Catalog Selector Dropdown */}
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              background: '#141720',
+              border: isKeepersActive ? '1.5px solid rgba(245, 158, 11, 0.7)' : '1px solid #334155',
+              borderRadius: '8px',
+              overflow: 'hidden',
+              boxShadow: isKeepersActive ? '0 0 12px rgba(245, 158, 11, 0.2)' : 'none',
+              flexShrink: 0,
+            }}
+            title="Active Catalog Selector — Switch catalogs or create/manage catalog folders"
+          >
+            <button
+              type="button"
+              onClick={() => onOpenPipelineModal && onOpenPipelineModal('catalogs')}
               style={{
+                padding: '7px 10px',
+                fontSize: '13px',
+                fontWeight: 600,
+                cursor: 'pointer',
+                background: isKeepersActive ? 'rgba(245, 158, 11, 0.2)' : '#1e293b',
+                color: isKeepersActive ? '#fbbf24' : '#cbd5e1',
+                border: 'none',
+                borderRight: isKeepersActive ? '1px solid rgba(245, 158, 11, 0.4)' : '1px solid #334155',
                 display: 'flex',
                 alignItems: 'center',
                 gap: '5px',
-                overflowX: 'auto',
-                maxWidth: '420px',
-                padding: '2px 0',
+                whiteSpace: 'nowrap',
               }}
             >
-              <button
-                type="button"
-                onClick={() => onSelectPortfolioTheme && onSelectPortfolioTheme(null)}
-                style={{
-                  padding: '5px 9px',
-                  borderRadius: '6px',
-                  fontSize: '12px',
-                  fontWeight: !activePortfolioTheme ? 700 : 500,
-                  cursor: 'pointer',
-                  border: !activePortfolioTheme ? '1px solid #f59e0b' : '1px solid #262b38',
-                  background: !activePortfolioTheme ? 'rgba(245, 158, 11, 0.18)' : '#141720',
-                  color: !activePortfolioTheme ? '#fbbf24' : '#cbd5e1',
-                  flexShrink: 0,
-                  transition: 'all 0.15s',
-                }}
-              >
-                All
-              </button>
-              {PORTFOLIO_QUICK_PILLS.map((pill) => {
-                const isSelected = activePortfolioTheme === pill.id;
+              <span>{isKeepersActive ? '★' : '🗂️'}</span>
+              <span>Catalog:</span>
+            </button>
+            <select
+              value={
+                isAllActive
+                  ? 'All Catalogs'
+                  : isKeepersActive
+                  ? 'Keepers'
+                  : activeCatalog
+              }
+              onChange={(e) => {
+                const val = e.target.value;
+                if (val === '__NEW_CATALOG__') {
+                  if (onOpenPipelineModal) onOpenPipelineModal('pipeline');
+                  return;
+                }
+                if (onSelectCatalog) onSelectCatalog(val);
+              }}
+              style={{
+                padding: '7px 11px',
+                background: '#141720',
+                color: isKeepersActive ? '#fbbf24' : '#f8fafc',
+                border: 'none',
+                fontSize: '13.5px',
+                fontWeight: 700,
+                cursor: 'pointer',
+                outline: 'none',
+                maxWidth: '180px',
+              }}
+            >
+              <option value="All Catalogs">All Photos</option>
+              <option value="Keepers">
+                ★ Keepers{typeof keepersCount === 'number' && keepersCount > 0 ? ` (${keepersCount.toLocaleString()})` : ''}
+              </option>
+              {cleanCatalogs.map((cat) => {
+                const name = cat.catalog_name || cat.name;
+                const count =
+                  typeof cat.photo_count === 'number'
+                    ? cat.photo_count
+                    : typeof cat.total_photos === 'number'
+                    ? cat.total_photos
+                    : null;
                 return (
-                  <button
-                    type="button"
-                    key={pill.id}
-                    onClick={() =>
-                      onSelectPortfolioTheme &&
-                      onSelectPortfolioTheme(isSelected ? null : pill.id)
-                    }
-                    style={{
-                      padding: '5px 9px',
-                      borderRadius: '6px',
-                      fontSize: '12px',
-                      fontWeight: isSelected ? 700 : 500,
-                      cursor: 'pointer',
-                      border: isSelected ? '1px solid #f59e0b' : '1px solid #262b38',
-                      background: isSelected ? 'rgba(245, 158, 11, 0.2)' : '#141720',
-                      color: isSelected ? '#fbbf24' : '#cbd5e1',
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      gap: '4px',
-                      flexShrink: 0,
-                      transition: 'all 0.15s',
-                    }}
-                  >
-                    <span>{pill.icon}</span>
-                    <span>{pill.label}</span>
-                  </button>
+                  <option key={name} value={name}>
+                    {name.replace(/_/g, ' ')}
+                    {typeof count === 'number' ? ` (${count.toLocaleString()})` : ''}
+                  </option>
                 );
               })}
-            </div>
+              <option value="__NEW_CATALOG__">＋ New Catalog / Import Folder...</option>
+            </select>
+          </div>
 
+          {/* Import & AI Tag Button */}
+          <button
+            type="button"
+            onClick={() => onOpenPipelineModal && onOpenPipelineModal('pipeline')}
+            title="Browse to any photo folder, create or select a catalog, and run 1-click Import + Offline GPS & AI Tagging"
+            style={{
+              padding: '8px 14px',
+              borderRadius: '8px',
+              fontSize: '13.5px',
+              fontWeight: 700,
+              cursor: 'pointer',
+              border: '1px solid #3b82f6',
+              background: 'linear-gradient(135deg, rgba(37, 99, 235, 0.28) 0%, rgba(30, 64, 175, 0.38) 100%)',
+              color: '#f8fafc',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+              flexShrink: 0,
+              whiteSpace: 'nowrap',
+            }}
+          >
+            <span>📥</span> Import &amp; AI Tag
+          </button>
+        </div>
+
+        {/* Row 2: Full-Width Portfolio Regions (Left/Center) + Sort & Filters (Right) */}
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: '14px',
+            width: '100%',
+          }}
+        >
+          {/* Full-Width Portfolio Regions Pills Bar */}
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+              overflowX: 'auto',
+              flex: '1 1 auto',
+              minWidth: 0,
+              padding: '2px 0',
+              scrollbarWidth: 'thin',
+            }}
+          >
+            <button
+              type="button"
+              onClick={() => onSelectPortfolioTheme && onSelectPortfolioTheme(null)}
+              style={{
+                padding: '5px 10px',
+                borderRadius: '6px',
+                fontSize: '12.5px',
+                fontWeight: !activePortfolioTheme ? 700 : 500,
+                cursor: 'pointer',
+                border: !activePortfolioTheme ? '1px solid #f59e0b' : '1px solid #262b38',
+                background: !activePortfolioTheme ? 'rgba(245, 158, 11, 0.18)' : '#141720',
+                color: !activePortfolioTheme ? '#fbbf24' : '#cbd5e1',
+                flexShrink: 0,
+                transition: 'all 0.15s',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              All Regions
+            </button>
+            {PORTFOLIO_QUICK_PILLS.map((pill) => {
+              const isSelected = activePortfolioTheme === pill.id;
+              return (
+                <button
+                  type="button"
+                  key={pill.id}
+                  onClick={() =>
+                    onSelectPortfolioTheme &&
+                    onSelectPortfolioTheme(isSelected ? null : pill.id)
+                  }
+                  style={{
+                    padding: '5px 10px',
+                    borderRadius: '6px',
+                    fontSize: '12.5px',
+                    fontWeight: isSelected ? 700 : 500,
+                    cursor: 'pointer',
+                    border: isSelected ? '1px solid #f59e0b' : '1px solid #262b38',
+                    background: isSelected ? 'rgba(245, 158, 11, 0.2)' : '#141720',
+                    color: isSelected ? '#fbbf24' : '#cbd5e1',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '5px',
+                    flexShrink: 0,
+                    transition: 'all 0.15s',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  <span>{pill.icon}</span>
+                  <span>{pill.label}</span>
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Right Controls: Sort By + Aesthetic Popover + Filters Popover */}
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+              flexShrink: 0,
+            }}
+          >
             {/* Sort By Dropdown */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-              <select
-                value={normalizedSortBy}
-                onChange={(e) => handleSortChange(e.target.value)}
-                aria-label="Sort photos by"
-                style={{
-                  padding: '8px 12px',
-                  borderRadius: '8px',
-                  background: '#141720',
-                  border: '1px solid #2a3040',
-                  color: '#f1f5f9',
-                  fontSize: '14px',
-                  fontWeight: 600,
-                  cursor: 'pointer',
-                  outline: 'none',
-                }}
-              >
-                {SORT_OPTIONS.map((opt) => (
-                  <option key={opt.id} value={opt.id} style={{ background: '#141720', color: '#f1f5f9' }}>
-                    {opt.label}
-                  </option>
-                ))}
-              </select>
-            </div>
+            <select
+              value={normalizedSortBy}
+              onChange={(e) => handleSortChange(e.target.value)}
+              aria-label="Sort photos by"
+              style={{
+                padding: '6px 10px',
+                borderRadius: '8px',
+                background: '#141720',
+                border: '1px solid #2a3040',
+                color: '#f1f5f9',
+                fontSize: '13px',
+                fontWeight: 600,
+                cursor: 'pointer',
+                outline: 'none',
+              }}
+            >
+              {SORT_OPTIONS.map((opt) => (
+                <option key={opt.id} value={opt.id} style={{ background: '#141720', color: '#f1f5f9' }}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
 
             {/* Consolidated Aesthetic Tier Popover Dropdown */}
             <div ref={aestheticRef} style={{ position: 'relative' }}>
@@ -1144,9 +666,9 @@ export default function TopRibbon({
                   setFiltersOpen(false);
                 }}
                 style={{
-                  padding: '8px 14px',
+                  padding: '6px 12px',
                   borderRadius: '8px',
-                  fontSize: '14px',
+                  fontSize: '13px',
                   fontWeight: 600,
                   cursor: 'pointer',
                   border: currentSubset !== 'all' ? '1px solid #f59e0b' : '1px solid #2a3040',
@@ -1154,7 +676,8 @@ export default function TopRibbon({
                   color: currentSubset !== 'all' ? '#fbbf24' : '#e2e8f0',
                   display: 'flex',
                   alignItems: 'center',
-                  gap: '6px',
+                  gap: '5px',
+                  whiteSpace: 'nowrap',
                 }}
               >
                 <span>✨ Aesthetic: {currentSubsetObj.shortLabel}</span>
@@ -1214,7 +737,7 @@ export default function TopRibbon({
                           gap: '2px',
                         }}
                       >
-                        <div style={{ fontSize: '15px', fontWeight: 700, display: 'flex', justifyContent: 'space-between' }}>
+                        <div style={{ fontSize: '14px', fontWeight: 700, display: 'flex', justifyContent: 'space-between' }}>
                           <span>{opt.label}</span>
                           {isSelected && <span>✓</span>}
                         </div>
@@ -1235,9 +758,9 @@ export default function TopRibbon({
                   setAestheticOpen(false);
                 }}
                 style={{
-                  padding: '8px 14px',
+                  padding: '6px 12px',
                   borderRadius: '8px',
-                  fontSize: '14px',
+                  fontSize: '13px',
                   fontWeight: 600,
                   cursor: 'pointer',
                   border: activeFilterCount > 0 ? '1px solid #38bdf8' : '1px solid #2a3040',
@@ -1245,7 +768,8 @@ export default function TopRibbon({
                   color: activeFilterCount > 0 ? '#7dd3fc' : '#e2e8f0',
                   display: 'flex',
                   alignItems: 'center',
-                  gap: '6px',
+                  gap: '5px',
+                  whiteSpace: 'nowrap',
                 }}
               >
                 <span>🎯 Filters {activeFilterCount > 0 ? `(${activeFilterCount})` : ''}</span>
@@ -1319,7 +843,7 @@ export default function TopRibbon({
                       {Number(minStars) >= 4 ? '✓' : ''}
                     </span>
                     <div style={{ display: 'flex', flexDirection: 'column' }}>
-                      <span style={{ fontSize: '15px', fontWeight: 600, color: '#f8fafc' }}>
+                      <span style={{ fontSize: '14px', fontWeight: 600, color: '#f8fafc' }}>
                         ★ 4–5 Stars Only
                       </span>
                       <span style={{ fontSize: '12px', color: '#94a3b8' }}>
@@ -1364,7 +888,7 @@ export default function TopRibbon({
                       {hideUnsharp ? '✓' : ''}
                     </span>
                     <div style={{ display: 'flex', flexDirection: 'column' }}>
-                      <span style={{ fontSize: '15px', fontWeight: 600, color: '#f8fafc' }}>
+                      <span style={{ fontSize: '14px', fontWeight: 600, color: '#f8fafc' }}>
                         💎 Sharp Photos Only
                       </span>
                       <span style={{ fontSize: '12px', color: '#94a3b8' }}>
@@ -1409,7 +933,7 @@ export default function TopRibbon({
                       {currentCollapse ? '✓' : ''}
                     </span>
                     <div style={{ display: 'flex', flexDirection: 'column' }}>
-                      <span style={{ fontSize: '15px', fontWeight: 600, color: '#f8fafc' }}>
+                      <span style={{ fontSize: '14px', fontWeight: 600, color: '#f8fafc' }}>
                         ⧉ Group Burst Sequences
                       </span>
                       <span style={{ fontSize: '12px', color: '#94a3b8' }}>

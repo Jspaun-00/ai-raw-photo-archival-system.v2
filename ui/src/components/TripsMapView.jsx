@@ -614,9 +614,9 @@ export default function TripsMapView({
                       >
                         <Zap className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
                         <div>
-                          <div className="text-white font-semibold">⚡ Fast Recalibrate (&lt;1s)</div>
+                          <div className="text-white font-semibold">⚡ Fast Scan (Level 1 — 4-Pass Cascade)</div>
                           <div className="text-[10px] text-studio-textDim leading-snug">
-                            Applies cross-catalog learned centroids, perspective gate &amp; multi-tier ontology
+                            Runs Pass 1 Macro Biome Lock + Pass 2 GPU 4-Crop Saliency Scan + Pass 3 Specialist Breed/Species Drill-Down + Pass 4 Pet/Person Clustering (~6ms/photo)
                           </div>
                         </div>
                       </button>
@@ -626,9 +626,9 @@ export default function TripsMapView({
                       >
                         <Cpu className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
                         <div>
-                          <div className="text-white font-semibold">🧠 Deep AI Re-Tag (~3s/photo)</div>
+                          <div className="text-white font-semibold">🧠 Deep VLM (Level 2 — Qwen2.5-VL + Cascade)</div>
                           <div className="text-[10px] text-studio-textDim leading-snug">
-                            Re-runs Qwen2.5-VL with Aerial vs. Terrestrial guide doc &amp; neighbor hints
+                            Runs full generative VLM visual inspection + 4-Pass Cascade (~5–8s/photo)
                           </div>
                         </div>
                       </button>

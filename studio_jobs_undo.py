@@ -295,6 +295,8 @@ class BackgroundJobManager:
             self._state["running"] = False
             self._state["paused"] = False
             self._state["finished_at"] = time.time()
+            if not error and self._state.get("total", 0) > 0:
+                self._state["processed"] = self._state["total"]
             eff_msg = phase if phase is not None else message
             if eff_msg is not None:
                 self._state["message"] = eff_msg

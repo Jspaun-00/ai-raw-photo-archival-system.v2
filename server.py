@@ -486,6 +486,63 @@ async def get_preview_1600(filename: str):
     )
 
 
+@app.api_route("/api/thumbnail/{photo_id:path}", methods=["GET", "HEAD"])
+async def get_photo_thumbnail(photo_id: str):
+    clean_id = (photo_id or "").strip()
+    if not clean_id:
+        raise HTTPException(status_code=400, detail="Missing photo_id")
+
+    # 1. Direct WebP file check in thumbs_360
+    stem_name = Path(clean_id).stem
+    p_direct = DEFAULT_THUMBS_360_DIR / f"{stem_name}.webp"
+    if p_direct.exists():
+        return FileResponse(
+            str(p_direct),
+            media_type="image/webp",
+            headers={"Cache-Control": "public, max-age=31536000, immutable"},
+        )
+
+    # 2. Query photo_records for thumb_360_path / preview_1600_path
+    conn = get_db_connection(DEFAULT_DB_PATH)
+    cursor = conn.cursor()
+    row = cursor.execute(
+        """
+        SELECT thumb_360_path, preview_1600_path
+        FROM photo_records
+        WHERE file_hash = ? OR file_path = ? OR rowid = ?
+        LIMIT 1
+        """,
+        (clean_id, clean_id, int(clean_id) if clean_id.isdigit() else -1),
+    ).fetchone()
+    conn.close()
+
+    if row:
+        t_path = row["thumb_360_path"]
+        if t_path:
+            p_cand = Path(t_path)
+            if not p_cand.is_absolute():
+                p_cand = DEFAULT_THUMBS_360_DIR / p_cand.name
+            if p_cand.exists():
+                return FileResponse(
+                    str(p_cand),
+                    media_type="image/webp",
+                    headers={"Cache-Control": "public, max-age=31536000, immutable"},
+                )
+        p_path = row["preview_1600_path"]
+        if p_path:
+            p_cand = Path(p_path)
+            if not p_cand.is_absolute():
+                p_cand = DEFAULT_PREVIEWS_1600_DIR / p_cand.name
+            if p_cand.exists():
+                return FileResponse(
+                    str(p_cand),
+                    media_type="image/webp",
+                    headers={"Cache-Control": "public, max-age=31536000, immutable"},
+                )
+
+    raise HTTPException(status_code=404, detail="Thumbnail not found")
+
+
 # ==============================================================================
 # 1. CATALOGS & SYSTEM SUMMARY
 # ==============================================================================
@@ -1818,20 +1875,29 @@ def list_entity_clusters(
 
     type_map = {"pet_cat": "Cat", "pet_dog": "Dog", "person": "Person"}
     entities = []
+    conn_pe = get_db_connection(DEFAULT_DB_PATH)
+    cursor_pe = conn_pe.cursor()
+
     for r in rows:
         d = dict(r)
         raw_t = str(d.get("entity_type") or "")
         d["entity_type"] = type_map.get(raw_t, raw_t or "Pet")
-        thumb_p = d.get("thumb_360_path")
-        cover_hash = d.get("cover_file_hash") or d.get("sample_file_hash")
-        if thumb_p and Path(thumb_p).exists():
-            d["thumb_url"] = f"/media/thumbs_360/{Path(thumb_p).name}"
-        elif cover_hash:
-            d["thumb_url"] = f"/media/thumbs_360/{cover_hash}.webp"
-        else:
-            d["thumb_url"] = None
+        
+        cover_hash = str(d.get("cover_file_hash") or d.get("sample_file_hash") or "").strip()
+        if not cover_hash:
+            ent_id = d.get("entity_id")
+            pe_row = cursor_pe.execute(
+                "SELECT photo_id, file_hash FROM photo_entities WHERE entity_id = ? ORDER BY similarity DESC, rowid ASC LIMIT 1",
+                (ent_id,),
+            ).fetchone()
+            if pe_row:
+                cover_hash = str(pe_row["file_hash"] or pe_row["photo_id"] or "").strip()
+        
+        d["cover_photo_id"] = cover_hash
+        d["thumb_url"] = f"/api/thumbnail/{cover_hash}" if cover_hash else None
         entities.append(d)
 
+    conn_pe.close()
     return {"total": len(entities), "entities": entities}
 
 
@@ -3978,6 +4044,7 @@ async def trigger_reassess(payload: ReassessRequest):
                         progress_cb=_reassess_cb,
                     )
                 invalidate_search_index_cache()
+                JOB_MANAGER.update_progress(processed=total_est, total=total_est, phase="Re-Assessment Complete")
                 JOB_MANAGER.finish_job(result=rep, phase="Re-Assessment Complete")
             except Exception as exc:
                 logging.error(f"Background reassessment error ({mode}): {exc}")
@@ -4019,6 +4086,7 @@ async def trigger_reassess(payload: ReassessRequest):
                 ),
             )
         invalidate_search_index_cache()
+        JOB_MANAGER.update_progress(processed=total_est, total=total_est, phase="Re-Assessment Complete")
         JOB_MANAGER.finish_job(result=report, phase="Re-Assessment Complete")
     except Exception as exc:
         JOB_MANAGER.finish_job(error=str(exc), phase="Re-Assessment Error")

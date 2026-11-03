@@ -1416,7 +1416,8 @@ def call_qwen_vlm(
         img_bytes = buf.getvalue()
 
     target_model = resolve_ollama_model(vlm_model)
-    resp = ollama.generate(
+    client = ollama.Client(timeout=45.0) if hasattr(ollama, "Client") else ollama
+    resp = client.generate(
         model=target_model,
         system=directive_text,
         prompt=prompt_text,
@@ -6252,14 +6253,11 @@ def reassess_records_fast(
     landmark_propagated = 0
     total_rows = len(rows)
     cancelled = False
+    if progress_cb is not None and total_rows > 0:
+        progress_cb(0, total_rows, Path(rows[0]["file_path"]).name)
 
     for idx_row, r in enumerate(rows):
         fp = r["file_path"]
-        if progress_cb is not None:
-            should_continue = progress_cb(idx_row, total_rows, Path(fp).name)
-            if not should_continue:
-                cancelled = True
-                break
         sdate = str(r.get("shoot_date") or "")
         fp_stem_low = Path(fp).stem.lower()
         probes = probes_map.get(fp, {})
@@ -6623,6 +6621,12 @@ def reassess_records_fast(
             )
             conn.commit()
 
+        if progress_cb is not None:
+            should_continue = progress_cb(idx_row + 1, total_rows, Path(fp).name)
+            if not should_continue:
+                cancelled = True
+                break
+
     rem_count = len(updates) % 200
     if rem_count > 0:
         cursor.executemany(
@@ -6651,6 +6655,9 @@ def reassess_records_fast(
         )
         conn.commit()
     conn.close()
+
+    if progress_cb is not None and not cancelled:
+        progress_cb(total_rows, total_rows, "Re-Assessment Complete")
 
     # Rebuild cross-catalog metadata centroids with the cleaned & enriched records
     learned_idx = build_self_learning_index(db_path=db_path, vectors_path=vectors_path)
@@ -7598,14 +7605,11 @@ def reassess_records_deep(
     vlm_calls = 0
     total_rows = len(rows)
     cancelled = False
+    if progress_cb is not None and total_rows > 0:
+        progress_cb(0, total_rows, Path(rows[0]["file_path"]).name)
 
     for idx_row, frame in enumerate(rows):
         fp = frame["file_path"]
-        if progress_cb is not None:
-            should_continue = progress_cb(idx_row, total_rows, Path(fp).name)
-            if not should_continue:
-                cancelled = True
-                break
         probes = probes_map.get(fp, {})
         gt = lookup_ground_truth_context(
             frame,
@@ -7694,7 +7698,15 @@ def reassess_records_deep(
             row_tuple,
         )
         conn.commit()
+        if progress_cb is not None:
+            should_continue = progress_cb(idx_row + 1, total_rows, Path(fp).name)
+            if not should_continue:
+                cancelled = True
+                break
     conn.close()
+
+    if progress_cb is not None and not cancelled:
+        progress_cb(total_rows, total_rows, "Re-Assessment Complete")
 
     if not cancelled and not photo_ids:
         try:
