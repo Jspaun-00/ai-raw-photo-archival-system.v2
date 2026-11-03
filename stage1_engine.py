@@ -866,6 +866,10 @@ def build_or_update_crop_vectors_mps(
     }
 
 
+# Invariant 2: Alias for automatic 4-Pass level 1 ingestion pipeline
+ensure_crop_vectors = build_or_update_crop_vectors_mps
+
+
 def compute_preview_signature_and_saliency(preview_path: Optional[Path]) -> Dict[str, Any]:
     """
     Computes universal image statistics from a local WebP preview:

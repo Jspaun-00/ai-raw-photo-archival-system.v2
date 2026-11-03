@@ -997,7 +997,7 @@ def harvest_omni_metadata_batch(
     own_et = False
     if et_helper is None and not fast_only:
         et_helper = exiftool.ExifToolHelper(
-            common_args=["-G0", "-a", "-s", "-n", "-api", "Geolocation"]
+            common_args=["-G0", "-a", "-s", "-n", "-m", "-fast2", "-api", "Geolocation"]
         )
         et_helper.run()
         own_et = True

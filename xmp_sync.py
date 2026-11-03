@@ -155,6 +155,7 @@ def sync_record_metadata_additive(
         args = [
             EXIFTOOL_BIN,
             "-overwrite_original",
+            "-m",
             "-XMP-xmp:CreatorTool=AI Photo Archival System v3.0",
             f"-XMP:Rating={star_rating}",
         ]
@@ -192,12 +193,23 @@ def sync_record_metadata_additive(
 
         args.append(str(target_path))
 
+        # Remove any stale temporary files from previous interrupted ExifTool operations
+        tmp_target = target_path.parent / f"{target_path.name}_exiftool_tmp"
+        if tmp_target.exists():
+            try:
+                tmp_target.unlink()
+            except Exception as e:
+                logging.warning(f"Failed to remove stale ExifTool tmp file {tmp_target}: {e}")
+
+        file_size_mb = (target_path.stat().st_size / (1024 * 1024)) if target_path.exists() else 0.0
+        dyn_timeout = max(45, int((file_size_mb or 0) * 0.4) + 30)
+
         try:
             res = subprocess.run(
                 args,
                 capture_output=True,
                 text=True,
-                timeout=30,
+                timeout=dyn_timeout,
                 check=False,
             )
             if res.returncode != 0 or not target_path.exists() or target_path.stat().st_size == 0:
@@ -213,6 +225,16 @@ def sync_record_metadata_additive(
                     log_ingestion_error(db_path, str(source_ref), "xmp_sync", "SafetyViolation", "RAW size changed")
                     conn.close()
                     return {"status": "error", "message": "Safety check failed on RAW file"}
+
+            # Clear resolved error rows from ingestion_errors on success
+            try:
+                cursor.execute(
+                    "DELETE FROM ingestion_errors WHERE (file_path = ? OR file_path = ?) AND stage = 'xmp_sync'",
+                    (str(target_path), str(primary_p)),
+                )
+                conn.commit()
+            except Exception:
+                pass
 
             written_targets.append(str(target_path))
         except Exception as exc:

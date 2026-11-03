@@ -849,6 +849,9 @@ def _serialize_photo_item(item: Dict[str, Any], shoot_title: Optional[str] = Non
     item["verified_subjects"] = _parse_json_raw_list(item.get("verified_subjects"))
     item["location_provenance"] = str(item.get("location_provenance") or "").strip()
     item["user_context_notes"] = str(item.get("user_context_notes") or "").strip()
+    item["tag_authority_weight"] = float(item.get("tag_authority_weight") or 0.85)
+    item["assessment_tier"] = str(item.get("assessment_tier") or "level1")
+    item["macro_biome"] = str(item.get("macro_biome") or "")
 
     # Enforce strict Blank-by-Default location serialization (never "Unknown" or "None")
     for loc_f in ("country", "state_region", "city", "specific_location", "sub_location"):
@@ -1297,7 +1300,8 @@ def _get_cached_query_rows(where_sql: str, params_tuple: Tuple[Any, ...]) -> Tup
                sharpness_score, is_unsharp, colorfulness_score, is_monochrome,
                laion_aesthetic_score, keepers_taste_bonus, aesthetic_score,
                sequence_id, sequence_frame_index, sequence_length, is_sequence_hero,
-               vector_index, in_keepers, file_mtime, updated_at
+               vector_index, in_keepers, file_mtime, updated_at,
+               tag_authority_weight, assessment_tier, macro_biome
         FROM photo_records
         WHERE {where_sql}
     """
@@ -3847,8 +3851,25 @@ async def trigger_pipeline_run(payload: RunPipelineRequest, background_tasks: Ba
                     if not JOB_MANAGER.check_pause_or_cancel():
                         raise RuntimeError("Import cancelled by user")
 
+                    # Invariant 2: Level 1 4-Pass Cascade runs automatically on every folder import
+                    PIPELINE_STATUS["phase"] = "Building multi-crop visual vectors on Apple Metal GPU..."
+                    try:
+                        build_or_update_crop_vectors_mps(db_path=DEFAULT_DB_PATH)
+                    except Exception as exc:
+                        logger.warning(f"build_or_update_crop_vectors_mps warning: {exc}")
+
                     mode_norm = (ai_mode or "fast_vectors").strip().lower()
                     if mode_norm == "deep_vlm":
+                        # Always run fast 4-pass cascade first to establish macro anchors and clusters
+                        reassess_records_fast(
+                            db_path=DEFAULT_DB_PATH,
+                            vectors_path=DEFAULT_VECTORS_PATH,
+                            photo_ids=None,
+                            catalog_name=catalog_name,
+                            encode_text_batch_fn=encode_text_batch,
+                            progress_cb=_progress_cb,
+                            run_clustering=True,
+                        )
                         PIPELINE_STATUS["phase"] = "Step 2: Deep AI Vision Scene Analysis..."
                         run_stage2_vlm(
                             db_path=DEFAULT_DB_PATH,
@@ -3864,6 +3885,7 @@ async def trigger_pipeline_run(payload: RunPipelineRequest, background_tasks: Ba
                             catalog_name=catalog_name,
                             encode_text_batch_fn=encode_text_batch,
                             progress_cb=_progress_cb,
+                            run_clustering=True,
                         )
             elif stage == 2:
                 PIPELINE_STATUS["phase"] = "Step 2: AI Visual Tagging & Scene Analysis..."
@@ -4652,6 +4674,8 @@ async def apply_teach_instruction(payload: TeachApplyRequest):
                     key_subjects = ?,
                     existing_keywords = ?,
                     hierarchical_keywords = ?,
+                    tag_authority_weight = 0.85,
+                    assessment_tier = 'level1',
                     updated_at = CURRENT_TIMESTAMP
                 WHERE file_path = ?
                 """,
@@ -4742,6 +4766,8 @@ async def apply_teach_instruction(payload: TeachApplyRequest):
                     state_region = ?,
                     city = ?,
                     specific_location = ?,
+                    tag_authority_weight = 2.0,
+                    assessment_tier = 'level3_user',
                     updated_at = CURRENT_TIMESTAMP
                 WHERE file_path = ?
                 """,
@@ -4788,7 +4814,8 @@ async def apply_teach_instruction(payload: TeachApplyRequest):
                            sharpness_score, is_unsharp, colorfulness_score, is_monochrome,
                            laion_aesthetic_score, keepers_taste_bonus, aesthetic_score,
                            sequence_id, sequence_frame_index, sequence_length, is_sequence_hero,
-                           vector_index, in_keepers, file_mtime, updated_at
+                           vector_index, in_keepers, file_mtime, updated_at,
+                           tag_authority_weight, assessment_tier, macro_biome
                     FROM photo_records
                     WHERE file_hash IN ({placeholders}) OR file_path IN ({placeholders})
                 """
@@ -4835,7 +4862,8 @@ async def apply_teach_instruction(payload: TeachApplyRequest):
                            sharpness_score, is_unsharp, colorfulness_score, is_monochrome,
                            laion_aesthetic_score, keepers_taste_bonus, aesthetic_score,
                            sequence_id, sequence_frame_index, sequence_length, is_sequence_hero,
-                           vector_index, in_keepers, file_mtime, updated_at
+                           vector_index, in_keepers, file_mtime, updated_at,
+                           tag_authority_weight, assessment_tier, macro_biome
                     FROM photo_records
                     WHERE file_hash IN ({placeholders}) OR file_path IN ({placeholders})
                 """

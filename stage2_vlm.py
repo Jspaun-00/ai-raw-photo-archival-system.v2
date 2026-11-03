@@ -70,6 +70,21 @@ REF_FACES_DIR = PROJECT_ROOT / "reference_faces"
 # Global pause flag for background execution control from FastAPI UI or CLI
 STAGE2_PAUSE_EVENT = threading.Event()
 
+_BIOME_LABEL_TO_ID = {
+    "Coastal / Beach & Pier": "coastal_beach_pier",
+    "Urban / Downtown & Infrastructure": "urban_downtown_infra",
+    "Agricultural / Rolling Farmland": "agri_rolling_farmland",
+    "Desert / Canyon & Badlands": "desert_canyon_badlands",
+    "Alpine / Mountain & Forest": "alpine_mountain_forest",
+    "Indoor / Residential & Living Space": "indoor_residential",
+    "Indoor / Closet, Drawer & Personal Storage": "indoor_closet_storage",
+    "Studio / Tabletop, Product & Scientific Macro": "studio_tabletop_macro",
+    "Portrait / Mirror & People": "portrait_mirror_people",
+    "Urban / Automotive, Bridges & Architecture": "urban_automotive_arch",
+    "Aerial / Agriculture, Infrastructure & Topo": "aerial_infra_topo",
+    "Outdoor / Wilderness, Ranch, Coastal & Flora": "outdoor_wilderness_flora",
+}
+
 
 def _safe_json_list(val: Any) -> List[str]:
     if not val:
@@ -331,7 +346,8 @@ def build_self_learning_index(
                gps_lat, gps_lon, gps_ground_truth, is_screenshot,
                sub_location, specific_location, city, state_region, country, title, caption,
                existing_keywords, lrcat_keywords, hierarchical_keywords,
-               user_taught_tags, user_context_notes, negated_tags, vector_index
+               user_taught_tags, user_context_notes, negated_tags, vector_index,
+               tag_authority_weight, assessment_tier
         FROM photo_records
         WHERE status != 'failed'
     """).fetchall()
@@ -353,6 +369,13 @@ def build_self_learning_index(
         )
         dt = _parse_exif_dt(row_dict.get("exif_time"))
 
+        auth_w = float(row_dict.get("tag_authority_weight") or 0.85)
+        tier = str(row_dict.get("assessment_tier") or "level1")
+        if tier == "level3_user" or row_dict.get("user_taught_tags"):
+            auth_w = max(auth_w, 2.0)
+        elif tier == "level2_vlm":
+            auth_w = max(auth_w, 1.4)
+
         anchor_entry = {
             "file_path": row_dict["file_path"],
             "camera_model": str(row_dict.get("camera_model") or "Unknown"),
@@ -371,6 +394,8 @@ def build_self_learning_index(
             "curated_keywords": flat_kws,
             "hierarchical_keywords": hier_kws,
             "vector_index": int(v_idx) if has_vec else None,
+            "authority_weight": auth_w,
+            "assessment_tier": tier,
         }
         orbit_anchors.append(anchor_entry)
 
@@ -482,12 +507,12 @@ def lookup_ground_truth_context(
     record: Dict[str, Any],
     learned_index: Dict[str, Any],
     vectors: np.ndarray,
-    orbit_window_seconds: float = 180.0,
+    orbit_window_seconds: float = 900.0,
     centroid_similarity_threshold: float = 0.84,
 ) -> Optional[Dict[str, Any]]:
     """
     Checks if a photo matches existing ground-truth metadata via:
-    1. Helicopter Orbit Time-Window Propagation (+-180s on same camera & same shoot_date), OR
+    1. Helicopter Orbit Time-Window Propagation (+-900s / 15m on same camera & same shoot_date, weighted by authority tier), OR
     2. Self-Learning CLIP Centroid Cosine Similarity (>= 0.84).
     Returns matched ground-truth metadata dict if found, else None.
     """
@@ -496,9 +521,9 @@ def lookup_ground_truth_context(
     sdate = str(record.get("shoot_date") or "Undated")
     dt_curr = _parse_exif_dt(record.get("exif_time"))
 
-    # 1. Check +-3 minute (180s) same-camera, same-date helicopter orbit window
+    # 1. Check +-15 minute (900s) same-camera, same-date helicopter orbit window
     if dt_curr and sdate != "Undated":
-        matching_orbits: List[Tuple[float, Dict[str, Any]]] = []
+        matching_orbits: List[Tuple[float, int, float, Dict[str, Any]]] = []
         for anchor in learned_index.get("orbit_anchors", []):
             if anchor["file_path"] == record.get("file_path"):
                 continue
@@ -510,17 +535,19 @@ def lookup_ground_truth_context(
                 continue
             delta = abs((dt_curr - anchor["dt"]).total_seconds())
             if delta <= orbit_window_seconds:
-                # Prioritize anchors that have explicit location fields, then by smallest time delta
+                # Prioritize anchors with highest tag authority (2.0x User/Voice > 1.4x Deep VLM > 0.85x Fast Scan),
+                # then anchors that have explicit location fields, then by smallest time delta
+                auth_weight = float(anchor.get("authority_weight") or 0.85)
                 has_loc_priority = 0 if (anchor.get("sub_location") or anchor.get("specific_location") or anchor.get("city")) else 1
-                matching_orbits.append((delta, has_loc_priority, anchor))
+                matching_orbits.append((delta, has_loc_priority, auth_weight, anchor))
 
         if matching_orbits:
-            matching_orbits.sort(key=lambda x: (x[1], x[0]))
-            best_delta, _, primary_orbit = matching_orbits[0]
+            matching_orbits.sort(key=lambda x: (-x[2], x[1], x[0]))
+            best_delta, _, _, primary_orbit = matching_orbits[0]
 
             merged_kws: List[str] = []
             merged_hkws: List[str] = []
-            for _, _, orb in matching_orbits:
+            for _, _, _, orb in matching_orbits:
                 for kw in orb.get("curated_keywords", []):
                     if kw not in merged_kws:
                         merged_kws.append(kw)
@@ -529,7 +556,7 @@ def lookup_ground_truth_context(
                         merged_hkws.append(hkw)
 
             def _first_orb_field(f_name: str) -> Optional[str]:
-                for _, _, orb in matching_orbits:
+                for _, _, _, orb in matching_orbits:
                     val = orb.get(f_name)
                     if val and str(val).strip().lower() not in ("", "unknown", "none"):
                         return str(val).strip()
@@ -3409,6 +3436,11 @@ def _get_openclip_probe_singleton():
 
         # 2. Pre-encode Pass 1 Macro Biome Multi-Prompt Ensembles
         _BIOME_LABEL_TO_ID = {
+            "Coastal / Beach & Pier": "coastal_beach_pier",
+            "Urban / Downtown & Infrastructure": "urban_downtown_infra",
+            "Agricultural / Rolling Farmland": "agri_rolling_farmland",
+            "Desert / Canyon & Badlands": "desert_canyon_badlands",
+            "Alpine / Mountain & Forest": "alpine_mountain_forest",
             "Indoor / Residential & Living Space": "indoor_residential",
             "Indoor / Closet, Drawer & Personal Storage": "indoor_closet_storage",
             "Studio / Tabletop, Product & Scientific Macro": "studio_tabletop_macro",
@@ -3735,8 +3767,8 @@ def compute_clip_concept_probes_for_rows(
         lrcat_words = set(re.split(r"[^a-z0-9]+", " ".join(lrcat_kws)))
 
         explicit_aerial_kw = any(
-            w in human_blob for w in ("helicopter", "taft", "palouse", "air to air", "overflight")
-        )
+            w in human_blob for w in ("helicopter", "taft", "palouse", "air to air", "overflight", "aerial", "aerials")
+        ) or (r.get("catalog_name") == "3_Aerial_Keepers") or ("aerial" in fp.lower())
         explicit_terrestrial_kw = any(
             w in human_blob
             for w in (
@@ -3854,7 +3886,12 @@ def compute_clip_concept_probes_for_rows(
         b_indoor_closet = biome_scores.get("indoor_closet_storage", 0.0)
         b_studio_macro = biome_scores.get("studio_tabletop_macro", 0.0)
         b_portrait_mirror = max(biome_scores.get("portrait_mirror_people", 0.0), scene_mirror_sim)
+        b_urban_down = biome_scores.get("urban_downtown_infra", 0.0)
         b_urban_auto = max(biome_scores.get("urban_automotive_arch", 0.0), scene_auto_sim)
+        b_coastal = biome_scores.get("coastal_beach_pier", 0.0)
+        b_agri = biome_scores.get("agri_rolling_farmland", 0.0)
+        b_desert = biome_scores.get("desert_canyon_badlands", 0.0)
+        b_alpine = biome_scores.get("alpine_mountain_forest", 0.0)
         b_aerial = max(biome_scores.get("aerial_infra_topo", 0.0), aerial_sim)
         b_outdoor = max(biome_scores.get("outdoor_wilderness_flora", 0.0), scene_nature_sim)
 
@@ -3885,29 +3922,57 @@ def compute_clip_concept_probes_for_rows(
         else:
             is_aerial = bool(aerial_sim > terrestrial_sim + 0.020 and aerial_sim >= 0.195)
 
+        fp_low = fp.lower()
+        sub_kws = [k.lower().strip() for k in _safe_json_list(r.get("key_subjects"))]
+        all_kw_blob = (human_blob + " " + " ".join(sub_kws) + " " + fp_low).lower()
+
         # Lock Macro Biome (Pass 1)
         macro_biome_id = "outdoor_wilderness_flora"
-        if is_aerial:
-            scene_context = "aerial"
-            macro_biome_id = "aerial_infra_topo"
-        elif b_portrait_mirror >= 0.232 and b_portrait_mirror >= b_outdoor + 0.020:
+        if not is_aerial and b_portrait_mirror >= 0.232 and b_portrait_mirror >= b_outdoor + 0.020:
             scene_context = "mirror_portrait"
             macro_biome_id = "portrait_mirror_people"
-        elif b_indoor_closet >= 0.228 and b_indoor_closet >= b_outdoor + 0.022 and b_indoor_closet >= b_indoor_res + 0.005:
+        elif not is_aerial and b_indoor_closet >= 0.228 and b_indoor_closet >= b_outdoor + 0.022 and b_indoor_closet >= b_indoor_res + 0.005:
             scene_context = "indoor_domestic"
             macro_biome_id = "indoor_closet_storage"
-        elif b_studio_macro >= 0.235 and b_studio_macro >= b_outdoor + 0.020 and b_studio_macro >= b_indoor_res + 0.010:
+        elif not is_aerial and b_studio_macro >= 0.235 and b_studio_macro >= b_outdoor + 0.020 and b_studio_macro >= b_indoor_res + 0.010:
             scene_context = "indoor_domestic"
             macro_biome_id = "studio_tabletop_macro"
-        elif b_indoor_res >= 0.212 and b_indoor_res >= b_outdoor + 0.012:
+        elif not is_aerial and b_indoor_res >= 0.212 and b_indoor_res >= b_outdoor + 0.012:
             scene_context = "indoor_domestic"
             macro_biome_id = "indoor_residential"
+        elif b_urban_down >= 0.21 or (b_urban_down >= 0.18 and any(w in all_kw_blob for w in ("urban", "city", "skyline", "skyscraper", "chicago", "downtown", "metropolitan"))):
+            scene_context = "urban_automotive"
+            macro_biome_id = "urban_downtown_infra"
+        elif b_coastal >= 0.20 or (b_coastal >= 0.145 and any(w in all_kw_blob for w in ("beach", "long beach", "coast", "pier", "ocean", "surf", "shoreline", "breakwater", "port", "harbor", "huntington beach", "pacific", "sea stacks", "tidal", "boardwalk", "pescadero", "big sur", "point lobos", "bandon"))):
+            scene_context = "aerial" if is_aerial else "outdoor_nature"
+            macro_biome_id = "coastal_beach_pier"
+        elif b_agri >= 0.21 or (b_agri >= 0.17 and any(w in all_kw_blob for w in ("palouse", "steptoe", "farmland", "farm", "crop", "wheat", "orchard", "center-pivot", "contour farming", "ploughed", "grain silo", "harvest", "tractor"))):
+            scene_context = "aerial" if is_aerial else "outdoor_nature"
+            macro_biome_id = "agri_rolling_farmland"
+        elif b_desert >= 0.21 or (b_desert >= 0.175 and any(w in all_kw_blob for w in ("canyon", "canyonlands", "monument valley", "badlands", "death valley", "moab", "tucson", "saguaro", "sonoran", "white sands", "valley of the gods", "anza-borrego", "joshua tree", "dead horse", "green river overlook")) and not any(w in all_kw_blob for w in ("palouse", "steptoe", "farmland"))):
+            scene_context = "aerial" if is_aerial else "outdoor_nature"
+            macro_biome_id = "desert_canyon_badlands"
+        elif b_alpine >= 0.21 or (b_alpine >= 0.175 and any(w in all_kw_blob for w in ("teton", "yosemite", "mountain", "mountains", "alpine", "glacier", "half dome", "el capitan", "yellowstone", "wasatch", "bighorn mountains", "fiordland", "milford sound"))):
+            scene_context = "aerial" if is_aerial else "outdoor_nature"
+            macro_biome_id = "alpine_mountain_forest"
+        elif is_aerial:
+            scene_context = "aerial"
+            macro_biome_id = "aerial_infra_topo"
         elif b_urban_auto >= 0.218 and b_urban_auto >= b_outdoor + 0.015:
             scene_context = "urban_automotive"
             macro_biome_id = "urban_automotive_arch"
         else:
             scene_context = "outdoor_nature"
-            macro_biome_id = "outdoor_wilderness_flora"
+            out_scores = [
+                (b_desert, "desert_canyon_badlands"),
+                (b_alpine, "alpine_mountain_forest"),
+                (b_coastal, "coastal_beach_pier"),
+                (b_agri, "agri_rolling_farmland"),
+                (b_urban_down, "urban_downtown_infra"),
+                (b_outdoor, "outdoor_wilderness_flora"),
+            ]
+            out_scores.sort(key=lambda x: -x[0])
+            macro_biome_id = out_scores[0][1]
 
         locked_biome_cfg = biome_vecs.get(macro_biome_id, ({"label": "Outdoor / Wilderness, Ranch, Coastal & Flora", "forbidden_tags": set()}, None))[0]
         macro_biome_label = str(locked_biome_cfg.get("label") or "Outdoor / Wilderness, Ranch, Coastal & Flora")
@@ -4174,6 +4239,10 @@ def compute_clip_concept_probes_for_rows(
             or bool(user_taught_low & {"dog", "dogs", "canine", "puppy", "chihuahua", "french bulldog"})
             or bool(lrcat_words & {"dog", "dogs"})
         ) and not bool(neg_low & {"dog", "dogs"})
+        if "dog" in forbidden_tags_lower and not bool(user_taught_low & {"dog", "dogs", "canine", "puppy"}):
+            has_dog = False
+        elif (is_aerial or macro_biome_id in ("agri_rolling_farmland", "desert_canyon_badlands", "alpine_mountain_forest", "aerial_infra_topo")) and not (scene_indoor_sim >= 0.220 or bool(user_taught_low & {"dog", "dogs", "canine", "puppy"}) or bool(lrcat_words & {"dog", "dogs"})):
+            has_dog = False
 
         cat_foil = (
             max(foil_indoor_local_global, foil_statue)
@@ -4210,6 +4279,10 @@ def compute_clip_concept_probes_for_rows(
             or bool(user_taught_low & {"cat", "cats", "feline", "kitten", "scottish fold"})
             or bool(lrcat_words & {"cat", "cats"})
         ) and not bool(neg_low & {"cat", "cats"})
+        if "cat" in forbidden_tags_lower and not bool(user_taught_low & {"cat", "cats", "feline", "kitten", "scottish fold"}):
+            has_cat = False
+        elif (is_aerial or macro_biome_id in ("agri_rolling_farmland", "desert_canyon_badlands", "alpine_mountain_forest", "aerial_infra_topo")) and not (scene_indoor_sim >= 0.220 or bool(user_taught_low & {"cat", "cats", "feline", "kitten", "scottish fold"}) or bool(lrcat_words & {"cat", "cats"})):
+            has_cat = False
 
         has_cat_tree = bool(
             (cat_tree_sim >= 0.232 or (has_cat and crop_cattree_sim >= 0.242))
@@ -4854,8 +4927,18 @@ def assign_portfolio_categories(
     if spec.lower() == "unknown":
         spec = ""
     is_aerial = bool(probes.get("is_aerial", record.get("is_aerial")))
+    macro_id = str(probes.get("macro_biome_id") or record.get("macro_biome_id") or "")
+    if not macro_id and record.get("macro_biome"):
+        macro_id = _BIOME_LABEL_TO_ID.get(record.get("macro_biome"), "")
 
-    kw_low_set = {str(k).lower().strip() for k in flat_kws if str(k).strip()}
+    forbidden_low = set(probes.get("forbidden_tags_lower") or [])
+    taught_low_set = {str(t).strip().lower() for t in _safe_json_list(record.get("user_taught_tags")) if str(t).strip()}
+
+    kw_low_set = {
+        str(k).lower().strip()
+        for k in flat_kws
+        if str(k).strip() and (str(k).lower().strip() not in forbidden_low or str(k).lower().strip() in taught_low_set)
+    }
     kw_words = set(re.split(r"[^a-z0-9]+", " ".join(kw_low_set))) - {""}
     blob = " ".join([fp_low, ctry.lower(), state.lower(), spec.lower()] + list(kw_low_set))
 
@@ -4863,10 +4946,18 @@ def assign_portfolio_categories(
     theme_tags: List[str] = []
 
     def _add_cat(cat_name: str, sub_tags: Optional[List[str]] = None) -> None:
+        c_low = cat_name.lower().strip()
+        if c_low in forbidden_low and c_low not in taught_low_set:
+            return
         if cat_name not in categories:
             categories.append(cat_name)
         for st in (sub_tags or []):
-            if st and st not in theme_tags:
+            if not st:
+                continue
+            st_low = st.lower().strip()
+            if st_low in forbidden_low and st_low not in taught_low_set:
+                continue
+            if st not in theme_tags:
                 theme_tags.append(st)
 
     # 1. Iceland
@@ -4906,10 +4997,12 @@ def assign_portfolio_categories(
 
     # 3. Coastline & Piers
     if (
-        any(x in blob for x in (
+        macro_id == "coastal_beach_pier"
+        or any(x in blob for x in (
             "big sur", "point lobos", "pescadero", "huntington beach", "bandon", "oregon coast",
             "california coast", "california piers", "cayucos", "bolsa", "avila", "laguna",
             "santa barbara", "catalina", "la push", "olympic coast", "sea stacks", "pier",
+            "long beach", "coast", "coastline", "shoreline", "breakwater",
         ))
         or float(probes.get("f1_coastline_surf_sim", 0.0)) >= 0.245
     ):
@@ -4920,19 +5013,22 @@ def assign_portfolio_categories(
             coast_subs.extend(["Point Lobos", "California Coast"])
         elif "huntington beach" in blob:
             coast_subs.extend(["Huntington Beach", "California Coast", "California Piers"])
+        elif "long beach" in blob:
+            coast_subs.extend(["Long Beach", "California Coast", "California Piers"])
         elif any(x in blob for x in ("bandon", "oregon coast", "coosbay", "sunsetbch", "tidalflat")):
             coast_subs.extend(["Bandon Coast", "Oregon Coast"])
         elif any(x in blob for x in ("cayucos", "bolsa", "avila", "pier")):
             coast_subs.extend(["California Piers", "California Coast"])
         elif state == "California":
             coast_subs.append("California Coast")
-        if float(probes.get("f1_coastline_surf_sim", 0.0)) >= 0.23 or "surf" in blob or "ocean" in blob or "beach" in blob:
+        if float(probes.get("f1_coastline_surf_sim", 0.0)) >= 0.23 or "surf" in blob or "ocean" in blob or "beach" in blob or macro_id == "coastal_beach_pier":
             coast_subs.append("Ocean & Surf")
         _add_cat("Coastline & Piers", coast_subs or ["Ocean & Surf"])
 
     # 4. Desert (Southwest, Colorado Plateau, Death Valley, Eastern Sierra, White Sands, Sonoran)
-    if (
-        any(x in blob for x in (
+    if "desert" not in forbidden_low and (
+        macro_id == "desert_canyon_badlands"
+        or any(x in blob for x in (
             "monument valley", "valley of the gods", "canyonlands", "moab", "green river overlook",
             "upheaval", "deadhorse", "death valley", "zabriskie", "alabama hills", "mono lake",
             "eastern sierra", "highway 395", "white sands", "anza-borrego", "borrego",
@@ -4968,7 +5064,8 @@ def assign_portfolio_categories(
 
     # 5. National Parks & Mountains
     if (
-        any(x in blob for x in (
+        macro_id == "alpine_mountain_forest"
+        or any(x in blob for x in (
             "yosemite", "half dome", "el capitan", "teton", "jackson hole", "yellowstone",
             "grand canyon", "everglades", "lake tahoe", "bighorn mountains", "milford sound",
             "fiordland", "sierra nevada", "wasatch", "heber valley", "red rocks", "front range",
@@ -4996,10 +5093,12 @@ def assign_portfolio_categories(
 
     # 6. Palouse & Farmland
     if (
-        any(x in blob for x in (
+        macro_id == "agri_rolling_farmland"
+        or any(x in blob for x in (
             "palouse", "steptoe", "hawkeye ranch", "southfork", "moccasin", "mocasin",
             "humphrey", "montana plains", "billings", "yankton", "grain elevator", "grain silo",
             "barn", "homestead", "farmland", "corral", "pasture",
+            "wheat field", "crop field", "agriculture", "ploughed field", "contour farming",
         ))
         or float(probes.get("f1_barn_farmstead_sim", 0.0)) >= 0.235
         or float(probes.get("f1_ranch_pasture_sim", 0.0)) >= 0.235
@@ -5023,11 +5122,13 @@ def assign_portfolio_categories(
 
     # 7. Urban & Architecture
     if (
-        any(x in blob for x in (
+        macro_id in ("urban_downtown_infra", "urban_automotive_arch")
+        or any(x in blob for x in (
             "chicago", "washington monument", "united states capitol", "washington dc",
             "national mall", "venice", "san miguel de allende", "havana", "malecón", "malecon",
             "nashville", "parthenon", "savannah", "louisville", "brighton", "freeway",
             "highway interchange", "bridges & freeways", "overpass", "cityscape", "skyscraper",
+            "urban", "city", "downtown", "metropolitan",
         ))
         or float(probes.get("f1_urban_skyline_sim", 0.0)) >= 0.235
     ):
@@ -5075,6 +5176,8 @@ def assign_portfolio_categories(
         or bool(probes.get("has_cat"))
         or bool(kw_words & {"dog", "dogs", "puppy", "chihuahua", "terrier", "cat", "cats", "kitten", "feline", "pet", "pets"})
     )
+    if ("pets" in forbidden_low or "cat" in forbidden_low) and not bool(taught_low_set & {"dog", "dogs", "puppy", "chihuahua", "cat", "cats", "kitten", "feline", "pet", "pets"}):
+        has_verified_pets = False
     if has_verified_pets:
         pet_subs = ["Pets"]
         if probes.get("has_dog") or bool(kw_words & {"dog", "dogs", "puppy", "chihuahua", "terrier", "canine"}):
@@ -5142,21 +5245,36 @@ def assign_portfolio_categories(
             ai_subs.append("Fitting Room")
         _add_cat("Architecture & Interiors", ai_subs)
 
-    # Fallback if no category matched yet: NEVER blindly default to "National Parks & Mountains" for general photos!
+    # Fallback if no category matched yet: route by macro biome rather than blindly defaulting!
     if not categories:
-        scene_ctx = str(probes.get("scene_context") or "outdoor_nature")
-        if scene_ctx == "indoor_domestic":
-            _add_cat("Architecture & Interiors", [])
-        elif scene_ctx == "mirror_portrait":
-            _add_cat("Portraits & People", [])
-        elif scene_ctx == "urban_automotive":
-            _add_cat("Automotive & Urban", [])
-        elif state in ("Utah", "Arizona", "New Mexico", "Nevada") and float(probes.get("sc_outdoor_nature_sim", 0.0)) >= 0.20:
+        if macro_id in ("urban_downtown_infra", "urban_automotive_arch"):
+            _add_cat("Urban & Architecture", ["Urban"])
+        elif macro_id == "agri_rolling_farmland":
+            _add_cat("Palouse & Farmland", ["Farmland"])
+        elif macro_id == "coastal_beach_pier":
+            _add_cat("Coastline & Piers", ["Coastline"])
+        elif macro_id == "desert_canyon_badlands":
             _add_cat("Desert", ["Desert"])
-        elif state in ("Wyoming", "Montana", "Colorado", "Washington") and float(probes.get("sc_outdoor_nature_sim", 0.0)) >= 0.20:
+        elif macro_id == "alpine_mountain_forest":
             _add_cat("National Parks & Mountains", ["Mountains"])
+        elif macro_id in ("indoor_residential", "indoor_closet_storage", "studio_tabletop_macro"):
+            _add_cat("Architecture & Interiors", [])
+        elif macro_id == "portrait_mirror_people":
+            _add_cat("Portraits & People", [])
         else:
-            _add_cat("Everyday & Lifestyle", [])
+            scene_ctx = str(probes.get("scene_context") or "outdoor_nature")
+            if scene_ctx == "indoor_domestic":
+                _add_cat("Architecture & Interiors", [])
+            elif scene_ctx == "mirror_portrait":
+                _add_cat("Portraits & People", [])
+            elif scene_ctx == "urban_automotive":
+                _add_cat("Automotive & Urban", [])
+            elif state in ("Utah", "Arizona", "New Mexico", "Nevada") and float(probes.get("sc_outdoor_nature_sim", 0.0)) >= 0.20:
+                _add_cat("Desert", ["Desert"])
+            elif state in ("Wyoming", "Montana", "Colorado", "Washington") and float(probes.get("sc_outdoor_nature_sim", 0.0)) >= 0.20:
+                _add_cat("National Parks & Mountains", ["Mountains"])
+            else:
+                _add_cat("Everyday & Lifestyle", [])
 
     # Update hierarchical_keywords with Portfolio|<Category> and strip all old Visual_Facets / Lighting / Atmosphere / schema placeholder noise
     clean_hier: List[str] = []
@@ -6132,6 +6250,7 @@ def reassess_records_fast(
     catalog_name: Optional[str] = None,
     encode_text_batch_fn: Optional[Callable[[List[str]], Dict[str, np.ndarray]]] = None,
     progress_cb: Optional[Callable[[int, int, str], bool]] = None,
+    run_clustering: bool = True,
 ) -> Dict[str, Any]:
     """
     Fast Vector & Ontology Re-Assessment (< 1 second):
@@ -6178,7 +6297,8 @@ def reassess_records_fast(
                    primary_category, sub_category, is_aerial, is_unsharp, is_monochrome,
                    confidence_score, vector_index, status,
                    user_context_notes, user_taught_tags, negated_tags,
-                   subject_boxes, verified_subjects, location_provenance
+                   subject_boxes, verified_subjects, location_provenance,
+                   tag_authority_weight, assessment_tier, macro_biome
             FROM photo_records
             WHERE {' AND '.join(where_clauses)}
             """,
@@ -6336,6 +6456,22 @@ def reassess_records_fast(
             )
         )
         base_hier = list(dict.fromkeys(orig_hier))
+
+        # Enforce Pass 1 Biome Mutual-Exclusion Gate: purge legacy contradictory tags from earlier runs
+        forbidden_tags_lower = set(probes.get("forbidden_tags_lower") or [])
+        if forbidden_tags_lower:
+            base_flat = [
+                k for k in base_flat
+                if k.lower().strip() not in forbidden_tags_lower
+                and not any(re.search(rf"\b{re.escape(fb)}\b", k.lower().replace("_", " ")) for fb in forbidden_tags_lower)
+            ]
+            clean_base_hier = []
+            for hk in base_hier:
+                hk_norm = str(hk or "").lower().strip().replace("_", " ")
+                if any(re.search(rf"\b{re.escape(fb)}\b", hk_norm) for fb in forbidden_tags_lower):
+                    continue
+                clean_base_hier.append(hk)
+            base_hier = clean_base_hier
 
         # Clean print-collection tag "Alice" ("west coast imaging*  Alice") residue
         if "Subjects|People|Named|Alice" in base_hier or any(str(k).strip().lower() == "alice" for k in base_flat):
@@ -6520,6 +6656,22 @@ def reassess_records_fast(
             city=clean_city,
             specific_location=clean_spec,
         )
+
+        # Enforce Hierarchical Conditioning Principle: Zoomed sub-crops enrich, never redefine the scene
+        forbidden_tags_lower = set(probes.get("forbidden_tags_lower") or [])
+        if forbidden_tags_lower:
+            exp_flat = [
+                k for k in exp_flat
+                if k.lower().strip() not in forbidden_tags_lower
+                and not any(re.search(rf"\b{re.escape(fb)}\b", k.lower().replace("_", " ")) for fb in forbidden_tags_lower)
+            ]
+            clean_exp_hier: List[str] = []
+            for hk in exp_hier:
+                hk_norm = str(hk or "").lower().strip().replace("_", " ")
+                if any(re.search(rf"\b{re.escape(fb)}\b", hk_norm) for fb in forbidden_tags_lower):
+                    continue
+                clean_exp_hier.append(hk)
+            exp_hier = clean_exp_hier
         clean_country = str(clean_country or "").strip()
         clean_state = str(clean_state or "").strip()
         clean_city = str(clean_city or "").strip()
@@ -6553,6 +6705,32 @@ def reassess_records_fast(
         ]
         if portfolio_cats_in_hier:
             primary_cat = portfolio_cats_in_hier[0]
+        else:
+            macro_id = str(probes.get("macro_biome_id") or "")
+            if macro_id == "agri_rolling_farmland":
+                primary_cat = "Palouse & Farmland"
+            elif macro_id == "coastal_beach_pier":
+                primary_cat = "Coastline & Piers"
+            elif macro_id in ("urban_downtown_infra", "urban_automotive_arch"):
+                primary_cat = "Urban & Architecture"
+            elif macro_id == "desert_canyon_badlands":
+                primary_cat = "Desert"
+            elif macro_id == "alpine_mountain_forest":
+                primary_cat = "National Parks & Mountains"
+
+        # If primary_cat conflicts with Pass 1 macro biome forbidden list, resolve to canonical biome category
+        if primary_cat.lower().strip() in forbidden_tags_lower and primary_cat.lower().strip() not in taught_low_set:
+            macro_id = str(probes.get("macro_biome_id") or "")
+            if macro_id == "agri_rolling_farmland":
+                primary_cat = "Palouse & Farmland"
+            elif macro_id == "coastal_beach_pier":
+                primary_cat = "Coastline & Piers"
+            elif macro_id in ("urban_downtown_infra", "urban_automotive_arch"):
+                primary_cat = "Urban & Architecture"
+            elif macro_id == "alpine_mountain_forest":
+                primary_cat = "National Parks & Mountains"
+            else:
+                primary_cat = "Landscape"
 
         # 3. Preserve Technical Sharpness & Monochrome rules in hierarchical_keywords (NEVER clutter visual key_subjects with Unsharp)
         exp_flat = [k for k in exp_flat if k not in ("Unsharp", "Sharp", "Eye-level terrestrial", "Eye-level", "Terrestrial", "National Parks & Mountains")]
@@ -6575,6 +6753,12 @@ def reassess_records_fast(
             if "Technical|Screenshot" not in exp_hier:
                 exp_hier.append("Technical|Screenshot")
 
+        curr_auth = float(r.get("tag_authority_weight") or 0.85)
+        curr_tier = str(r.get("assessment_tier") or "level1")
+        if curr_tier not in ("level2_vlm", "level3_user"):
+            curr_auth = 0.85
+            curr_tier = "level1"
+
         row_update = (
             primary_cat,
             clean_country,
@@ -6590,6 +6774,8 @@ def reassess_records_fast(
             1 if is_confirmed_aerial else 0,
             json.dumps(own_lrcat),
             json.dumps(own_exist),
+            curr_auth,
+            curr_tier,
             fp,
         )
         updates.append(row_update)
@@ -6612,6 +6798,8 @@ def reassess_records_fast(
                     is_aerial = ?,
                     lrcat_keywords = ?,
                     existing_keywords = ?,
+                    tag_authority_weight = ?,
+                    assessment_tier = ?,
                     status = CASE WHEN status = 'stage1_ready' THEN 'tagged' ELSE status END,
                     stage2_completed = 1,
                     updated_at = CURRENT_TIMESTAMP
@@ -6646,6 +6834,8 @@ def reassess_records_fast(
                 is_aerial = ?,
                 lrcat_keywords = ?,
                 existing_keywords = ?,
+                tag_authority_weight = ?,
+                assessment_tier = ?,
                 status = CASE WHEN status = 'stage1_ready' THEN 'tagged' ELSE status END,
                 stage2_completed = 1,
                 updated_at = CURRENT_TIMESTAMP
@@ -6664,7 +6854,7 @@ def reassess_records_fast(
 
     # Run v4.0 Visual Coat/Face Sub-Clustering & Breed Consensus Propagation across the catalog
     entity_summary: Dict[str, Any] = {}
-    if not cancelled and not photo_ids:
+    if not cancelled and (run_clustering or not photo_ids):
         try:
             entity_summary = cluster_and_propagate_entities(
                 db_path=db_path,
@@ -6861,6 +7051,16 @@ def cluster_and_propagate_entities(
     for r in rows:
         if int(r.get("is_screenshot") or 0) == 1 or int(r.get("is_aerial") or 0) == 1:
             continue
+        macro_b = str(r.get("macro_biome") or "")
+        if macro_b in (
+            "Aerial / Agriculture, Infrastructure & Topo",
+            "Agricultural / Rolling Farmland",
+            "Desert / Canyon & Badlands",
+            "Alpine / Mountain & Forest",
+            "Coastal / Beach & Pier",
+            "Urban / Downtown & Infrastructure",
+        ):
+            continue
         fp = r["file_path"]
         neg_low = r["_neg_low"]
         all_low = {str(k).lower().strip() for k in (r["_flat"] + r["_ver"])}
@@ -6885,6 +7085,16 @@ def cluster_and_propagate_entities(
     rows_by_cam: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
     for r in rows:
         if int(r.get("is_screenshot") or 0) == 1 or int(r.get("is_aerial") or 0) == 1:
+            continue
+        macro_b = str(r.get("macro_biome") or "")
+        if macro_b in (
+            "Aerial / Agriculture, Infrastructure & Topo",
+            "Agricultural / Rolling Farmland",
+            "Desert / Canyon & Badlands",
+            "Alpine / Mountain & Forest",
+            "Coastal / Beach & Pier",
+            "Urban / Downtown & Infrastructure",
+        ):
             continue
         if r["_epoch"] is not None:
             cam_key = (str(r.get("catalog_name") or ""), str(r.get("camera_model") or ""))
@@ -7328,6 +7538,17 @@ def cluster_and_propagate_entities(
             if parent_lbl.lower() in neg_low:
                 continue
 
+            target_macro_b = str(r.get("macro_biome") or "")
+            if etype in ("pet_cat", "pet_dog") and target_macro_b in (
+                "Aerial / Agriculture, Infrastructure & Topo",
+                "Agricultural / Rolling Farmland",
+                "Desert / Canyon & Badlands",
+                "Alpine / Mountain & Forest",
+                "Coastal / Beach & Pier",
+                "Urban / Downtown & Infrastructure",
+            ):
+                continue
+
             if ename and ename.lower() not in neg_low:
                 if ename not in flat_kws:
                     flat_kws.insert(0, ename)
@@ -7576,7 +7797,8 @@ def reassess_records_deep(
                    sharpness_score, is_unsharp, is_monochrome, vector_index,
                    primary_category, sub_category,
                    user_context_notes, user_taught_tags, negated_tags,
-                   subject_boxes, verified_subjects, location_provenance
+                   subject_boxes, verified_subjects, location_provenance,
+                   tag_authority_weight, assessment_tier, macro_biome
             FROM photo_records
             WHERE {' AND '.join(where_clauses)}
             """,
@@ -7615,7 +7837,7 @@ def reassess_records_deep(
             frame,
             learned_index=learned_index,
             vectors=vectors,
-            orbit_window_seconds=180.0,
+            orbit_window_seconds=900.0,
             centroid_similarity_threshold=0.86,
         )
         frame_directive, _ = select_guide_directive(frame, ground_truth=gt, clip_probes=probes)
@@ -7669,6 +7891,8 @@ def reassess_records_deep(
             merged["hierarchical_keywords"],
             merged["is_aerial"],
             merged["confidence_score"],
+            1.4,
+            "level2_vlm",
             fp,
         )
         updates.append(row_tuple)
@@ -7691,6 +7915,8 @@ def reassess_records_deep(
                 hierarchical_keywords = ?,
                 is_aerial = ?,
                 confidence_score = ?,
+                tag_authority_weight = ?,
+                assessment_tier = ?,
                 stage2_completed = 1,
                 updated_at = CURRENT_TIMESTAMP
             WHERE file_path = ?

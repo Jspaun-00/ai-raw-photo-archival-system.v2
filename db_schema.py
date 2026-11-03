@@ -95,6 +95,8 @@ V3_COLUMNS = [
     ("verified_subjects", "TEXT DEFAULT '[]'"),
     ("location_provenance", "TEXT DEFAULT ''"),
     ("macro_biome", "TEXT DEFAULT ''"),
+    ("tag_authority_weight", "REAL DEFAULT 0.85"),
+    ("assessment_tier", "TEXT DEFAULT 'level1'"),
     ("updated_at", "TIMESTAMP"),
 ]
 

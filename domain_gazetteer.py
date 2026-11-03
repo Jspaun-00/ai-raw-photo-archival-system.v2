@@ -516,6 +516,93 @@ CONCEPT_PROBE_PROMPTS: Dict[str, str] = {
 
 # --- v4.0 PASS 1: MACRO SCENE BIOME LOCK & STRICT MUTUAL-EXCLUSION GATES ---
 MACRO_BIOME_DEFINITIONS: Dict[str, Dict[str, Any]] = {
+    "Coastal / Beach & Pier": {
+        "prompts": [
+            "coastal ocean beach, coastline, sea, breaking waves, shoreline, beach pier, sand, tidal pools, or seaside boardwalk",
+            "outdoor ocean coastline with surf, breakwater, coastal bluffs, sand beach, pier, and marine horizon",
+        ],
+        "forbidden_tags_lower": {
+            "desert", "deserts", "sand dunes", "dune", "dunes", "canyon", "canyons", "butte", "buttes",
+            "badlands", "mesa", "mesas", "indoor", "living room", "couch", "cat tree", "bedroom",
+            "dresser drawer", "wardrobe", "alligator", "bison", "buffalo", "bear", "grizzly bear",
+            "center-pivot irrigation", "circular crop field", "tractor / combine", "combine",
+            "wheat field", "corn field", "silo", "grain silo", "palouse", "mountain range",
+            "alpine mountain", "glacier", "adult novelty", "vibrator",
+            "cat", "cats", "kitten", "scottish fold", "domestic cat", "house pet", "pets", "pet", "pets", "pet",
+            "scratching post", "litter box", "dog", "dogs", "puppy", "chihuahua", "french bulldog",
+        },
+        "allowed_domains": {
+            "coastal", "ornithology_wildlife", "civil_infrastructure", "flora_trees", "people",
+        },
+    },
+    "Urban / Downtown & Infrastructure": {
+        "prompts": [
+            "an urban downtown city skyline, skyscrapers, modern glass buildings, bridges, highway overpass, streets, or metropolitan infrastructure",
+            "architecture, city buildings, streets, commercial district, suspension bridge, freeway interchange, or urban transit",
+        ],
+        "forbidden_tags_lower": {
+            "agriculture", "farmland", "rolling farmland", "wheat field", "corn field", "center-pivot irrigation",
+            "circular crop field", "tractor / combine", "grain silo", "silo", "palouse", "desert",
+            "sand dunes", "canyon", "canyons", "butte", "buttes", "mountain range", "alpine mountain",
+            "glacier", "alligator", "bison", "buffalo", "bear", "whale", "dolphin", "adult novelty",
+            "vibrator", "cat tree", "scratching post", "litter box", "dresser drawer", "wardrobe",
+            "cat", "cats", "kitten", "scottish fold", "domestic cat", "house pet", "pets", "pet",
+        },
+        "allowed_domains": {
+            "civil_infrastructure", "urban_automotive", "people",
+        },
+    },
+    "Agricultural / Rolling Farmland": {
+        "prompts": [
+            "agricultural farmland, rolling green and gold hills, crop fields, wheat fields, farm, barn, silo, tractor, or ploughed earth",
+            "scenic rural farming landscape with rolling hills, cultivated fields, farmsteads, and agricultural terrain",
+        ],
+        "forbidden_tags_lower": {
+            "desert", "deserts", "sand dunes", "dune", "dunes", "canyon", "canyons", "butte", "buttes",
+            "badlands", "mountain range", "alpine mountain", "glacier", "snowy peak", "ocean", "beach",
+            "coastline", "pier", "surf", "coral reef", "alligator", "whale", "dolphin", "seal", "sea lion",
+            "cat tree", "couch", "living room", "dresser drawer", "wardrobe", "adult novelty", "vibrator",
+            "cat", "cats", "kitten", "scottish fold", "domestic cat", "house pet", "pets", "pet", "pets", "pet",
+            "scratching post", "litter box", "dog", "dogs", "puppy", "chihuahua", "french bulldog",
+        },
+        "allowed_domains": {
+            "aerial_agriculture", "flora_trees", "equine", "civil_infrastructure",
+        },
+    },
+    "Desert / Canyon & Badlands": {
+        "prompts": [
+            "arid desert landscape, sandstone canyon, red rock buttes, mesas, badlands, dry washes, or desert dunes",
+            "scenic desert southwest with canyon walls, sandstone buttes, rocky red cliffs, and arid desert terrain",
+        ],
+        "forbidden_tags_lower": {
+            "ocean", "breaking waves", "surf", "coral reef", "beach pier", "boardwalk", "tidal pool",
+            "rainforest", "cypress swamp", "bayou", "swamp", "alligator", "whale", "dolphin", "sea otter",
+            "seal", "sea lion", "living room", "cat tree", "couch", "dresser drawer", "wardrobe",
+            "adult novelty", "vibrator",
+            "cat", "cats", "kitten", "scottish fold", "domestic cat", "house pet", "pets", "pet", "pets", "pet",
+            "scratching post", "litter box", "dog", "dogs", "puppy", "chihuahua", "french bulldog",
+        },
+        "allowed_domains": {
+            "ornithology_wildlife", "flora_trees", "civil_infrastructure",
+        },
+    },
+    "Alpine / Mountain & Forest": {
+        "prompts": [
+            "alpine mountain range, snow-capped rocky peaks, high altitude mountain valley, glacial lake, or evergreen pine forest",
+            "scenic high mountains with alpine ridges, evergreen conifer forest, mountain peaks, and alpine wilderness",
+        ],
+        "forbidden_tags_lower": {
+            "sand dunes", "dune", "dunes", "desert", "beach pier", "boardwalk", "coral reef",
+            "center-pivot irrigation", "circular crop field", "oil derrick / pumpjack", "pumpjack",
+            "refinery", "skyscraper", "highway overpass", "cloverleaf interchange", "cat tree",
+            "dresser drawer", "wardrobe", "alligator", "adult novelty", "vibrator",
+            "cat", "cats", "kitten", "scottish fold", "domestic cat", "house pet", "pets", "pet", "pets", "pet",
+            "scratching post", "litter box", "dog", "dogs", "puppy", "chihuahua", "french bulldog",
+        },
+        "allowed_domains": {
+            "ornithology_wildlife", "flora_trees", "civil_infrastructure",
+        },
+    },
     "Indoor / Residential & Living Space": {
         "prompts": [
             "an indoor living room, bedroom, apartment, or house interior with sofa, couch, bed, area rug, carpet, or cat tree",
@@ -530,10 +617,11 @@ MACRO_BIOME_DEFINITIONS: Dict[str, Dict[str, Any]] = {
             "goose", "geese", "snow geese", "duck", "ducks", "waterfowl", "frog", "frogs", "toad",
             "elk", "mule deer", "deer", "moose", "bighorn sheep", "pronghorn", "antelope", "coyote",
             "wolf", "red fox", "fox", "horse", "horses", "quarter horse", "mustang", "cattle", "cow", "cows",
-            "canyon", "butte", "buttes", "mitten buttes", "highway overpass", "overpass",
+            "canyon", "canyons", "butte", "buttes", "mitten buttes", "highway overpass", "overpass",
             "cloverleaf interchange", "suspension bridge", "steel truss bridge", "viaduct",
             "center-pivot irrigation", "circular crop field", "oil derrick / pumpjack", "pumpjack",
             "oil rig", "refinery", "solar farm", "wind turbine", "grain silo", "silo", "tractor / combine",
+            "tractor", "combine", "mountain range", "sand dunes", "desert",
         },
         "allowed_domains": {
             "feline", "canine", "people", "indoor_decor_textiles", "indoor_flora", "studio_product",
@@ -549,7 +637,7 @@ MACRO_BIOME_DEFINITIONS: Dict[str, Dict[str, Any]] = {
             "skyscraper", "glass curtain wall", "construction scaffolding", "bridge", "highway overpass",
             "overpass", "alligator", "bison", "buffalo", "bear", "grizzly / black bear", "whale",
             "humpback whale", "pelican", "brown pelican", "frog", "frogs", "canyon", "butte", "buttes",
-            "mountain", "mountains", "horse", "horses", "cattle", "cow", "cows",
+            "mountain", "mountains", "horse", "horses", "cattle", "cow", "cows", "sand dunes", "desert",
         },
         "allowed_domains": {
             "closet_storage_wellness", "feline", "canine", "people", "studio_product",
@@ -563,6 +651,7 @@ MACRO_BIOME_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "forbidden_tags_lower": {
             "alligator", "bison", "buffalo", "bear", "whale", "pelican", "frog", "frogs",
             "canyon", "butte", "buttes", "highway overpass", "center-pivot irrigation",
+            "mountain range", "sand dunes", "desert",
         },
         "allowed_domains": {
             "science_macro_optical", "studio_product", "closet_storage_wellness", "indoor_flora",
@@ -575,7 +664,7 @@ MACRO_BIOME_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         ],
         "forbidden_tags_lower": {
             "alligator", "bison", "buffalo", "whale", "humpback whale", "frog", "frogs",
-            "center-pivot irrigation", "circular crop field", "oil derrick / pumpjack",
+            "center-pivot irrigation", "circular crop field", "oil derrick / pumpjack", "sand dunes", "desert",
         },
         "allowed_domains": {
             "people", "feline", "canine", "indoor_decor_textiles", "closet_storage_wellness",
@@ -588,10 +677,10 @@ MACRO_BIOME_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         ],
         "forbidden_tags_lower": {
             "alligator", "bison", "buffalo", "whale", "humpback whale", "frog", "frogs",
-            "adult novelty", "vibrator", "silicone toy",
+            "adult novelty", "vibrator", "silicone toy", "cat tree", "scratching post", "litter box",
         },
         "allowed_domains": {
-            "civil_infrastructure", "urban_automotive", "people", "feline", "canine",
+            "civil_infrastructure", "urban_automotive", "people",
         },
     },
     "Aerial / Agriculture, Infrastructure & Topo": {
@@ -600,9 +689,10 @@ MACRO_BIOME_DEFINITIONS: Dict[str, Dict[str, Any]] = {
             "bird's-eye view aerial landscape of agricultural fields, highway interchanges, coastlines, or topographic terrain",
         ],
         "forbidden_tags_lower": {
-            "cat", "cats", "kitten", "scottish fold", "dog", "dogs", "puppy", "chihuahua", "french bulldog",
-            "cat tree", "couch", "bohemian tapestry / woven throw", "framed art", "adult novelty",
-            "vibrator", "silicone toy", "frog", "frogs",
+            "cat", "cats", "kitten", "scottish fold", "domestic cat", "house pet", "pets", "pet", "pets", "pet",
+            "dog", "dogs", "puppy", "chihuahua", "french bulldog", "cat tree", "scratching post", "litter box",
+            "couch", "living room", "bohemian tapestry / woven throw",
+            "framed art", "adult novelty", "vibrator", "silicone toy", "frog", "frogs", "dresser drawer", "wardrobe",
         },
         "allowed_domains": {
             "aerial_agriculture", "civil_infrastructure", "ornithology_wildlife", "flora_trees", "equine",
@@ -614,7 +704,7 @@ MACRO_BIOME_DEFINITIONS: Dict[str, Dict[str, Any]] = {
             "outdoor nature photography of wildlife, birds, horses, cattle, wildflowers, trees, rocks, or ocean surf",
         ],
         "forbidden_tags_lower": {
-            "adult novelty", "vibrator", "silicone toy", "dresser drawer", "wardrobe", "cat tree",
+            "adult novelty", "vibrator", "silicone toy", "dresser drawer", "wardrobe", "cat tree", "fitting room",
         },
         "allowed_domains": {
             "ornithology_wildlife", "flora_trees", "equine", "civil_infrastructure", "feline", "canine", "people",

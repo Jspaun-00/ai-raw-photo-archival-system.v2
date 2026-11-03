@@ -43,6 +43,29 @@ export default function SelectionActionBar({
   // Idle Rescan menu state
   const [rescanMenuOpen, setRescanMenuOpen] = useState(false);
 
+  // Live hover cards for AI tiers
+  const [hoveredCard, setHoveredCard] = useState(null);
+
+  const formatFastEta = (count) => {
+    const ms = Math.max(1, count) * 6;
+    if (ms < 1000) return `~${Math.round(ms)}ms`;
+    const sec = ms / 1000;
+    if (sec < 60) return `~${sec.toFixed(1)}s`;
+    const mins = Math.floor(sec / 60);
+    const remSec = Math.round(sec % 60);
+    return `~${mins}m ${remSec}s`;
+  };
+
+  const formatDeepEta = (count) => {
+    const sec = Math.max(1, count) * 6.5;
+    if (sec < 60) return `~${Math.round(sec)}s`;
+    const mins = Math.floor(sec / 60);
+    const remSec = Math.round(sec % 60);
+    if (mins < 60) return `~${mins}m ${remSec}s`;
+    const hours = (sec / 3600).toFixed(1);
+    return `~${hours} hrs`;
+  };
+
   const peoplePetsRef = useRef(null);
   const rescanRef = useRef(null);
   const bookRef = useRef(null);
@@ -717,6 +740,9 @@ export default function SelectionActionBar({
                   <div style={{ fontSize: '11.5px', color: '#cbd5e1', lineHeight: '1.4' }}>
                     Runs Pass 1 Macro Biome Lock + Pass 2 GPU 4-Crop Saliency Scan + Pass 3 Specialist Breed/Species Drill-Down + Pass 4 Pet/Person Clustering (~6ms/photo).
                   </div>
+                  <div style={{ fontSize: '11px', color: '#fbbf24', marginTop: '2px', fontWeight: 600 }}>
+                    ⏱ Est. Time for {displayTotal.toLocaleString()} photos: {formatFastEta(displayTotal)}
+                  </div>
                 </button>
 
                 {/* Level 2: Deep VLM */}
@@ -745,6 +771,9 @@ export default function SelectionActionBar({
                   </div>
                   <div style={{ fontSize: '11.5px', color: '#cbd5e1', lineHeight: '1.4' }}>
                     Runs full generative VLM visual inspection + 4-Pass Cascade (~5–8s/photo).
+                  </div>
+                  <div style={{ fontSize: '11px', color: '#38bdf8', marginTop: '2px', fontWeight: 600 }}>
+                    ⏱ Est. Time for {displayTotal.toLocaleString()} photos: {formatDeepEta(displayTotal)}
                   </div>
                 </button>
               </div>
@@ -846,102 +875,374 @@ export default function SelectionActionBar({
           <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'nowrap' }}>
             {/* Clear Tags */}
             {onBatchClearTags && (
-              <button
-                type="button"
-                disabled={isBatchBusy}
-                onClick={onBatchClearTags}
-                style={{
-                  background: 'rgba(239, 68, 68, 0.16)',
-                  border: '1px solid rgba(248, 113, 113, 0.5)',
-                  color: '#fca5a5',
-                  fontSize: '13px',
-                  fontWeight: 700,
-                  padding: '7px 11px',
-                  borderRadius: '9px',
-                  cursor: isBatchBusy ? 'wait' : 'pointer',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '5px',
-                }}
-                title={`Wipe all AI tags cleanly across ${selectedCount.toLocaleString()} selected photo(s) (Cmd+Z to Undo)`}
+              <div
+                style={{ position: 'relative' }}
+                onMouseEnter={() => setHoveredCard('clear')}
+                onMouseLeave={() => setHoveredCard(null)}
               >
-                <span>🧹 Clear Tags</span>
-              </button>
+                <button
+                  type="button"
+                  disabled={isBatchBusy}
+                  onClick={onBatchClearTags}
+                  style={{
+                    background: 'rgba(239, 68, 68, 0.16)',
+                    border: '1px solid rgba(248, 113, 113, 0.5)',
+                    color: '#fca5a5',
+                    fontSize: '13px',
+                    fontWeight: 700,
+                    padding: '7px 11px',
+                    borderRadius: '9px',
+                    cursor: isBatchBusy ? 'wait' : 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '5px',
+                  }}
+                >
+                  <span>🧹 Clear Tags</span>
+                  <span
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      width: '14px',
+                      height: '14px',
+                      borderRadius: '50%',
+                      background: 'rgba(239, 68, 68, 0.3)',
+                      fontSize: '10px',
+                      fontWeight: 800,
+                      color: '#fca5a5',
+                    }}
+                  >
+                    ⓘ
+                  </span>
+                </button>
+                {hoveredCard === 'clear' && (
+                  <div
+                    style={{
+                      position: 'absolute',
+                      bottom: 'calc(100% + 10px)',
+                      left: '50%',
+                      transform: 'translateX(-50%)',
+                      width: '280px',
+                      background: 'rgba(15, 23, 42, 0.96)',
+                      backdropFilter: 'blur(12px)',
+                      border: '1px solid rgba(248, 113, 113, 0.4)',
+                      borderRadius: '10px',
+                      padding: '10px 12px',
+                      boxShadow: '0 16px 36px rgba(0, 0, 0, 0.75)',
+                      zIndex: 10000,
+                      pointerEvents: 'none',
+                      textAlign: 'left',
+                      lineHeight: 1.4,
+                    }}
+                  >
+                    <div style={{ fontSize: '13px', fontWeight: 800, color: '#fca5a5', marginBottom: '4px' }}>
+                      🧹 Clean-Slate Wipe (Level 0)
+                    </div>
+                    <div style={{ fontSize: '11px', color: '#cbd5e1', marginBottom: '6px' }}>
+                      Wipes AI keywords & hierarchical tags from SQLite and creates an instant Undo snapshot. Resets tag authority to 0.85x. Raw EXIF and file paths are untouched.
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '10.5px', color: '#94a3b8', borderTop: '1px solid rgba(255,255,255,0.1)', paddingTop: '5px' }}>
+                      <span>Selected: <b style={{ color: '#fff' }}>{selectedCount.toLocaleString()}</b></span>
+                      <span style={{ color: '#38bdf8' }}>↩ Undoable (Cmd+Z)</span>
+                    </div>
+                    <div
+                      style={{
+                        position: 'absolute',
+                        bottom: '-5px',
+                        left: '50%',
+                        transform: 'translateX(-50%) rotate(45deg)',
+                        width: '10px',
+                        height: '10px',
+                        background: 'rgba(15, 23, 42, 0.96)',
+                        borderRight: '1px solid rgba(248, 113, 113, 0.4)',
+                        borderBottom: '1px solid rgba(248, 113, 113, 0.4)',
+                      }}
+                    />
+                  </div>
+                )}
+              </div>
             )}
 
             {/* Level 1: Fast Scan */}
             {onBatchReassess && (
-              <button
-                type="button"
-                disabled={isBatchBusy}
-                onClick={() => onBatchReassess('fast_vectors')}
-                style={{
-                  background: 'rgba(245, 158, 11, 0.18)',
-                  border: '1px solid rgba(251, 191, 36, 0.55)',
-                  color: '#fde68a',
-                  fontSize: '13px',
-                  fontWeight: 700,
-                  padding: '7px 12px',
-                  borderRadius: '9px',
-                  cursor: isBatchBusy ? 'wait' : 'pointer',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '5px',
-                }}
-                title="⚡ Fast Scan (Level 1 — 4-Pass Cascade): Runs Pass 1 Macro Biome Lock + Pass 2 GPU 4-Crop Saliency Scan + Pass 3 Specialist Breed/Species Drill-Down + Pass 4 Pet/Person Clustering (~6ms/photo)"
+              <div
+                style={{ position: 'relative' }}
+                onMouseEnter={() => setHoveredCard('fast')}
+                onMouseLeave={() => setHoveredCard(null)}
               >
-                <span>⚡ Fast Scan (Level 1)</span>
-              </button>
+                <button
+                  type="button"
+                  disabled={isBatchBusy}
+                  onClick={() => onBatchReassess('fast_vectors')}
+                  style={{
+                    background: 'rgba(245, 158, 11, 0.18)',
+                    border: '1px solid rgba(251, 191, 36, 0.55)',
+                    color: '#fde68a',
+                    fontSize: '13px',
+                    fontWeight: 700,
+                    padding: '7px 12px',
+                    borderRadius: '9px',
+                    cursor: isBatchBusy ? 'wait' : 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '5px',
+                  }}
+                >
+                  <span>⚡ Fast Scan (Level 1)</span>
+                  <span
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      width: '14px',
+                      height: '14px',
+                      borderRadius: '50%',
+                      background: 'rgba(245, 158, 11, 0.3)',
+                      fontSize: '10px',
+                      fontWeight: 800,
+                      color: '#fde68a',
+                    }}
+                  >
+                    ⓘ
+                  </span>
+                </button>
+                {hoveredCard === 'fast' && (
+                  <div
+                    style={{
+                      position: 'absolute',
+                      bottom: 'calc(100% + 10px)',
+                      left: '50%',
+                      transform: 'translateX(-50%)',
+                      width: '290px',
+                      background: 'rgba(15, 23, 42, 0.96)',
+                      backdropFilter: 'blur(12px)',
+                      border: '1px solid rgba(251, 191, 36, 0.45)',
+                      borderRadius: '10px',
+                      padding: '10px 12px',
+                      boxShadow: '0 16px 36px rgba(0, 0, 0, 0.75)',
+                      zIndex: 10000,
+                      pointerEvents: 'none',
+                      textAlign: 'left',
+                      lineHeight: 1.4,
+                    }}
+                  >
+                    <div style={{ fontSize: '13px', fontWeight: 800, color: '#fde68a', marginBottom: '4px', display: 'flex', justifyContent: 'space-between' }}>
+                      <span>⚡ Fast Scan (Level 1)</span>
+                      <span style={{ fontSize: '11px', color: '#94a3b8', fontWeight: 600 }}>0.85x Weight</span>
+                    </div>
+                    <div style={{ fontSize: '11px', color: '#cbd5e1', marginBottom: '6px' }}>
+                      Runs Pass 1 Macro Biome Lock + Pass 2 GPU 4-Crop Saliency Scan + Pass 3 Specialist Drill-Down + Pass 4 Pet/Person Clustering.
+                    </div>
+                    <div style={{ borderTop: '1px solid rgba(255,255,255,0.1)', paddingTop: '6px', fontSize: '11px', color: '#fde68a', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '4px' }}>
+                      <span>⏱ Live ETA ({selectedCount.toLocaleString()} photos):</span>
+                      <span style={{ color: '#fff' }}>{formatFastEta(selectedCount)}</span>
+                    </div>
+                    <div style={{ fontSize: '10px', color: '#94a3b8', marginTop: '2px' }}>
+                      ~6ms/photo on Apple Silicon Metal GPU
+                    </div>
+                    <div
+                      style={{
+                        position: 'absolute',
+                        bottom: '-5px',
+                        left: '50%',
+                        transform: 'translateX(-50%) rotate(45deg)',
+                        width: '10px',
+                        height: '10px',
+                        background: 'rgba(15, 23, 42, 0.96)',
+                        borderRight: '1px solid rgba(251, 191, 36, 0.45)',
+                        borderBottom: '1px solid rgba(251, 191, 36, 0.45)',
+                      }}
+                    />
+                  </div>
+                )}
+              </div>
             )}
 
             {/* Level 2: Deep VLM */}
             {onBatchReassess && (
-              <button
-                type="button"
-                disabled={isBatchBusy}
-                onClick={() => onBatchReassess('deep_vlm')}
-                style={{
-                  background: 'rgba(56, 189, 248, 0.18)',
-                  border: '1px solid rgba(56, 189, 248, 0.55)',
-                  color: '#bae6fd',
-                  fontSize: '13px',
-                  fontWeight: 700,
-                  padding: '7px 12px',
-                  borderRadius: '9px',
-                  cursor: isBatchBusy ? 'wait' : 'pointer',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '5px',
-                }}
-                title="🧠 Deep VLM (Level 2 — Qwen2.5-VL + Cascade): Runs full generative VLM visual inspection + 4-Pass Cascade (~5–8s/photo)"
+              <div
+                style={{ position: 'relative' }}
+                onMouseEnter={() => setHoveredCard('deep')}
+                onMouseLeave={() => setHoveredCard(null)}
               >
-                <span>🧠 Deep VLM (Level 2)</span>
-              </button>
+                <button
+                  type="button"
+                  disabled={isBatchBusy}
+                  onClick={() => onBatchReassess('deep_vlm')}
+                  style={{
+                    background: 'rgba(56, 189, 248, 0.18)',
+                    border: '1px solid rgba(56, 189, 248, 0.55)',
+                    color: '#bae6fd',
+                    fontSize: '13px',
+                    fontWeight: 700,
+                    padding: '7px 12px',
+                    borderRadius: '9px',
+                    cursor: isBatchBusy ? 'wait' : 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '5px',
+                  }}
+                >
+                  <span>🧠 Deep VLM (Level 2)</span>
+                  <span
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      width: '14px',
+                      height: '14px',
+                      borderRadius: '50%',
+                      background: 'rgba(56, 189, 248, 0.3)',
+                      fontSize: '10px',
+                      fontWeight: 800,
+                      color: '#bae6fd',
+                    }}
+                  >
+                    ⓘ
+                  </span>
+                </button>
+                {hoveredCard === 'deep' && (
+                  <div
+                    style={{
+                      position: 'absolute',
+                      bottom: 'calc(100% + 10px)',
+                      left: '50%',
+                      transform: 'translateX(-50%)',
+                      width: '295px',
+                      background: 'rgba(15, 23, 42, 0.96)',
+                      backdropFilter: 'blur(12px)',
+                      border: '1px solid rgba(56, 189, 248, 0.45)',
+                      borderRadius: '10px',
+                      padding: '10px 12px',
+                      boxShadow: '0 16px 36px rgba(0, 0, 0, 0.75)',
+                      zIndex: 10000,
+                      pointerEvents: 'none',
+                      textAlign: 'left',
+                      lineHeight: 1.4,
+                    }}
+                  >
+                    <div style={{ fontSize: '13px', fontWeight: 800, color: '#7dd3fc', marginBottom: '4px', display: 'flex', justifyContent: 'space-between' }}>
+                      <span>🧠 Deep VLM (Level 2)</span>
+                      <span style={{ fontSize: '11px', color: '#94a3b8', fontWeight: 600 }}>1.4x Weight</span>
+                    </div>
+                    <div style={{ fontSize: '11px', color: '#cbd5e1', marginBottom: '6px' }}>
+                      Full multimodal vision-language inspection combined with 4-crop saliency. Anchors same-session flight orbits (±15 min).
+                    </div>
+                    <div style={{ borderTop: '1px solid rgba(255,255,255,0.1)', paddingTop: '6px', fontSize: '11px', color: '#38bdf8', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '4px' }}>
+                      <span>⏱ Live ETA ({selectedCount.toLocaleString()} photos):</span>
+                      <span style={{ color: '#fff' }}>{formatDeepEta(selectedCount)}</span>
+                    </div>
+                    <div style={{ fontSize: '10px', color: '#94a3b8', marginTop: '2px' }}>
+                      ~6.5s/photo with Local Qwen2.5-VL Multimodal
+                    </div>
+                    <div
+                      style={{
+                        position: 'absolute',
+                        bottom: '-5px',
+                        left: '50%',
+                        transform: 'translateX(-50%) rotate(45deg)',
+                        width: '10px',
+                        height: '10px',
+                        background: 'rgba(15, 23, 42, 0.96)',
+                        borderRight: '1px solid rgba(56, 189, 248, 0.45)',
+                        borderBottom: '1px solid rgba(56, 189, 248, 0.45)',
+                      }}
+                    />
+                  </div>
+                )}
+              </div>
             )}
 
             {/* Voice Tag */}
             {onOpenVoiceTeach && (
-              <button
-                type="button"
-                onClick={onOpenVoiceTeach}
-                style={{
-                  background: 'linear-gradient(135deg, #4f46e5, #7c3aed)',
-                  border: '1px solid #a78bfa',
-                  color: '#ffffff',
-                  fontSize: '13px',
-                  fontWeight: 700,
-                  padding: '7px 12px',
-                  borderRadius: '9px',
-                  cursor: 'pointer',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '6px',
-                  boxShadow: '0 4px 14px rgba(124, 58, 237, 0.4)',
-                }}
-                title="Speak or type context to teach custom tags or locations for the selected photos"
+              <div
+                style={{ position: 'relative' }}
+                onMouseEnter={() => setHoveredCard('voice')}
+                onMouseLeave={() => setHoveredCard(null)}
               >
-                <span>🎙️ AI Voice Tag</span>
-              </button>
+                <button
+                  type="button"
+                  onClick={onOpenVoiceTeach}
+                  style={{
+                    background: 'linear-gradient(135deg, #4f46e5, #7c3aed)',
+                    border: '1px solid #a78bfa',
+                    color: '#ffffff',
+                    fontSize: '13px',
+                    fontWeight: 700,
+                    padding: '7px 12px',
+                    borderRadius: '9px',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    boxShadow: '0 4px 14px rgba(124, 58, 237, 0.4)',
+                  }}
+                >
+                  <span>🎙️ AI Voice Tag</span>
+                  <span
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      width: '14px',
+                      height: '14px',
+                      borderRadius: '50%',
+                      background: 'rgba(255, 255, 255, 0.25)',
+                      fontSize: '10px',
+                      fontWeight: 800,
+                      color: '#ffffff',
+                    }}
+                  >
+                    ⓘ
+                  </span>
+                </button>
+                {hoveredCard === 'voice' && (
+                  <div
+                    style={{
+                      position: 'absolute',
+                      bottom: 'calc(100% + 10px)',
+                      left: '50%',
+                      transform: 'translateX(-50%)',
+                      width: '280px',
+                      background: 'rgba(15, 23, 42, 0.96)',
+                      backdropFilter: 'blur(12px)',
+                      border: '1px solid rgba(167, 139, 250, 0.45)',
+                      borderRadius: '10px',
+                      padding: '10px 12px',
+                      boxShadow: '0 16px 36px rgba(0, 0, 0, 0.75)',
+                      zIndex: 10000,
+                      pointerEvents: 'none',
+                      textAlign: 'left',
+                      lineHeight: 1.4,
+                    }}
+                  >
+                    <div style={{ fontSize: '13px', fontWeight: 800, color: '#c4b5fd', marginBottom: '4px', display: 'flex', justifyContent: 'space-between' }}>
+                      <span>🎙️ AI Voice & Teach</span>
+                      <span style={{ fontSize: '11px', color: '#94a3b8', fontWeight: 600 }}>2.0x Weight</span>
+                    </div>
+                    <div style={{ fontSize: '11px', color: '#cbd5e1', marginBottom: '6px' }}>
+                      Speak or type custom context, pet names, or specific locations. Carries 2.0x supreme priority, propagating across flight orbits.
+                    </div>
+                    <div style={{ borderTop: '1px solid rgba(255,255,255,0.1)', paddingTop: '6px', fontSize: '10.5px', color: '#a78bfa', fontWeight: 600 }}>
+                      Ground-Truth Reference Tier (Instant)
+                    </div>
+                    <div
+                      style={{
+                        position: 'absolute',
+                        bottom: '-5px',
+                        left: '50%',
+                        transform: 'translateX(-50%) rotate(45deg)',
+                        width: '10px',
+                        height: '10px',
+                        background: 'rgba(15, 23, 42, 0.96)',
+                        borderRight: '1px solid rgba(167, 139, 250, 0.45)',
+                        borderBottom: '1px solid rgba(167, 139, 250, 0.45)',
+                      }}
+                    />
+                  </div>
+                )}
+              </div>
             )}
           </div>
 
