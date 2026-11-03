@@ -140,15 +140,21 @@ Eliminates tagging flickering and inconsistent specialist recognition across ide
 
 ---
 
-### 5. Speech-to-Text & Prompt-Driven Curation ("Teach AI" & "Scout AI")
-- **Teach AI Mode:** Use natural conversational speech or text prompts to re-anchor or correct image tags (e.g. *"hey so this is a macro image of a bee up close it's not a cat it's not like a feline this is a macro stacked image of a bee and I want all the images around it to be associated with these correct tags"*).
-  - **Conversational Speech Segmentation:** Zero-width lookahead splitting extracts positive subjects (`Bee`, `Insect`, `Focus Stacked Macro`, `Macro Photography`) without swallowing trailing clauses into negative sets.
-  - **Bounded Negation Engine:** Explicit negative anchors (`"it's not a cat"`, `"not feline"`) cleanly purge contradictory tags (`Cat`, `Feline`, `Scottish Fold`) and record persistent negation filters.
-  - **Fast Scan Level 1 Sync:** Saved photographer context notes dynamically guide the local CLIP / vector scanner to inject taught concepts and strip negated noise.
-- **Shoot Session & Visual Orbit Propagation:**
-  - Automatically identifies visually similar sibling photos within the same shooting session ($\Delta t \le 45\text{ min}$, visual cosine similarity $\ge 0.60$, or burst sequences within 5 minutes).
-  - Provides an interactive candidate confirmation drawer with thumbnail previews, similarity percentages, and timestamp offsets.
-  - Allows 1-click batch application (`✓ Commit to N Photos`) across entire bursts (e.g., all 178 focus-stacked macro bee frames) with zero manual repetitive tagging.
+### 5. Speech-to-Text & Conversational AI Curation ("Teach AI" & "Scout AI")
+- **Conversational Speech NLP Engine (`parse_natural_language_teach`):** Handles natural, freeform spoken English and complex multi-clause instructions without brittle command syntax:
+  - **Conversational Rhetorical Normalization:** Filters spoken frustration or conversational queries (e.g. *"why can you not categorize it as mushrooms mushrooms"*) into clean affirmative directives without leaking profanity, filler, or verbs into metadata.
+  - **Replacement & Negation Semantics:** Accurately interprets *"I want you to remove winter snow, Utah and replace it with Paul River rolling hills"*—negating `Winter`, `Snow`, and `Utah` (suppressing location leakage), while extracting `Paul River Rolling Hills`, `Rolling Hills`, `Hills`, and `Landscape`.
+  - **Primary Location Resolution:** Disambiguates travel narratives (e.g. *"trip out to Wyoming and we flew over pivots in Montana, and this was primarily in Montana"*) by prioritizing explicit primacy phrases (`primarily in`, `mostly in`) to set `state_region: Montana` and activating aerial modes (`force_aerial: True`).
+  - **Bounded Negation Engine:** Strips leading determiners and filters negative anchors (`"not a cat"`, `"isn't a mountain"`, `"not desert"`) to purge contradictory tags while preventing positive terms from being suppressed.
+- **Multi-Scope Shoot Orbit & Visual Propagation:**
+  - Identifies sibling frames across multiple adjustable temporal and visual scopes:
+    1. `⚡ Burst (±5m)`: continuous bursts, brackets, and focus-stack runs ($\Delta t \le 300\text{s}$)
+    2. `⏱️ Session Window (±2h)`: immediate session activities ($\Delta t \le 7200\text{s}$)
+    3. `📅 Full Shoot Day`: all photos captured on the shoot date
+    4. `✨ Visual Similarity`: OpenCLIP embedding cosine similarity ($\ge 0.58$)
+  - Features 1-click batch selection (`Select All Visible`, `Select All Day`, `Deselect All`) and interactive multi-scope tabs.
+- **Persistent Grid Scroll Retention:**
+  - Virtualized gallery grid (`PhotoGrid.jsx`) anchors and retains exact scroll position across tag commitments and in-place metadata updates without unwanted jumping to the top of the collection.
 - **Scout AI Mode:** Zero-shot visual semantic search across the entire archive. Search natural concepts like *"solitary tree in golden morning mist"* or *"black cat sleeping on bohemian throw blanket"*.
 
 ---

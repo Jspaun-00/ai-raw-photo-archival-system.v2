@@ -45,8 +45,20 @@ export default function PhotoGrid({
   onToggleSelectPhoto,
 }) {
   const parentRef = useRef(null);
+  const lastScrollTopRef = useRef(0);
   const [columns, setColumns] = useState(5);
   const [collapsedDates, setCollapsedDates] = useState({});
+
+  // Track scroll position so in-place photo updates never snap grid to top
+  useEffect(() => {
+    const el = parentRef.current;
+    if (!el) return;
+    const handleScroll = () => {
+      lastScrollTopRef.current = el.scrollTop;
+    };
+    el.addEventListener('scroll', handleScroll, { passive: true });
+    return () => el.removeEventListener('scroll', handleScroll);
+  }, []);
 
   // Responsive column count calculation (ResizeObserver + window resize so initial mount is always measured)
   const hasPhotos = Boolean(photos && photos.length > 0);
@@ -184,7 +196,16 @@ export default function PhotoGrid({
   // Re-measure row heights only when layout structure changes (NOT on in-place star/tag updates)
   useEffect(() => {
     rowVirtualizer.measure();
-  }, [collapsedDates, viewMode, columns, rowVirtualizer]);
+  }, [collapsedDates, viewMode, columns]);
+
+  // Preserve grid scroll position across in-place photo tag updates
+  useEffect(() => {
+    if (parentRef.current && lastScrollTopRef.current > 0) {
+      if (Math.abs(parentRef.current.scrollTop - lastScrollTopRef.current) > 10) {
+        parentRef.current.scrollTop = lastScrollTopRef.current;
+      }
+    }
+  }, [photos]);
 
   // Handle infinite scroll / load more trigger near bottom
   useEffect(() => {

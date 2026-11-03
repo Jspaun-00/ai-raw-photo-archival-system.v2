@@ -6169,10 +6169,94 @@ _CUSTOM_PHRASE_STOPWORDS = {
     "what's", "whats", "tell", "see", "seeing", "reassess", "rescan", "scan",
     "inspect", "describe", "identify", "figure", "out", "whatever", "inside",
     "associated", "associate", "associating", "association", "correct",
-    "up", "close", "upclose", "orbit", "session",
+    "up", "close", "upclose", "orbit", "session", "replace", "replaced",
+    "group", "taking", "taken", "photographs", "photographing", "shooting",
+    "filming", "doing", "trip", "focused", "grown", "flew", "primarily",
+    "mostly", "mainly", "actually", "along", "lines", "something", "say",
+    "said", "over", "last", "year", "any", "categorize", "categorizing",
+    "categorized", "classify", "classifying", "classified", "label",
+    "labeling", "labeled", "why", "can", "can't", "cannot", "could",
+    "couldn't", "wouldn't", "won't", "don't", "dont", "does", "doesn't",
+    "did", "didn't", "fuck", "fucking", "fucked", "shit", "damn", "hell",
 }
 
 _ACRONYM_UPPER_KEEP = {"usa", "us", "uk", "uae", "dc", "nyc", "la", "sf", "ii", "iii", "iv", "rv", "suv", "atv"}
+
+
+def clean_speech_text(text: str) -> str:
+    """
+    Cleans raw conversational speech transcripts by stripping profanity, translating
+    rhetorical questions into explicit directives, mapping replacement clauses, and
+    normalizing conversational carrier phrases.
+    """
+    t = str(text or "").strip()
+    # Strip expletives
+    t = re.sub(r"\b(?:fucking|fuck|fucked|shit|damn|dammit|hell|crap|bitch|ass)\b", " ", t, flags=re.IGNORECASE)
+    # Convert rhetorical questions to direct tagging directives ("why can you not categorize it as mushrooms mushrooms")
+    t = re.sub(
+        r"\b(?:why\s+(?:can(?:['\"]?t|not)?|do(?:n['\"]?t)?|are(?:n['\"]?t)?|is(?:n['\"]?t)?|won['\"]?t)?\s+(?:you\s+)?(?:not\s+)?(?:just\s+)?(?:categorize|classify|tag|label|see|call|name|recognize|identify))\s*(?:it|this|them|these)?\s*(?:as|with)?\b",
+        " tag this as ",
+        t,
+        flags=re.IGNORECASE,
+    )
+    # Convert "replace ... with ..." into explicit negation and addition:
+    t = re.sub(
+        r"\b(?:i\s+(?:also\s+)?want\s+(?:you\s+to\s+)?replace\s+(?:it|them|the\s+tags|any\s+(?:of\s+the\s+)?tags)?\s*(?:like)?\s*with)\b",
+        " and please tag as ",
+        t,
+        flags=re.IGNORECASE,
+    )
+    # Convert "I don't want any of the tags around X" into "remove X"
+    t = re.sub(
+        r"\b(?:i\s+)?(?:don't|dont|do\s+not)\s+want\s+(?:any\s+(?:of\s+the\s+)?tags?\s+(?:around|for|about|like)\s+)?",
+        " remove ",
+        t,
+        flags=re.IGNORECASE,
+    )
+    # Carrier intros
+    t = re.sub(
+        r"\b(?:this\s+was\s+a\s+(?:group\s+of\s+photos|day\s+trip|trip|shoot|series)(?:\s+(?:i\s+was|we\s+were)?\s*(?:taking|shooting|capturing|focused\s+on))?(?:\s+(?:of|on))?)\b",
+        " this is ",
+        t,
+        flags=re.IGNORECASE,
+    )
+    t = re.sub(
+        r"\b(?:focused\s+on\s+(?:taking\s+)?(?:photographs?|photos?|pictures?|shots?|images?)\s+(?:of)?)\b",
+        " ",
+        t,
+        flags=re.IGNORECASE,
+    )
+    t = re.sub(
+        r"\b(?:taking\s+(?:photographs?|photos?|pictures?|shots?|images?)\s+(?:of)?)\b",
+        " ",
+        t,
+        flags=re.IGNORECASE,
+    )
+    t = re.sub(
+        r"\b(?:we\s+flew\s+over|flying\s+over|flew\s+over)\b",
+        " aerial flying over ",
+        t,
+        flags=re.IGNORECASE,
+    )
+    t = re.sub(
+        r"\b(?:a\s+friend\s+is\s+doing|we\s+were\s+doing\s+a|you\s+have\s+a|there\s+is\s+a|there\s+are)\b",
+        " ",
+        t,
+        flags=re.IGNORECASE,
+    )
+    t = re.sub(
+        r"\b(?:grown\s+on\s+(?:a|an)?)\b",
+        " ",
+        t,
+        flags=re.IGNORECASE,
+    )
+    t = re.sub(
+        r"\b(?:photographed\s+last\s+year\s+on\s+a\s+trip\s+out\s+to)\b",
+        " trip to ",
+        t,
+        flags=re.IGNORECASE,
+    )
+    return t
 
 
 def _title_case_custom_tag(raw_phrase: str) -> str:
@@ -6293,11 +6377,14 @@ def parse_natural_language_teach(
     wipe_mode = bool(wipe_existing or auto_wipe_detected)
     propagate_to_orbit = bool(_PROPAGATE_DIRECTIVE_REGEX.search(text))
 
+    # Clean conversational speech transcript
+    cleaned_speech = clean_speech_text(text)
+
     # Strip meta-command prefixes ("Wipe the tags on these images and cater them around ...", "bro just look at it and tag what's in there")
     cleaned_text = re.sub(
         r"\b(?:please\s+)?(?:wipe|clear|reset)\s+(?:all\s+|the\s+|existing\s+)?(?:tags|metadata|locations)?(?:\s+on\s+(?:these|this|the)\s+(?:images?|photos?|frames?))?\s*(?:and\s+)?(?:cater\s+(?:them|these|it)?\s*around|rebuild\s+(?:them|these|it)?\s*(?:around|from)|start\s+fresh(?:\s+with|\s+around)?)?\s*",
         " ",
-        text,
+        cleaned_speech,
         flags=re.IGNORECASE,
     )
     cleaned_text = _VISUAL_INSPECT_DIRECTIVE_REGEX.sub(" ", cleaned_text)
@@ -6324,7 +6411,7 @@ def parse_natural_language_teach(
         r"\b(?=(?:it's\s+not|it\s+is\s+not|it's\s+never|it\s+isn't|it\s+isnt|they're\s+not|they\s+aren't|they\s+arent))\b|"
         r"\b(?=(?:this\s+is|these\s+are|that\s+is|those\s+are))\b|"
         r"\b(?=(?:i\s+want|i\s+need|i\s+would\s+like|make\s+sure|please\s+tag|tag\s+(?:it|them|these)\s+as))\b|"
-        r"\b(?:and\s+then|and\s+also|and\s+now)\b",
+        r"\b(?:and\s+then|and\s+also|and\s+now|and\s+please\s+tag\s+as)\b",
         re.IGNORECASE,
     )
     clauses = [c.strip() for c in clause_split_pattern.split(cleaned_text or text) if c.strip() and c.strip() != "[CLEARED_SLATE]"]
@@ -6334,7 +6421,7 @@ def parse_natural_language_teach(
     stop_words_pattern = r"(?:and|but|or|this|these|that|those|it|it's|they|i|we|there|is|are|was|were|want|need|have|has|so|to)\b"
     neg_pattern = re.compile(
         r"\b(?:(?:it's|it\s+is|they're|they\s+are)\s+)?"
-        r"(?:not\s+in|not\s+at|not\s+from|not\s+like\s+(?:a|an)?|not\s+a|not\s+an|not|isn't|isnt|aren't|arent|wasn't|wasnt|weren't|werent|never|remove|delete|strip)\s+"
+        r"(?:not\s+in|not\s+at|not\s+from|not\s+like\s+(?:a|an)?|not\s+a|not\s+an|not\s+of|not|isn't|isnt|aren't|arent|wasn't|wasnt|weren't|werent|never|remove|delete|strip)\s+"
         r"((?:(?!" + stop_words_pattern + r")[a-zA-Z0-9\-']+(?:\s+|$)){1,4})",
         re.IGNORECASE,
     )
@@ -6351,8 +6438,10 @@ def parse_natural_language_teach(
                     positive_clauses.append(pos_prefix)
             last_end = end
             neg_phrase = m.group(1).strip().lower()
+            # Clean leading determiners like 'a', 'an', 'the'
+            neg_phrase = re.sub(r"^(?:a|an|the|any|all)\s+", "", neg_phrase).strip()
             # Ignore meta-nouns like "tags" or "existing tags" if "remove existing tags" was spoken
-            if neg_phrase in ("tags", "the tags", "all tags", "existing tags", "old tags", "metadata"):
+            if not neg_phrase or neg_phrase in ("tags", "the tags", "all tags", "existing tags", "old tags", "metadata"):
                 continue
             matched_known = False
             for gkey, ginfo in _TEACH_GEO_GAZETTEER.items():
@@ -6388,8 +6477,8 @@ def parse_natural_language_teach(
                 force_aerial = True
                 negated_tags.append("Terrestrial")
             if not matched_known and neg_phrase:
-                clean_neg = neg_phrase.title()
-                if clean_neg not in negated_tags:
+                clean_neg = _title_case_custom_tag(neg_phrase)
+                if clean_neg and clean_neg not in negated_tags:
                     negated_tags.append(clean_neg)
         if not has_neg:
             positive_clauses.append(cl)
@@ -6400,51 +6489,67 @@ def parse_natural_language_teach(
 
     pos_blob = " ".join(positive_clauses)
     pos_low = pos_blob.lower()
+    neg_low_set = {n.lower().strip() for n in negated_tags}
 
     # 1. Extract open-vocabulary custom phrases spoken by the user (e.g., "Mitch Rouse Residence", "Pickles", "12 Cows")
     custom_user_phrases = _extract_custom_user_phrases(pos_blob)
 
     # 2. Detect positive geographic locations in order of specificity (longer keys first)
+    # Detect if user stated a primary location (e.g., "primarily in Montana", "mostly in Wyoming")
+    prim_match = re.search(r"\b(?:primarily|mostly|mainly|actually)\s+in\s+([a-zA-Z\s]+)", pos_low)
+    primary_loc_name = prim_match.group(1).strip().lower() if prim_match else None
+
     geo_matched_tags: List[str] = []
     for gkey in sorted(_TEACH_GEO_GAZETTEER.keys(), key=len, reverse=True):
+        if gkey in neg_low_set:
+            continue
         if re.search(rf"\b{re.escape(gkey)}\b", pos_low):
             ginfo = _TEACH_GEO_GAZETTEER[gkey]
-            if ginfo.get("country") and not resolved_country:
+            is_primary = bool(primary_loc_name and gkey in primary_loc_name)
+            if (not resolved_country or is_primary) and ginfo.get("country"):
                 resolved_country = ginfo["country"]
-            if ginfo.get("state_region") and not resolved_state:
+            if (not resolved_state or is_primary) and ginfo.get("state_region"):
                 resolved_state = ginfo["state_region"]
             if ginfo.get("city") and not resolved_city:
                 resolved_city = ginfo["city"]
             if ginfo.get("specific_location") and not resolved_spec:
                 resolved_spec = ginfo["specific_location"]
             for t in ginfo.get("tags", []):
-                if t not in geo_matched_tags:
+                if t.lower().strip() not in neg_low_set and t not in geo_matched_tags:
                     geo_matched_tags.append(t)
 
     # 3. Detect positive subject/facility/landmark concepts
     ontology_matched_tags: List[str] = []
     for skey in sorted(_TEACH_SUBJECT_CONCEPTS.keys(), key=len, reverse=True):
+        if skey in neg_low_set:
+            continue
         if re.search(rf"\b{re.escape(skey)}\b", pos_low):
             for st in _TEACH_SUBJECT_CONCEPTS[skey]:
-                if st not in ontology_matched_tags:
+                if st.lower().strip() not in neg_low_set and st not in ontology_matched_tags:
                     ontology_matched_tags.append(st)
 
     # 4. Also check multi-tier ontologies (_ANIMAL_ONTOLOGY, _PEOPLE_ONTOLOGY, _FLORA_ONTOLOGY, _STRUCTURE_ONTOLOGY)
     for ont_dict in (_ANIMAL_ONTOLOGY, _PEOPLE_ONTOLOGY, _FLORA_ONTOLOGY, _STRUCTURE_ONTOLOGY):
         for okey, (spec, mids, parents, _) in ont_dict.items():
+            if okey in neg_low_set or spec.lower().strip() in neg_low_set:
+                continue
             if re.search(rf"\b{re.escape(okey)}\b", pos_low):
                 for tag_item in [spec] + list(mids) + list(parents):
-                    if tag_item not in ontology_matched_tags:
+                    if tag_item.lower().strip() not in neg_low_set and tag_item not in ontology_matched_tags:
                         ontology_matched_tags.append(tag_item)
 
-    if re.search(r"\baerial\b|\bhelicopter\b|\bfrom the air\b", pos_low):
-        force_aerial = True
-        if "Aerial" not in ontology_matched_tags:
-            ontology_matched_tags.append("Aerial")
+    if re.search(r"\baerial\b|\bhelicopter\b|\bfrom the air\b|\bflying\s+over\b|\bflew\s+over\b", pos_low):
+        if "aerial" not in neg_low_set:
+            force_aerial = True
+            if "Aerial" not in ontology_matched_tags:
+                ontology_matched_tags.append("Aerial")
+            if "Aerial Photography" not in ontology_matched_tags:
+                ontology_matched_tags.append("Aerial Photography")
     elif re.search(r"\bterrestrial\b|\bground level\b", pos_low):
-        force_aerial = False
-        if "Terrestrial" not in ontology_matched_tags:
-            ontology_matched_tags.append("Terrestrial")
+        if "terrestrial" not in neg_low_set:
+            force_aerial = False
+            if "Terrestrial" not in ontology_matched_tags:
+                ontology_matched_tags.append("Terrestrial")
 
     # Place custom user-spoken phrases FIRST in priority (skipping any phrase that is purely a space-joined duplicate of 2 already-matched geo tags like "Houma Louisiana")
     known_geo_low = {gt.lower() for gt in geo_matched_tags}
@@ -6452,15 +6557,15 @@ def parse_natural_language_teach(
         cp_words = cphrase.lower().split()
         if len(cp_words) >= 2 and all(w in known_geo_low for w in cp_words) and cphrase.lower() not in known_geo_low:
             continue
-        if cphrase.lower() not in {a.lower() for a in added_tags}:
+        if cphrase.lower().strip() not in neg_low_set and cphrase.lower() not in {a.lower() for a in added_tags}:
             added_tags.append(cphrase)
 
     for gt in geo_matched_tags + ontology_matched_tags:
-        if gt.lower() not in {a.lower() for a in added_tags}:
+        if gt.lower().strip() not in neg_low_set and gt.lower() not in {a.lower() for a in added_tags}:
             added_tags.append(gt)
 
     # Also ensure resolved positive locations are included in added_tags and never in negated_tags
-    pos_loc_values = [v for v in (resolved_city, resolved_state, resolved_country, resolved_spec) if v]
+    pos_loc_values = [v for v in (resolved_city, resolved_state, resolved_country, resolved_spec) if v and v.lower().strip() not in neg_low_set]
     for ploc in pos_loc_values:
         if ploc.lower() not in {a.lower() for a in added_tags}:
             added_tags.append(ploc)
@@ -6534,13 +6639,16 @@ def find_session_orbit_candidates(
     target_ids: List[str],
     db_path: Path = DEFAULT_DB_PATH,
     vectors_path: Path = DEFAULT_VECTORS_PATH,
-    max_candidates: int = 300,
+    max_candidates: int = 1500,
 ) -> List[Dict[str, Any]]:
     """
-    Identifies sibling photos belonging to the same shoot session or visual orbit.
-    Leverages shoot timestamp clustering (±45 minutes from target photos) and OpenCLIP
-    embedding cosine similarity (>= 0.60, or same shoot burst).
-    Returns scored and deduplicated candidates for user preview and selective propagation.
+    Identifies sibling photos belonging to the same shoot session, time window, or visual orbit.
+    Computes multi-scope memberships:
+      - is_burst: within ±5 minutes (<= 300s)
+      - is_window: within ±2 hours (<= 7200s)
+      - is_day: all photos from the shoot day
+      - is_visual: OpenCLIP embedding cosine similarity >= 0.58
+    Returns scored and deduplicated candidates for multi-scope user preview and selective propagation.
     """
     if not target_ids:
         return []
@@ -6615,7 +6723,6 @@ def find_session_orbit_candidates(
 
     min_dt = min(target_dts) if target_dts else None
     max_dt = max(target_dts) if target_dts else None
-    window_delta = timedelta(minutes=45)
 
     scored_candidates = []
     for r in unique_candidates:
@@ -6624,7 +6731,6 @@ def find_session_orbit_candidates(
 
         cand_dt = _parse_session_exif_dt(et_str)
         time_diff_sec = 0.0
-        in_time_window = True
         if cand_dt and min_dt and max_dt:
             if cand_dt < min_dt:
                 time_diff_sec = (min_dt - cand_dt).total_seconds()
@@ -6633,9 +6739,6 @@ def find_session_orbit_candidates(
             else:
                 time_diff_sec = 0.0
 
-            if cand_dt < (min_dt - window_delta) or cand_dt > (max_dt + window_delta):
-                in_time_window = False
-
         sim = 1.0 if is_target else 0.0
         if not is_target and target_centroid is not None and v_idx is not None and vectors is not None and 0 <= v_idx < len(vectors):
             cand_v = vectors[v_idx]
@@ -6643,27 +6746,34 @@ def find_session_orbit_candidates(
             if cand_norm > 1e-7:
                 sim = float(np.dot(target_centroid, cand_v / cand_norm))
 
-        # Filter: target OR (in +-45min window AND similarity >= 0.60) OR (same shoot burst within 5 min)
-        if is_target or (in_time_window and (sim >= 0.60 or time_diff_sec <= 300)):
-            thumb_name = Path(thumb).name if thumb else ""
-            prev_name = Path(prev).name if prev else ""
-            scored_candidates.append({
-                "file_path": fp,
-                "file_hash": fh,
-                "file_name": Path(fp).name,
-                "shoot_date": sdate,
-                "camera_model": cam,
-                "exif_time": et_str,
-                "thumb_360_path": thumb,
-                "preview_1600_path": prev,
-                "thumb_url": f"/previews/thumbs_360/{thumb_name}" if thumb_name else None,
-                "preview_url": f"/previews/previews_1600/{prev_name}" if prev_name else None,
-                "star_rating": star or 0,
-                "sequence_id": seq_id,
-                "similarity": round(sim, 3),
-                "time_delta_seconds": int(time_diff_sec),
-                "is_target": is_target,
-            })
+        is_burst = bool(is_target or time_diff_sec <= 300)
+        is_window = bool(is_target or time_diff_sec <= 7200)
+        is_day = True
+        is_visual = bool(is_target or sim >= 0.58)
+
+        thumb_name = Path(thumb).name if thumb else ""
+        prev_name = Path(prev).name if prev else ""
+        scored_candidates.append({
+            "file_path": fp,
+            "file_hash": fh,
+            "file_name": Path(fp).name,
+            "shoot_date": sdate,
+            "camera_model": cam,
+            "exif_time": et_str,
+            "thumb_360_path": thumb,
+            "preview_1600_path": prev,
+            "thumb_url": f"/previews/thumbs_360/{thumb_name}" if thumb_name else None,
+            "preview_url": f"/previews/previews_1600/{prev_name}" if prev_name else None,
+            "star_rating": star or 0,
+            "sequence_id": seq_id,
+            "similarity": round(sim, 3),
+            "time_delta_seconds": int(time_diff_sec),
+            "is_target": is_target,
+            "is_burst": is_burst,
+            "is_window": is_window,
+            "is_day": is_day,
+            "is_visual": is_visual,
+        })
 
     scored_candidates.sort(key=lambda x: (not x["is_target"], -x["similarity"], x["time_delta_seconds"]))
     return scored_candidates[:max_candidates]

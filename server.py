@@ -4521,7 +4521,7 @@ async def preview_teach_instruction(payload: TeachPreviewRequest):
                 target_ids=payload.photo_ids,
                 db_path=DEFAULT_DB_PATH,
                 vectors_path=DEFAULT_VECTORS_PATH,
-                max_candidates=300,
+                max_candidates=1500,
             )
         except Exception as exc:
             logging.warning(f"find_session_orbit_candidates in preview failed: {exc}")

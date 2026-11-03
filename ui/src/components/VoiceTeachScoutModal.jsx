@@ -36,6 +36,7 @@ export default function VoiceTeachScoutModal({
   const [orbitCandidates, setOrbitCandidates] = useState([])
   const [selectedOrbitIds, setSelectedOrbitIds] = useState(new Set())
   const [isOrbitExpanded, setIsOrbitExpanded] = useState(true)
+  const [orbitFilterScope, setOrbitFilterScope] = useState('all') // 'burst' | 'window' | 'day' | 'visual' | 'all'
 
   // Scout state & Pre-Commit Review (Scout Mode)
   const [autoCreateCollection, setAutoCreateCollection] = useState(true)
@@ -356,9 +357,55 @@ export default function VoiceTeachScoutModal({
     setManualTagInput('')
   }
 
+  // Sibling Orbit multi-scope subsets
+  const burstCandidates = useMemo(
+    () => orbitCandidates.filter((c) => c.is_burst || (c.time_delta_seconds <= 300)),
+    [orbitCandidates]
+  );
+  const windowCandidates = useMemo(
+    () => orbitCandidates.filter((c) => c.is_window || (c.time_delta_seconds <= 7200)),
+    [orbitCandidates]
+  );
+  const dayCandidates = useMemo(
+    () => orbitCandidates.filter((c) => c.is_day !== false),
+    [orbitCandidates]
+  );
+  const visualCandidates = useMemo(
+    () => orbitCandidates.filter((c) => c.is_visual || ((c.similarity || 0) >= 0.58)),
+    [orbitCandidates]
+  );
+
+  const visibleOrbitCandidates = useMemo(() => {
+    switch (orbitFilterScope) {
+      case 'burst':
+        return burstCandidates;
+      case 'window':
+        return windowCandidates;
+      case 'day':
+        return dayCandidates;
+      case 'visual':
+        return visualCandidates;
+      case 'all':
+      default:
+        return orbitCandidates;
+    }
+  }, [orbitFilterScope, burstCandidates, windowCandidates, dayCandidates, visualCandidates, orbitCandidates]);
+
   // Session & Visual Orbit Propagation toggles
   const handleSelectAllOrbit = () => {
-    setSelectedOrbitIds(new Set(orbitCandidates.map((c) => c.file_hash || c.file_path)))
+    setSelectedOrbitIds((prev) => {
+      const next = new Set(prev)
+      visibleOrbitCandidates.forEach((c) => next.add(c.file_hash || c.file_path))
+      return next
+    })
+  }
+
+  const handleSelectAllDayOrbit = () => {
+    setSelectedOrbitIds((prev) => {
+      const next = new Set(prev)
+      dayCandidates.forEach((c) => next.add(c.file_hash || c.file_path))
+      return next
+    })
   }
 
   const handleDeselectAllOrbit = () => {
@@ -1346,7 +1393,7 @@ export default function VoiceTeachScoutModal({
                     )}
                   </div>
 
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
                     <button
                       type="button"
                       onClick={handleSelectAllOrbit}
@@ -1360,9 +1407,29 @@ export default function VoiceTeachScoutModal({
                         borderRadius: '8px',
                         cursor: 'pointer',
                       }}
+                      title="Select all currently visible photos in the active filter scope"
                     >
-                      ✓ Select All ({orbitCandidates.length})
+                      ✓ Select Visible ({visibleOrbitCandidates.length})
                     </button>
+                    {dayCandidates.length > 0 && dayCandidates.length !== visibleOrbitCandidates.length && (
+                      <button
+                        type="button"
+                        onClick={handleSelectAllDayOrbit}
+                        style={{
+                          background: 'rgba(59, 130, 246, 0.15)',
+                          border: '1px solid rgba(96, 165, 250, 0.4)',
+                          color: '#93c5fd',
+                          fontSize: '11.5px',
+                          fontWeight: 700,
+                          padding: '4px 10px',
+                          borderRadius: '8px',
+                          cursor: 'pointer',
+                        }}
+                        title="Select all photos taken on this shoot day"
+                      >
+                        ✓ Select All Day ({dayCandidates.length})
+                      </button>
+                    )}
                     <button
                       type="button"
                       onClick={handleDeselectAllOrbit}
@@ -1397,6 +1464,50 @@ export default function VoiceTeachScoutModal({
                   </div>
                 </div>
 
+                {/* Multi-Scope Shoot Orbit Filter Tabs */}
+                {isOrbitExpanded && (
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '6px',
+                      flexWrap: 'wrap',
+                      marginBottom: '10px',
+                      padding: '4px 0',
+                    }}
+                  >
+                    {[
+                      { key: 'all', label: `🌐 All Siblings (${orbitCandidates.length})` },
+                      { key: 'burst', label: `⚡ Burst (±5m) (${burstCandidates.length})` },
+                      { key: 'window', label: `⏱️ Window (±2h) (${windowCandidates.length})` },
+                      { key: 'day', label: `📅 Shoot Day (${dayCandidates.length})` },
+                      { key: 'visual', label: `✨ Visual Match (${visualCandidates.length})` },
+                    ].map((tab) => {
+                      const isActive = orbitFilterScope === tab.key;
+                      return (
+                        <button
+                          key={`orbit-scope-${tab.key}`}
+                          type="button"
+                          onClick={() => setOrbitFilterScope(tab.key)}
+                          style={{
+                            background: isActive ? 'rgba(59, 130, 246, 0.25)' : 'rgba(255, 255, 255, 0.04)',
+                            border: isActive ? '1px solid rgba(96, 165, 250, 0.7)' : '1px solid rgba(255, 255, 255, 0.1)',
+                            color: isActive ? '#93c5fd' : '#94a3b8',
+                            fontSize: '11px',
+                            fontWeight: isActive ? 700 : 500,
+                            padding: '3px 10px',
+                            borderRadius: '999px',
+                            cursor: 'pointer',
+                            transition: 'all 0.12s ease',
+                          }}
+                        >
+                          {tab.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+
                 {/* Candidate Thumbnail Strip / Grid */}
                 {isOrbitExpanded && (
                   <div
@@ -1409,7 +1520,7 @@ export default function VoiceTeachScoutModal({
                       padding: '4px',
                     }}
                   >
-                    {orbitCandidates.map((cand) => {
+                    {visibleOrbitCandidates.map((cand) => {
                       const candId = cand.file_hash || cand.file_path
                       const isSelected = selectedOrbitIds.has(candId)
                       const simPercent = Math.round((cand.similarity || 0) * 100)
