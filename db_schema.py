@@ -24,6 +24,8 @@ from typing import Optional, Dict, Any
 from config_paths import (
     DATA_VAULT_DIR,
     DEFAULT_COLOR_SIGS_PATH,
+    DEFAULT_CROP_BOXES_PATH,
+    DEFAULT_CROP_VECTORS_PATH,
     DEFAULT_DB_PATH,
     DEFAULT_MODELS_DIR,
     DEFAULT_PREVIEWS_1600_DIR,
@@ -92,6 +94,7 @@ V3_COLUMNS = [
     ("subject_boxes", "TEXT DEFAULT '[]'"),
     ("verified_subjects", "TEXT DEFAULT '[]'"),
     ("location_provenance", "TEXT DEFAULT ''"),
+    ("macro_biome", "TEXT DEFAULT ''"),
     ("updated_at", "TIMESTAMP"),
 ]
 
@@ -318,6 +321,72 @@ def init_and_migrate_db(db_path: Path = DEFAULT_DB_PATH) -> Dict[str, Any]:
         if vcb_col not in vcb_cols:
             cursor.execute(f"ALTER TABLE vector_concept_boundaries ADD COLUMN {vcb_col} {vcb_def};")
 
+    # 5c. Create v4.0 People & Pets Entity Clustering Tables
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS entity_clusters (
+        entity_id TEXT PRIMARY KEY,
+        entity_type TEXT NOT NULL,
+        entity_name TEXT DEFAULT '',
+        auto_breed TEXT DEFAULT '',
+        auto_breed_or_subtype TEXT DEFAULT '',
+        catalog_name TEXT DEFAULT '',
+        cover_file_hash TEXT DEFAULT '',
+        sample_file_hash TEXT DEFAULT '',
+        sample_preview_path TEXT DEFAULT '',
+        sample_bbox TEXT DEFAULT '[]',
+        representative_photo_id TEXT DEFAULT '',
+        representative_file_path TEXT DEFAULT '',
+        representative_bbox_json TEXT DEFAULT '[]',
+        centroid_vector BLOB,
+        photo_count INTEGER DEFAULT 0,
+        confidence_score REAL DEFAULT 0.0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    """)
+    ec_cols = {row[1] for row in cursor.execute("PRAGMA table_info(entity_clusters);").fetchall()}
+    for ec_col, ec_def in [
+        ("auto_breed", "TEXT DEFAULT ''"),
+        ("cover_file_hash", "TEXT DEFAULT ''"),
+        ("sample_file_hash", "TEXT DEFAULT ''"),
+        ("sample_preview_path", "TEXT DEFAULT ''"),
+        ("sample_bbox", "TEXT DEFAULT '[]'"),
+    ]:
+        if ec_col not in ec_cols:
+            cursor.execute(f"ALTER TABLE entity_clusters ADD COLUMN {ec_col} {ec_def};")
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS photo_entities (
+        entity_id TEXT NOT NULL,
+        photo_id TEXT DEFAULT '',
+        file_hash TEXT DEFAULT '',
+        file_path TEXT NOT NULL,
+        catalog_name TEXT DEFAULT '',
+        entity_type TEXT DEFAULT '',
+        entity_name TEXT DEFAULT '',
+        breed_label TEXT DEFAULT '',
+        confidence REAL DEFAULT 0.0,
+        crop_index INTEGER DEFAULT 0,
+        bbox TEXT DEFAULT '[]',
+        bbox_json TEXT DEFAULT '[]',
+        similarity REAL DEFAULT 0.0,
+        bridged_by_burst INTEGER DEFAULT 0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (entity_id, file_path)
+    );
+    """)
+    pe_cols = {row[1] for row in cursor.execute("PRAGMA table_info(photo_entities);").fetchall()}
+    for pe_col, pe_def in [
+        ("file_hash", "TEXT DEFAULT ''"),
+        ("entity_type", "TEXT DEFAULT ''"),
+        ("entity_name", "TEXT DEFAULT ''"),
+        ("breed_label", "TEXT DEFAULT ''"),
+        ("confidence", "REAL DEFAULT 0.0"),
+        ("bbox", "TEXT DEFAULT '[]'"),
+    ]:
+        if pe_col not in pe_cols:
+            cursor.execute(f"ALTER TABLE photo_entities ADD COLUMN {pe_col} {pe_def};")
+
     # 6. Create high-speed indexes for sub-15ms queries
     indexes = [
         "CREATE INDEX IF NOT EXISTS idx_photo_status ON photo_records(status);",
@@ -332,11 +401,17 @@ def init_and_migrate_db(db_path: Path = DEFAULT_DB_PATH) -> Dict[str, Any]:
         "CREATE INDEX IF NOT EXISTS idx_photo_keepers ON photo_records(in_keepers);",
         "CREATE INDEX IF NOT EXISTS idx_photo_vector_idx ON photo_records(vector_index);",
         "CREATE INDEX IF NOT EXISTS idx_photo_file_hash ON photo_records(file_hash);",
+        "CREATE INDEX IF NOT EXISTS idx_photo_macro_biome ON photo_records(macro_biome);",
         "CREATE INDEX IF NOT EXISTS idx_errors_stage ON ingestion_errors(stage, created_at DESC);",
         "CREATE INDEX IF NOT EXISTS idx_collection_items_col ON collection_items(collection_id, sort_order ASC);",
         "CREATE INDEX IF NOT EXISTS idx_collection_items_photo ON collection_items(photo_id);",
         "CREATE INDEX IF NOT EXISTS idx_undo_created ON undo_history(created_at DESC, id DESC);",
         "CREATE INDEX IF NOT EXISTS idx_vec_boundary_labels ON vector_concept_boundaries(old_label, new_label);",
+        "CREATE INDEX IF NOT EXISTS idx_entity_clusters_cat ON entity_clusters(catalog_name, entity_type, photo_count DESC);",
+        "CREATE INDEX IF NOT EXISTS idx_entity_clusters_name ON entity_clusters(entity_name);",
+        "CREATE INDEX IF NOT EXISTS idx_photo_entities_photo ON photo_entities(photo_id);",
+        "CREATE INDEX IF NOT EXISTS idx_photo_entities_file ON photo_entities(file_path);",
+        "CREATE INDEX IF NOT EXISTS idx_photo_entities_cat ON photo_entities(catalog_name, entity_id);",
     ]
     for idx_sql in indexes:
         cursor.execute(idx_sql)

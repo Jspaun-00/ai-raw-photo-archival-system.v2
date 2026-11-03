@@ -46,6 +46,7 @@ from stage1_engine import (
     run_stage1_pipeline,
 )
 from stage2_vlm import (
+    reassess_records_fast,
     run_stage2_vlm,
 )
 from xmp_sync import (
@@ -182,6 +183,16 @@ def run_pipeline(
                 sharpness_threshold=sharp_thresh,
                 force_rescan=force_rescan,
             )
+            # Invariant 3: Automatically run v4.0 4-Pass Cascade + Entity Clustering on newly ingested catalog
+            try:
+                fast_res = reassess_records_fast(
+                    db_path=active_db,
+                    vectors_path=active_vecs,
+                    catalog_name=tgt["name"],
+                )
+                s1_res["v4_cascade_summary"] = fast_res
+            except Exception as exc:
+                logging.warning(f"Automatic v4.0 cascade after Stage 1 failed: {exc}")
             stage1_reports.append(s1_res)
 
     # Run Stage 2 unless --stage1-only was requested

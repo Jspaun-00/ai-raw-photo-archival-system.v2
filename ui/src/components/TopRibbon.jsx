@@ -79,11 +79,18 @@ export default function TopRibbon({
 }) {
   const [aestheticOpen, setAestheticOpen] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
+  const [peoplePetsOpen, setPeoplePetsOpen] = useState(false);
+  const [entityClusters, setEntityClusters] = useState([]);
+  const [loadingEntities, setLoadingEntities] = useState(false);
+  const [editingEntityId, setEditingEntityId] = useState(null);
+  const [editingNameVal, setEditingNameVal] = useState('');
+  const [savingEntityId, setSavingEntityId] = useState(null);
   const [updateInfo, setUpdateInfo] = useState(null);
   const [isUpdatingApp, setIsUpdatingApp] = useState(false);
 
   const aestheticRef = useRef(null);
   const filtersRef = useRef(null);
+  const peoplePetsRef = useRef(null);
 
   // Unified prop bindings supporting both App.jsx and legacy aliases
   const currentQuery = searchQuery !== undefined ? searchQuery : query || '';
@@ -125,10 +132,55 @@ export default function TopRibbon({
       if (filtersRef.current && !filtersRef.current.contains(e.target)) {
         setFiltersOpen(false);
       }
+      if (peoplePetsRef.current && !peoplePetsRef.current.contains(e.target)) {
+        setPeoplePetsOpen(false);
+        setEditingEntityId(null);
+      }
     };
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
+
+  const fetchEntityClusters = async (catName = activeCatalog) => {
+    setLoadingEntities(true);
+    try {
+      const r = await fetch(`/api/entities?catalog=${encodeURIComponent(catName || 'All Catalogs')}`);
+      if (r.ok) {
+        const data = await r.json();
+        setEntityClusters(Array.isArray(data.entities) ? data.entities : []);
+      }
+    } catch (_) {
+      // ignore
+    } finally {
+      setLoadingEntities(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchEntityClusters(activeCatalog);
+  }, [activeCatalog]);
+
+  const handleRenameEntity = async (entityId, newName) => {
+    const clean = (newName || '').trim();
+    if (!clean) return;
+    setSavingEntityId(entityId);
+    try {
+      const r = await fetch(`/api/entities/${encodeURIComponent(entityId)}/rename`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ entity_name: clean }),
+      });
+      if (r.ok) {
+        await fetchEntityClusters(activeCatalog);
+        setEditingEntityId(null);
+        setEditingNameVal('');
+      }
+    } catch (_) {
+      // ignore
+    } finally {
+      setSavingEntityId(null);
+    }
+  };
 
   // Check for remote Git updates on mount
   useEffect(() => {
@@ -464,6 +516,271 @@ export default function TopRibbon({
             >
               <span>🔎 Scout Archive</span>
             </button>
+
+            {/* 👥 People & Pets Identity Clustering & Naming Popover */}
+            <div ref={peoplePetsRef} style={{ position: 'relative' }}>
+              <button
+                type="button"
+                onClick={() => {
+                  const nextOpen = !peoplePetsOpen;
+                  setPeoplePetsOpen(nextOpen);
+                  if (nextOpen) fetchEntityClusters(activeCatalog);
+                }}
+                title="People & Pets — Recurring Cats, Dogs & People across months with 1-click breed & custom name filtering (e.g. Masha, Scout)"
+                style={{
+                  padding: '8px 15px',
+                  borderRadius: '8px',
+                  fontSize: '14px',
+                  fontWeight: 700,
+                  cursor: 'pointer',
+                  border: peoplePetsOpen ? '1.5px solid #a855f7' : '1px solid #8b5cf6',
+                  background: peoplePetsOpen
+                    ? 'rgba(168, 85, 247, 0.26)'
+                    : 'rgba(139, 92, 246, 0.16)',
+                  color: '#ede9fe',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '7px',
+                }}
+              >
+                <span>👥 People &amp; Pets</span>
+                {entityClusters.length > 0 && (
+                  <span
+                    style={{
+                      background: '#8b5cf6',
+                      color: '#ffffff',
+                      borderRadius: '999px',
+                      padding: '1px 7px',
+                      fontSize: '12px',
+                      fontWeight: 800,
+                    }}
+                  >
+                    {entityClusters.length}
+                  </span>
+                )}
+              </button>
+
+              {peoplePetsOpen && (
+                <div
+                  style={{
+                    position: 'absolute',
+                    top: 'calc(100% + 8px)',
+                    right: 0,
+                    width: '410px',
+                    maxHeight: '500px',
+                    overflowY: 'auto',
+                    background: '#11141d',
+                    border: '1px solid #2e364f',
+                    borderRadius: '12px',
+                    boxShadow: '0 20px 45px rgba(0, 0, 0, 0.78)',
+                    padding: '14px',
+                    zIndex: 120,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '10px',
+                  }}
+                >
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      borderBottom: '1px solid #1e2536',
+                      paddingBottom: '8px',
+                    }}
+                  >
+                    <div>
+                      <div style={{ fontSize: '14px', fontWeight: 800, color: '#f8fafc' }}>
+                        👥 People &amp; Pets Clusters
+                      </div>
+                      <div style={{ fontSize: '11.5px', color: '#94a3b8' }}>
+                        Click any cluster to filter photos, or name a pet/person (e.g. &quot;Masha&quot;, &quot;Scout&quot;)
+                      </div>
+                    </div>
+                  </div>
+
+                  {loadingEntities ? (
+                    <div style={{ padding: '18px', textAlign: 'center', color: '#94a3b8', fontSize: '13px' }}>
+                      Loading identity clusters...
+                    </div>
+                  ) : entityClusters.length === 0 ? (
+                    <div style={{ padding: '18px', textAlign: 'center', color: '#94a3b8', fontSize: '13px' }}>
+                      No recurring People or Pet clusters detected in this catalog view.
+                    </div>
+                  ) : (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                      {entityClusters.map((ent) => {
+                        const isEditing = editingEntityId === ent.entity_id;
+                        const displayName = ent.entity_name || ent.auto_breed || ent.entity_type;
+                        const filterQueryTerm = ent.entity_name || ent.auto_breed || ent.entity_type;
+                        const isActiveFilter =
+                          currentQuery &&
+                          filterQueryTerm &&
+                          currentQuery.trim().toLowerCase() === filterQueryTerm.trim().toLowerCase();
+
+                        return (
+                          <div
+                            key={ent.entity_id}
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'space-between',
+                              gap: '10px',
+                              padding: '8px 10px',
+                              borderRadius: '10px',
+                              background: isActiveFilter ? 'rgba(139, 92, 246, 0.22)' : '#171b26',
+                              border: isActiveFilter ? '1px solid #a855f7' : '1px solid #252c3d',
+                            }}
+                          >
+                            <div
+                              onClick={() => {
+                                handleQueryChange(filterQueryTerm);
+                                setPeoplePetsOpen(false);
+                              }}
+                              style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '10px',
+                                flex: 1,
+                                cursor: 'pointer',
+                                minWidth: 0,
+                              }}
+                              title={`Filter by ${displayName} (${ent.photo_count} photos)`}
+                            >
+                              {ent.thumb_url ? (
+                                <img
+                                  src={ent.thumb_url}
+                                  alt={displayName}
+                                  style={{
+                                    width: '46px',
+                                    height: '46px',
+                                    borderRadius: '50%',
+                                    objectFit: 'cover',
+                                    border: '2px solid #8b5cf6',
+                                    flexShrink: 0,
+                                  }}
+                                />
+                              ) : (
+                                <div
+                                  style={{
+                                    width: '46px',
+                                    height: '46px',
+                                    borderRadius: '50%',
+                                    background: '#262d40',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    fontSize: '20px',
+                                    flexShrink: 0,
+                                  }}
+                                >
+                                  {ent.entity_type === 'Cat' ? '🐱' : ent.entity_type === 'Dog' ? '🐶' : '🧑'}
+                                </div>
+                              )}
+                              <div style={{ minWidth: 0, flex: 1 }}>
+                                <div
+                                  style={{
+                                    fontSize: '14px',
+                                    fontWeight: 700,
+                                    color: '#f8fafc',
+                                    whiteSpace: 'nowrap',
+                                    overflow: 'hidden',
+                                    textOverflow: 'ellipsis',
+                                  }}
+                                >
+                                  {ent.entity_name ? (
+                                    <>
+                                      <span style={{ color: '#c084fc' }}>{ent.entity_name}</span>{' '}
+                                      <span style={{ fontSize: '12px', color: '#94a3b8', fontWeight: 500 }}>
+                                        ({ent.auto_breed || ent.entity_type})
+                                      </span>
+                                    </>
+                                  ) : (
+                                    <span>{ent.auto_breed || ent.entity_type}</span>
+                                  )}
+                                </div>
+                                <div style={{ fontSize: '12px', color: '#94a3b8' }}>
+                                  {ent.entity_type} • {ent.photo_count} photo{ent.photo_count === 1 ? '' : 's'}
+                                </div>
+                              </div>
+                            </div>
+
+                            {isEditing ? (
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                                <input
+                                  type="text"
+                                  value={editingNameVal}
+                                  onChange={(e) => setEditingNameVal(e.target.value)}
+                                  onKeyDown={(e) => {
+                                    e.stopPropagation();
+                                    if (e.key === 'Enter') {
+                                      handleRenameEntity(ent.entity_id, editingNameVal);
+                                    } else if (e.key === 'Escape') {
+                                      setEditingEntityId(null);
+                                    }
+                                  }}
+                                  placeholder="e.g. Masha, Scout"
+                                  autoFocus
+                                  style={{
+                                    width: '115px',
+                                    padding: '5px 8px',
+                                    borderRadius: '6px',
+                                    background: '#0d1017',
+                                    border: '1px solid #8b5cf6',
+                                    color: '#f8fafc',
+                                    fontSize: '12.5px',
+                                    outline: 'none',
+                                  }}
+                                />
+                                <button
+                                  type="button"
+                                  disabled={savingEntityId === ent.entity_id}
+                                  onClick={() => handleRenameEntity(ent.entity_id, editingNameVal)}
+                                  style={{
+                                    padding: '5px 8px',
+                                    borderRadius: '6px',
+                                    background: '#8b5cf6',
+                                    border: 'none',
+                                    color: '#ffffff',
+                                    fontSize: '12px',
+                                    fontWeight: 700,
+                                    cursor: 'pointer',
+                                  }}
+                                >
+                                  Save
+                                </button>
+                              </div>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setEditingEntityId(ent.entity_id);
+                                  setEditingNameVal(ent.entity_name || '');
+                                }}
+                                style={{
+                                  padding: '5px 9px',
+                                  borderRadius: '6px',
+                                  background: '#23293a',
+                                  border: '1px solid #384159',
+                                  color: '#cbd5e1',
+                                  fontSize: '12px',
+                                  fontWeight: 600,
+                                  cursor: 'pointer',
+                                  flexShrink: 0,
+                                }}
+                              >
+                                ✎ {ent.entity_name ? 'Rename' : 'Name'}
+                              </button>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
 
             <button
               type="button"

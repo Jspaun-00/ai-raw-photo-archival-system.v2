@@ -48,6 +48,8 @@ except ImportError:
     BIOMETRICS_AVAILABLE = False
 
 from db_schema import (
+    DEFAULT_CROP_BOXES_PATH,
+    DEFAULT_CROP_VECTORS_PATH,
     DEFAULT_DB_PATH,
     DEFAULT_PREVIEWS_1600_DIR,
     DEFAULT_VECTORS_PATH,
@@ -57,6 +59,8 @@ from db_schema import (
 )
 from stage1_engine import (
     _parse_exif_dt,
+    build_or_update_crop_vectors_mps,
+    load_or_init_crop_vectors_matrix,
     load_or_init_vectors_matrix,
 )
 
@@ -193,6 +197,9 @@ from domain_gazetteer import (
     SINGULAR_PLURAL_PAIRS,
     COUNTABLE_DISCRETE_SUBJECT_TAGS_LOWER,
     COUNTABLE_SEARCH_CONCEPTS,
+    MACRO_BIOME_DEFINITIONS,
+    MULTI_PROMPT_PARENT_ENSEMBLES,
+    SPECIALIST_DRILLDOWN_TAXONOMY,
     deduplicate_singular_plural_tags,
 )
 
@@ -1098,8 +1105,14 @@ def expand_hierarchical_ontology(
             verified_animal_signals.append("frog")
         if probes.get("has_dog"):
             verified_animal_signals.append("dog")
+            if probes.get("dog_breed"):
+                verified_animal_signals.append(str(probes["dog_breed"]))
         if probes.get("has_cat"):
             verified_animal_signals.append("cat")
+            if probes.get("cat_breed"):
+                verified_animal_signals.append(str(probes["cat_breed"]))
+        for sp_t in probes.get("specialist_tags", []):
+            verified_animal_signals.append(str(sp_t))
         if probes.get("has_deer"):
             verified_animal_signals.append("deer")
         if probes.get("has_bear"):
@@ -1152,6 +1165,11 @@ def expand_hierarchical_ontology(
             scene_signals.append("car")
         if probes.get("has_gas_station"):
             scene_signals.append("gas station")
+        for sp_t in probes.get("specialist_tags", []):
+            scene_signals.append(str(sp_t).lower())
+            _add_flat(str(sp_t))
+        for sp_h in probes.get("specialist_hier", []):
+            _add_hier(str(sp_h))
     for hk in out_hier:
         scene_signals.extend(p.strip() for p in str(hk).split("|") if p.strip())
     scene_phrases, scene_words = _build_word_sets(scene_signals)
@@ -1264,6 +1282,22 @@ def expand_hierarchical_ontology(
         _add_hier("Perspective|Aerial")
     else:
         _add_hier("Perspective|Terrestrial")
+
+    # 5B. Enforce Pass 1 Biome Mutual-Exclusion Gate (never allow forbidden cross-biome tags unless user-taught)
+    forbidden_biome_low = set(probes.get("forbidden_tags_lower") or [])
+    if forbidden_biome_low:
+        out_flat = [
+            t for t in out_flat
+            if t.lower().strip() in user_taught_low
+            or (
+                t.lower().strip() not in forbidden_biome_low
+                and not any(re.search(rf"\b{re.escape(fb)}\b", t.lower()) for fb in forbidden_biome_low)
+            )
+        ]
+        out_hier = [
+            hk for hk in out_hier
+            if not any(re.search(rf"\b{re.escape(fb)}\b", hk.lower()) for fb in forbidden_biome_low)
+        ]
 
     # 6. Deduplicate singular/plural pairs (never emit both Boat and Boats, Bird and Birds, Butte and Buttes, etc.)
     out_flat = deduplicate_singular_plural_tags(
@@ -2070,6 +2104,16 @@ def run_stage2_vlm(
         )
 
     conn.close()
+
+    if not paused_early:
+        try:
+            cluster_and_propagate_entities(
+                db_path=db_path,
+                vectors_path=vectors_path,
+                catalog_name=catalog_name,
+            )
+        except Exception as exc:
+            logging.warning(f"cluster_and_propagate_entities after Stage 2 VLM warning: {exc}")
 
     return {
         "status": "paused" if paused_early else "completed",
@@ -3333,6 +3377,7 @@ _MULTIREGION_PROBE_KEYS = (
 def _get_openclip_probe_singleton():
     if "model" not in _OPENCLIP_PROBE_MODEL_CACHE:
         import open_clip
+        import torch
         from stage1_engine import detect_hardware_profile
 
         hw = detect_hardware_profile()
@@ -3346,6 +3391,153 @@ def _get_openclip_probe_singleton():
         _OPENCLIP_PROBE_MODEL_CACHE["preprocess"] = preprocess
         _OPENCLIP_PROBE_MODEL_CACHE["tokenizer"] = tok
         _OPENCLIP_PROBE_MODEL_CACHE["device"] = dev
+
+        def _encode_prompt_list(p_list: List[str]) -> np.ndarray:
+            with torch.no_grad():
+                t_in = tok(p_list).to(dev)
+                f_out = model.encode_text(t_in)
+                f_out = f_out / f_out.norm(dim=-1, keepdim=True).clamp(min=1e-8)
+                return f_out.cpu().numpy().astype(np.float32)
+
+        # 1. Pre-encode CONCEPT_PROBE_PROMPTS once at startup (0ms runtime overhead)
+        cp_prompts = list(CONCEPT_PROBE_PROMPTS.values())
+        cp_arr = _encode_prompt_list(cp_prompts)
+        _OPENCLIP_PROBE_MODEL_CACHE["concept_emb_map"] = {
+            p: v for p, v in zip(cp_prompts, cp_arr)
+        }
+
+        # 2. Pre-encode Pass 1 Macro Biome Multi-Prompt Ensembles
+        _BIOME_LABEL_TO_ID = {
+            "Indoor / Residential & Living Space": "indoor_residential",
+            "Indoor / Closet, Drawer & Personal Storage": "indoor_closet_storage",
+            "Studio / Tabletop, Product & Scientific Macro": "studio_tabletop_macro",
+            "Portrait / Mirror & People": "portrait_mirror_people",
+            "Urban / Automotive, Bridges & Architecture": "urban_automotive_arch",
+            "Aerial / Agriculture, Infrastructure & Topo": "aerial_infra_topo",
+            "Outdoor / Wilderness, Ranch, Coastal & Flora": "outdoor_wilderness_flora",
+        }
+        biome_vecs: Dict[str, Tuple[Dict[str, Any], np.ndarray]] = {}
+        biome_iter = (
+            MACRO_BIOME_DEFINITIONS.items()
+            if isinstance(MACRO_BIOME_DEFINITIONS, dict)
+            else [(b.get("label") or b.get("id"), b) for b in MACRO_BIOME_DEFINITIONS]
+        )
+        for b_key, b_raw in biome_iter:
+            b_cfg = dict(b_raw)
+            b_label = str(b_cfg.get("label") or b_key)
+            b_id = str(b_cfg.get("id") or _BIOME_LABEL_TO_ID.get(b_label, b_label))
+            b_cfg["id"] = b_id
+            b_cfg["label"] = b_label
+            if "forbidden_tags" not in b_cfg and "forbidden_tags_lower" in b_cfg:
+                b_cfg["forbidden_tags"] = b_cfg["forbidden_tags_lower"]
+            b_arr = _encode_prompt_list(b_cfg["prompts"])
+            b_mean = b_arr.mean(axis=0)
+            b_norm = float(np.linalg.norm(b_mean))
+            if b_norm > 1e-6:
+                b_mean = b_mean / b_norm
+            b_vec_f32 = b_mean.astype(np.float32)
+            biome_vecs[b_id] = (b_cfg, b_vec_f32)
+            biome_vecs[b_label] = (b_cfg, b_vec_f32)
+        _OPENCLIP_PROBE_MODEL_CACHE["biome_vecs"] = biome_vecs
+
+        # 3. Pre-encode Pass 2/3 Multi-Prompt Parent Ensembles
+        parent_ensemble_vecs: Dict[str, np.ndarray] = {}
+        extra_parent_ensembles = {
+            "Horse": [
+                "a photograph of a live horse, stallion, mare, or foal",
+                "horses grazing or running in a ranch pasture, corral, or desert range",
+            ],
+            "Bird": [
+                "a photograph of a live wild bird, wading bird, heron, egret, pelican, raptor, or waterfowl",
+                "a bird perched on a branch, wading in water, or flying in the sky",
+            ],
+            "Car": [
+                "a photograph of an automobile, sports sedan, car, or truck",
+                "a parked car or vehicle on a street, driveway, or gas station",
+            ],
+        }
+        combined_parent_ensembles = dict(MULTI_PROMPT_PARENT_ENSEMBLES)
+        for ep_k, ep_v in extra_parent_ensembles.items():
+            if ep_k not in combined_parent_ensembles and ep_k.lower() not in combined_parent_ensembles:
+                combined_parent_ensembles[ep_k] = ep_v
+        for p_name, p_prompts in combined_parent_ensembles.items():
+            p_arr = _encode_prompt_list(p_prompts)
+            p_mean = p_arr.mean(axis=0)
+            p_norm = float(np.linalg.norm(p_mean))
+            if p_norm > 1e-6:
+                p_mean = p_mean / p_norm
+            p_vec_f32 = p_mean.astype(np.float32)
+            parent_ensemble_vecs[p_name] = p_vec_f32
+            parent_ensemble_vecs[p_name.lower()] = p_vec_f32
+            parent_ensemble_vecs[p_name.title()] = p_vec_f32
+        _OPENCLIP_PROBE_MODEL_CACHE["parent_ensemble_vecs"] = parent_ensemble_vecs
+
+        # 4. Pre-encode Pass 3 Specialist Drill-Down Matrices
+        grouped_specialists: Dict[str, List[Dict[str, Any]]] = {}
+        if isinstance(SPECIALIST_DRILLDOWN_TAXONOMY, dict):
+            for g_k, g_items in SPECIALIST_DRILLDOWN_TAXONOMY.items():
+                grouped_specialists[g_k] = [dict(x) for x in g_items]
+        else:
+            for raw_item in SPECIALIST_DRILLDOWN_TAXONOMY:
+                item = dict(raw_item)
+                tag_str = str(item.get("tag") or item.get("label") or "")
+                item["tag"] = tag_str
+                item["label"] = tag_str
+                if "hier" not in item and "hierarchy" in item:
+                    item["hier"] = item["hierarchy"]
+                if "parents" not in item and "parent" in item:
+                    item["parents"] = [item["parent"]] if item["parent"] else []
+                dom = str(item.get("domain") or "")
+                par = str(item.get("parent") or "")
+                if dom == "feline" or tag_str in ("Cat Tree", "Scratching Post"):
+                    grouped_specialists.setdefault("feline", []).append(item)
+                if dom == "canine":
+                    grouped_specialists.setdefault("canine", []).append(item)
+                if dom == "equine":
+                    grouped_specialists.setdefault("equine", []).append(item)
+                if dom == "ornithology_wildlife":
+                    if par == "Bird":
+                        grouped_specialists.setdefault("ornithology", []).append(item)
+                    else:
+                        grouped_specialists.setdefault("wildlife", []).append(item)
+                if dom in ("flora_trees", "indoor_flora"):
+                    grouped_specialists.setdefault("flora", []).append(item)
+                if dom == "indoor_decor_textiles" or tag_str in ("Cat Tree", "Scratching Post"):
+                    grouped_specialists.setdefault("indoor_living", []).append(item)
+                if dom == "closet_storage_wellness":
+                    grouped_specialists.setdefault("closet_personal", []).append(item)
+                if dom in ("science_macro_optical", "studio_product"):
+                    grouped_specialists.setdefault("studio_macro", []).append(item)
+                if dom in ("aerial_agriculture", "civil_infrastructure"):
+                    grouped_specialists.setdefault("infrastructure_transport", []).append(item)
+
+        specialist_matrices: Dict[str, Tuple[List[Dict[str, Any]], np.ndarray]] = {}
+        for group_name, items in grouped_specialists.items():
+            vecs_for_group = []
+            for item in items:
+                i_arr = _encode_prompt_list(item["prompts"])
+                i_mean = i_arr.mean(axis=0)
+                i_norm = float(np.linalg.norm(i_mean))
+                if i_norm > 1e-6:
+                    i_mean = i_mean / i_norm
+                vecs_for_group.append(i_mean.astype(np.float32))
+            if vecs_for_group:
+                pair_val = (
+                    items,
+                    np.stack(vecs_for_group, axis=0).astype(np.float32),
+                )
+                specialist_matrices[group_name] = pair_val
+        if "feline" in specialist_matrices:
+            specialist_matrices["Cat"] = specialist_matrices["feline"]
+            specialist_matrices["cat"] = specialist_matrices["feline"]
+        if "canine" in specialist_matrices:
+            specialist_matrices["Dog"] = specialist_matrices["canine"]
+            specialist_matrices["dog"] = specialist_matrices["canine"]
+        if "equine" in specialist_matrices:
+            specialist_matrices["Horse"] = specialist_matrices["equine"]
+        if "ornithology" in specialist_matrices:
+            specialist_matrices["Bird"] = specialist_matrices["ornithology"]
+        _OPENCLIP_PROBE_MODEL_CACHE["specialist_matrices"] = specialist_matrices
     return _OPENCLIP_PROBE_MODEL_CACHE
 
 
@@ -3458,37 +3650,39 @@ def compute_clip_concept_probes_for_rows(
     Detection, active vector boundary adjustments, and spatial subject boxes across a batch of photo records.
     Returns { file_path: probe_dict }.
     """
+    ctx: Dict[str, Any] = {}
     if encode_text_batch_fn is None:
         try:
-            import torch
-
             ctx = _get_openclip_probe_singleton()
-            model = ctx["model"]
-            tok = ctx["tokenizer"]
-            dev = ctx["device"]
-            prompts_list = list(CONCEPT_PROBE_PROMPTS.values())
-            with torch.no_grad():
-                tokens = tok(prompts_list).to(dev)
-                feat = model.encode_text(tokens)
-                feat = feat / feat.norm(dim=-1, keepdim=True).clamp(min=1e-8)
-                arr = feat.cpu().numpy().astype(np.float32)
-            emb_map = {p: v for p, v in zip(prompts_list, arr)}
+            emb_map = ctx.get("concept_emb_map", {})
         except Exception as e:
             logging.warning(f"OpenCLIP probe encoding skipped: {e}")
             emb_map = {}
     else:
         emb_map = encode_text_batch_fn(list(CONCEPT_PROBE_PROMPTS.values()))
+        try:
+            ctx = _get_openclip_probe_singleton()
+        except Exception:
+            ctx = {}
 
     key_to_vec: Dict[str, np.ndarray] = {}
     for k, prompt_str in CONCEPT_PROBE_PROMPTS.items():
         if prompt_str in emb_map:
             key_to_vec[k] = emb_map[prompt_str]
 
+    biome_vecs = ctx.get("biome_vecs", {})
+    parent_ensemble_vecs = ctx.get("parent_ensemble_vecs", {})
+    specialist_matrices = ctx.get("specialist_matrices", {})
+
     learned_boundaries = load_vector_concept_boundaries(db_path=db_path)
     n_vecs = vectors.shape[0]
+    crop_vectors, crop_boxes = load_or_init_crop_vectors_matrix(
+        DEFAULT_CROP_VECTORS_PATH, DEFAULT_CROP_BOXES_PATH, n_rows=max(1, n_vecs)
+    )
+    n_crop_vecs = crop_vectors.shape[0]
     probes_by_fp: Dict[str, Dict[str, Any]] = {}
 
-    # Pre-identify candidate everyday/indoor/portrait/automotive frames that benefit from multi-region crop analysis
+    # Fallback multiregion candidates ONLY for rows that do not yet have pre-computed 4-crop MPS vectors
     multiregion_candidates: List[Dict[str, Any]] = []
     if key_to_vec and n_vecs > 0:
         mr_trigger_keys = [
@@ -3505,7 +3699,12 @@ def compute_clip_concept_probes_for_rows(
                 v_idx = r.get("vector_index")
                 if v_idx is None or int(v_idx) < 0 or int(v_idx) >= n_vecs:
                     continue
-                v = vectors[int(v_idx)].astype(np.float32)
+                vi = int(v_idx)
+                if vi < n_crop_vecs:
+                    c0_norm = float(np.linalg.norm(crop_vectors[vi, 0].astype(np.float32)))
+                    if c0_norm > 1e-4:
+                        continue
+                v = vectors[vi].astype(np.float32)
                 vn = float(np.linalg.norm(v))
                 if vn < 1e-6:
                     continue
@@ -3514,7 +3713,7 @@ def compute_clip_concept_probes_for_rows(
                 if len(rows) <= 150 or max_mr >= 0.215:
                     multiregion_candidates.append(r)
 
-    multiregion_map = _compute_multiregion_crop_sims_for_candidates(multiregion_candidates, key_to_vec)
+    multiregion_map = _compute_multiregion_crop_sims_for_candidates(multiregion_candidates, key_to_vec) if multiregion_candidates else {}
 
     for r in rows:
         fp = r["file_path"]
@@ -3546,18 +3745,45 @@ def compute_clip_concept_probes_for_rows(
             )
         )
 
-        if v_idx is None or int(v_idx) < 0 or int(v_idx) >= n_vecs or not key_to_vec:
-            is_aer = explicit_aerial_kw and not explicit_terrestrial_kw
-            probes_by_fp[fp] = {"is_aerial": is_aer, "scene_context": "outdoor_nature", "verified_subjects": [], "subject_boxes": [], "subject_counts": {}}
+        if int(r.get("is_screenshot") or 0) == 1:
+            probes_by_fp[fp] = {
+                "is_aerial": False,
+                "scene_context": "screenshot",
+                "macro_biome": "Screenshot / Screen Capture",
+                "forbidden_tags_lower": set(),
+                "verified_subjects": [],
+                "subject_boxes": [],
+                "subject_counts": {},
+                "specialist_tags": ["Screenshot", "Screen Capture"],
+                "specialist_hier": ["Technical|Screenshot"],
+            }
             continue
 
-        vec = vectors[int(v_idx)].astype(np.float32)
+        if v_idx is None or int(v_idx) < 0 or int(v_idx) >= n_vecs or not key_to_vec:
+            is_aer = explicit_aerial_kw and not explicit_terrestrial_kw
+            probes_by_fp[fp] = {"is_aerial": is_aer, "scene_context": "outdoor_nature", "macro_biome": "Outdoor / Wilderness, Ranch, Coastal & Flora", "verified_subjects": [], "subject_boxes": [], "subject_counts": {}}
+            continue
+
+        vi = int(v_idx)
+        vec = vectors[vi].astype(np.float32)
         norm = float(np.linalg.norm(vec))
         if norm < 1e-6:
             is_aer = explicit_aerial_kw and not explicit_terrestrial_kw
-            probes_by_fp[fp] = {"is_aerial": is_aer, "scene_context": "outdoor_nature", "verified_subjects": [], "subject_boxes": [], "subject_counts": {}}
+            probes_by_fp[fp] = {"is_aerial": is_aer, "scene_context": "outdoor_nature", "macro_biome": "Outdoor / Wilderness, Ranch, Coastal & Flora", "verified_subjects": [], "subject_boxes": [], "subject_counts": {}}
             continue
         vec = vec / norm
+
+        # Extract 4 pre-computed salient sub-crops from crop_vectors.npy & crop_boxes.npy (Pass 2 MPS 4-Crop Saliency Scanner)
+        valid_crops: List[Tuple[int, np.ndarray, List[float]]] = []
+        if vi < n_crop_vecs:
+            raw_cvecs = crop_vectors[vi].astype(np.float32)
+            raw_cboxes = crop_boxes[vi].astype(np.float32)
+            for ci in range(min(4, raw_cvecs.shape[0])):
+                cv = raw_cvecs[ci]
+                cn = float(np.linalg.norm(cv))
+                if cn > 1e-4 and np.isfinite(cn):
+                    cb = [round(float(x), 3) for x in raw_cboxes[ci].tolist()]
+                    valid_crops.append((ci, cv / cn, cb))
 
         def _sim(k_name: str) -> float:
             v_p = key_to_vec.get(k_name)
@@ -3566,6 +3792,20 @@ def compute_clip_concept_probes_for_rows(
         crop_sims = multiregion_map.get(fp, {})
 
         def _best_crop(k_name: str, regions: Optional[ Tuple[str, ...] ] = None) -> Tuple[float, Optional[str]]:
+            v_p = key_to_vec.get(k_name)
+            if valid_crops and v_p is not None:
+                best_v = 0.0
+                best_r = None
+                reg_map_idx = {0: "upper_left", 1: "lower_right", 2: "center", 3: "salient_peak"}
+                for ci, cv, _ in valid_crops:
+                    rn = reg_map_idx.get(ci, "center")
+                    if regions is not None and rn != "salient_peak" and rn not in regions:
+                        continue
+                    val = float(np.dot(cv, v_p))
+                    if val > best_v:
+                        best_v = val
+                        best_r = rn
+                return best_v, best_r
             if not crop_sims:
                 return 0.0, None
             best_v = 0.0
@@ -3600,11 +3840,22 @@ def compute_clip_concept_probes_for_rows(
         terrestrial_sim = max(_sim("terrestrial_1"), _sim("terrestrial_2"))
         bg_sim = _sim("bg_landscape")
 
-        # Top-Level Scene Context Router
+        # Top-Level Scene Context Router & Pass 1 Macro Scene Biome Lock
         scene_indoor_sim = max(_sim("scene_indoor_domestic"), _sim("living_room"), _sim("cat_tree"))
         scene_mirror_sim = max(_sim("scene_mirror_selfie"), _sim("mirror_selfie"), _sim("fitting_room"))
         scene_auto_sim = max(_sim("scene_urban_automotive"), _sim("sports_car_sedan"), _sim("gas_station"))
         scene_nature_sim = max(_sim("scene_outdoor_nature"), bg_sim)
+
+        biome_scores: Dict[str, float] = {}
+        for b_id, (b_cfg, b_vec) in biome_vecs.items():
+            biome_scores[b_id] = float(np.dot(vec, b_vec))
+        b_indoor_res = max(biome_scores.get("indoor_residential", 0.0), scene_indoor_sim)
+        b_indoor_closet = biome_scores.get("indoor_closet_storage", 0.0)
+        b_studio_macro = biome_scores.get("studio_tabletop_macro", 0.0)
+        b_portrait_mirror = max(biome_scores.get("portrait_mirror_people", 0.0), scene_mirror_sim)
+        b_urban_auto = max(biome_scores.get("urban_automotive_arch", 0.0), scene_auto_sim)
+        b_aerial = max(biome_scores.get("aerial_infra_topo", 0.0), aerial_sim)
+        b_outdoor = max(biome_scores.get("outdoor_wilderness_flora", 0.0), scene_nature_sim)
 
         # Contrastive Habitat Foils & Inanimate Artifact Foils
         foil_forest = _sim("foil_empty_forest_path")
@@ -3616,54 +3867,126 @@ def compute_clip_concept_probes_for_rows(
         foil_statue = _sim("foil_statue_sculpture")
         foil_framed_pic = _sim("foil_framed_picture_wall")
         foil_empty_carpet = _sim("foil_empty_room_carpet")
+        foil_blanket_fabric = _sim("foil_blanket_pillow_fabric")
+        foil_crumpled_cloth = _sim("foil_crumpled_clothing")
+        foil_empty_furn_wall = _sim("foil_empty_furniture_wall")
 
         foil_habitat_max = max(bg_sim, foil_forest, foil_trees, foil_wet_rocks, foil_water, foil_ranch, foil_desert)
         foil_artifact_max = max(foil_statue, foil_framed_pic)
+        foil_indoor_local_global = max(foil_empty_carpet, foil_blanket_fabric, foil_crumpled_cloth, foil_empty_furn_wall)
 
         if explicit_aerial_kw and not explicit_terrestrial_kw:
             is_aerial = True
         elif explicit_terrestrial_kw:
             is_aerial = False
-        elif max(scene_indoor_sim, scene_mirror_sim, scene_auto_sim) >= 0.225:
+        elif max(b_indoor_res, b_indoor_closet, b_studio_macro, b_portrait_mirror, b_urban_auto) >= 0.220:
             is_aerial = False
         else:
             is_aerial = bool(aerial_sim > terrestrial_sim + 0.020 and aerial_sim >= 0.195)
 
+        # Lock Macro Biome (Pass 1)
+        macro_biome_id = "outdoor_wilderness_flora"
         if is_aerial:
             scene_context = "aerial"
-        elif scene_mirror_sim >= 0.235 and scene_mirror_sim >= scene_nature_sim + 0.025:
+            macro_biome_id = "aerial_infra_topo"
+        elif b_portrait_mirror >= 0.232 and b_portrait_mirror >= b_outdoor + 0.020:
             scene_context = "mirror_portrait"
-        elif scene_indoor_sim >= 0.215 and scene_indoor_sim >= scene_nature_sim + 0.020:
+            macro_biome_id = "portrait_mirror_people"
+        elif b_indoor_closet >= 0.228 and b_indoor_closet >= b_outdoor + 0.022 and b_indoor_closet >= b_indoor_res + 0.005:
             scene_context = "indoor_domestic"
-        elif scene_auto_sim >= 0.220 and scene_auto_sim >= scene_nature_sim + 0.020:
+            macro_biome_id = "indoor_closet_storage"
+        elif b_studio_macro >= 0.235 and b_studio_macro >= b_outdoor + 0.020 and b_studio_macro >= b_indoor_res + 0.010:
+            scene_context = "indoor_domestic"
+            macro_biome_id = "studio_tabletop_macro"
+        elif b_indoor_res >= 0.212 and b_indoor_res >= b_outdoor + 0.012:
+            scene_context = "indoor_domestic"
+            macro_biome_id = "indoor_residential"
+        elif b_urban_auto >= 0.218 and b_urban_auto >= b_outdoor + 0.015:
             scene_context = "urban_automotive"
+            macro_biome_id = "urban_automotive_arch"
         else:
             scene_context = "outdoor_nature"
+            macro_biome_id = "outdoor_wilderness_flora"
+
+        locked_biome_cfg = biome_vecs.get(macro_biome_id, ({"label": "Outdoor / Wilderness, Ranch, Coastal & Flora", "forbidden_tags": set()}, None))[0]
+        macro_biome_label = str(locked_biome_cfg.get("label") or "Outdoor / Wilderness, Ranch, Coastal & Flora")
+        forbidden_tags_lower: set = {str(t).lower().strip() for t in locked_biome_cfg.get("forbidden_tags", set())}
 
         is_everyday_non_nature = scene_context in ("mirror_portrait", "indoor_domestic", "urban_automotive")
+        is_indoor_locked = macro_biome_id in ("indoor_residential", "indoor_closet_storage", "studio_tabletop_macro", "portrait_mirror_people")
 
-        person_sim = _adj(max(_sim("person"), _sim("person_2")), "person", "people", "human", "man", "woman")
+        # Multi-Prompt Parent Ensemble similarities on 1x global vector
+        def _ens_sim(p_name: str) -> float:
+            pv = parent_ensemble_vecs.get(p_name)
+            return float(np.dot(vec, pv)) if pv is not None else 0.0
+
+        # Pass 2: Evaluate 4 Salient Crops with Per-Crop Local Foil Tension
+        foil_vecs_indoor = [
+            key_to_vec[fk]
+            for fk in ("foil_blanket_pillow_fabric", "foil_crumpled_clothing", "foil_empty_furniture_wall", "foil_empty_room_carpet", "foil_statue_sculpture")
+            if fk in key_to_vec
+        ]
+        foil_vecs_outdoor = [
+            key_to_vec[fk]
+            for fk in ("foil_wet_rocks_moss", "foil_empty_forest_path", "foil_empty_ranch_barn", "foil_empty_water_pond", "foil_empty_desert_rocks")
+            if fk in key_to_vec
+        ]
+
+        def _eval_crop_parent(
+            p_name: str,
+            extra_keys: Tuple[str, ...] = (),
+            use_indoor_foils: bool = True,
+        ) -> Tuple[float, float, Optional[List[float]], Optional[np.ndarray], int]:
+            """Returns (best_crop_score, local_foil_on_that_exact_crop, bbox, crop_vec, crop_idx)."""
+            probe_candidates = []
+            if p_name in parent_ensemble_vecs:
+                probe_candidates.append(parent_ensemble_vecs[p_name])
+            for ek in extra_keys:
+                if ek in key_to_vec:
+                    probe_candidates.append(key_to_vec[ek])
+            if not probe_candidates or not valid_crops:
+                return 0.0, foil_indoor_local_global if use_indoor_foils else foil_habitat_max, None, None, -1
+
+            best_s = -1.0
+            best_f = 0.0
+            best_b = None
+            best_cv = None
+            best_ci = -1
+            f_list = foil_vecs_indoor if use_indoor_foils else foil_vecs_outdoor
+            for ci, cv, cb in valid_crops:
+                s_val = max(float(np.dot(cv, pv)) for pv in probe_candidates)
+                f_val = max((float(np.dot(cv, fv)) for fv in f_list), default=0.18)
+                # Prefer the crop with highest positive margin over its own local foil
+                if (s_val - f_val) > (best_s - best_f) or best_s < 0:
+                    best_s = s_val
+                    best_f = f_val
+                    best_b = cb
+                    best_cv = cv
+                    best_ci = ci
+            return best_s, best_f, best_b, best_cv, best_ci
+
+        person_sim = _adj(max(_sim("person"), _sim("person_2"), _ens_sim("Person")), "person", "people", "human", "man", "woman")
         male_sim = _adj(_sim("male"), "man", "male", "person")
         female_sim = _adj(_sim("female"), "woman", "female", "person")
         photog_sim = _adj(_sim("photographer"), "photographer", "mitch rouse (subject)", "person")
         mirror_selfie_sim = _adj(max(_sim("mirror_selfie"), _sim("scene_mirror_selfie")), "mirror selfie", "selfie", "person")
         fitting_room_sim = _adj(_sim("fitting_room"), "fitting room")
-        living_room_sim = _adj(max(_sim("living_room"), _sim("scene_indoor_domestic")), "living room")
+        living_room_sim = _adj(max(_sim("living_room"), _sim("scene_indoor_domestic"), b_indoor_res), "living room")
         cat_tree_sim = _adj(_sim("cat_tree"), "cat tree")
         framed_art_sim = _adj(_sim("framed_art"), "framed art")
 
         bison_sim = _adj(_sim("bison"), "bison", "buffalo")
-        horse_sim = _adj(_sim("horse"), "horse", "horses")
+        horse_sim = _adj(max(_sim("horse"), _ens_sim("Horse")), "horse", "horses")
         cattle_sim = _adj(_sim("cattle"), "cattle", "cow", "cows")
-        bird_sim = _adj(_sim("bird"), "bird", "birds", "heron", "egret", "pelican", "hawk", "eagle")
+        bird_sim = _adj(max(_sim("bird"), _ens_sim("Bird")), "bird", "birds", "heron", "egret", "pelican", "hawk", "eagle")
         frog_sim = _adj(_sim("frog"), "frog", "frogs", "toad")
-        dog_sim = _adj(max(_sim("dog"), _sim("dog_indoor")), "dog", "dogs", "pet")
-        cat_sim = _adj(max(_sim("cat"), _sim("cat_indoor")), "cat", "cats", "pet")
+        dog_sim = _adj(max(_sim("dog"), _sim("dog_indoor"), _ens_sim("Dog")), "dog", "dogs", "pet")
+        cat_sim = _adj(max(_sim("cat"), _sim("cat_indoor"), _ens_sim("Cat")), "cat", "cats", "pet")
         deer_sim = _adj(_sim("deer_elk"), "deer", "elk")
         bear_sim = _adj(_sim("bear"), "bear")
         wildlife_sim = _adj(_sim("wildlife"), "wildlife", "animal", "animals")
         boat_sim = _adj(_sim("f2_boats_vessels"), "boat", "boats", "fishing boat", "ship", "vessel", "canoe", "kayak")
-        car_sim = _adj(max(_sim("car_vehicle"), _sim("sports_car_sedan")), "car", "cars", "sports car", "sedan", "vehicle", "truck")
+        car_sim = _adj(max(_sim("car_vehicle"), _sim("sports_car_sedan"), _ens_sim("Car")), "car", "cars", "sports car", "sedan", "vehicle", "truck")
         sports_car_sim = _adj(_sim("sports_car_sedan"), "sports car", "sedan", "car", "lexus")
         gas_station_sim = _adj(_sim("gas_station"), "gas station", "gas pump")
         train_sim = _adj(_sim("train_rail"), "train", "trains", "locomotive")
@@ -3671,18 +3994,33 @@ def compute_clip_concept_probes_for_rows(
         taft_sim = _sim("taft")
         palouse_sim = _sim("palouse")
 
-        # Multi-region crop signals for foreground/background dual subjects & night sky lighting
+        # Pass 2 Multi-Crop Saliency & Per-Crop Local Foil Tension for Cat, Dog, Person, Car
+        crop_cat_ens_sim, crop_cat_local_foil, crop_cat_box, best_cat_crop_vec, best_cat_crop_idx = _eval_crop_parent(
+            "Cat", ("cat_indoor", "cat"), use_indoor_foils=True
+        )
+        crop_dog_ens_sim, crop_dog_local_foil, crop_dog_box, best_dog_crop_vec, best_dog_crop_idx = _eval_crop_parent(
+            "Dog", ("dog_indoor", "dog"), use_indoor_foils=True
+        )
+        crop_person_ens_sim, crop_person_local_foil, crop_person_box, best_person_crop_vec, best_person_crop_idx = _eval_crop_parent(
+            "Person", ("person", "person_2", "mirror_selfie"), use_indoor_foils=True
+        )
+
+        # Also keep legacy region fallback compatibility
         crop_dog_sim, crop_dog_reg = _best_crop("dog_indoor", ("lower_right", "lower_left", "center"))
         crop_dog_gen_sim, crop_dog_gen_reg = _best_crop("dog", ("lower_right", "lower_left", "center"))
         if crop_dog_gen_sim > crop_dog_sim:
             crop_dog_sim, crop_dog_reg = crop_dog_gen_sim, crop_dog_gen_reg
-        crop_dog_foil = float(crop_sims.get(crop_dog_reg or "lower_right", {}).get("foil_empty_room_carpet", foil_empty_carpet))
+        if crop_dog_ens_sim > crop_dog_sim:
+            crop_dog_sim = crop_dog_ens_sim
+        crop_dog_foil = crop_dog_local_foil if valid_crops else float(crop_sims.get(crop_dog_reg or "lower_right", {}).get("foil_empty_room_carpet", foil_empty_carpet))
 
         crop_cat_sim, crop_cat_reg = _best_crop("cat_indoor", ("upper_left", "upper_right", "center", "lower_left"))
         crop_cat_gen_sim, crop_cat_gen_reg = _best_crop("cat", ("upper_left", "upper_right", "center", "lower_left"))
         if crop_cat_gen_sim > crop_cat_sim:
             crop_cat_sim, crop_cat_reg = crop_cat_gen_sim, crop_cat_gen_reg
-        crop_cat_foil = float(crop_sims.get(crop_cat_reg or "upper_left", {}).get("foil_empty_room_carpet", foil_empty_carpet))
+        if crop_cat_ens_sim > crop_cat_sim:
+            crop_cat_sim = crop_cat_ens_sim
+        crop_cat_foil = crop_cat_local_foil if valid_crops else float(crop_sims.get(crop_cat_reg or "upper_left", {}).get("foil_empty_room_carpet", foil_empty_carpet))
 
         crop_cattree_sim, crop_cattree_reg = _best_crop("cat_tree", ("upper_left", "upper_right", "center"))
         crop_mirror_sim, crop_mirror_reg = _best_crop("mirror_selfie", ("center", "upper_left", "upper_right"))
@@ -3716,6 +4054,11 @@ def compute_clip_concept_probes_for_rows(
                 person_sim >= 0.258
                 and (person_sim - person_foil) >= 0.028
                 and (person_sim - effective_person_artifact_foil) >= 0.025
+            )
+            or (
+                crop_person_ens_sim >= 0.268
+                and (crop_person_ens_sim - crop_person_local_foil) >= 0.038
+                and person_sim >= 0.220
             )
             or bool(user_taught_low & {"person", "people", "man", "woman", "portrait", "photographer", "mitch rouse (subject)", "mirror selfie", "selfie"})
             or bool(lrcat_words & {"portrait", "family", "person", "people", "cowboy", "rancher"})
@@ -3760,6 +4103,7 @@ def compute_clip_concept_probes_for_rows(
         has_bird = bool(
             (
                 not is_everyday_non_nature
+                and not is_indoor_locked
                 and bird_sim >= 0.278
                 and (bird_sim - bird_foil) >= 0.038
                 and (bird_sim - foil_artifact_max) >= 0.032
@@ -3773,79 +4117,118 @@ def compute_clip_concept_probes_for_rows(
         has_frog = bool(
             (
                 not is_everyday_non_nature
-                and frog_sim >= 0.285
-                and (frog_sim - frog_foil) >= 0.042
-                and (frog_sim - foil_artifact_max) >= 0.035
+                and not is_indoor_locked
+                and "frog" not in forbidden_tags_lower
+                and frog_sim >= 0.295
+                and (frog_sim - frog_foil) >= 0.048
+                and (frog_sim - foil_artifact_max) >= 0.040
             )
             or bool(user_taught_low & {"frog", "frogs", "toad", "amphibian"})
             or bool(lrcat_words & {"frog", "frogs", "toad"})
         ) and not bool(neg_low & {"frog", "frogs"})
 
-        # Context-Scoped Multi-Region Pet Detection:
-        # In indoor scenes, compare against empty room carpet + statue foil (never let a framed picture on a wall veto a live pet!)
+        # Context-Scoped Multi-Region Pet Detection with Per-Crop Local Foil Tension:
+        best_feline_sp_global = 0.0
+        best_feline_sp_crop = 0.0
+        if "feline" in specialist_matrices:
+            f_items, f_mat = specialist_matrices["feline"]
+            f_breed_rows = [idx_f for idx_f, it_f in enumerate(f_items) if it_f["tag"] not in ("Cat Tree", "Scratching Post")]
+            if f_breed_rows:
+                f_sub = f_mat[f_breed_rows]
+                best_feline_sp_global = float(np.max(np.dot(f_sub, vec)))
+                if valid_crops:
+                    best_feline_sp_crop = max(float(np.max(np.dot(f_sub, cv))) for _, cv, _ in valid_crops)
+
+        best_canine_sp_global = 0.0
+        best_canine_sp_crop = 0.0
+        if "canine" in specialist_matrices:
+            c_items, c_mat = specialist_matrices["canine"]
+            best_canine_sp_global = float(np.max(np.dot(c_mat, vec)))
+            if valid_crops:
+                best_canine_sp_crop = max(float(np.max(np.dot(c_mat, cv))) for _, cv, _ in valid_crops)
+
+        if best_canine_sp_crop >= 0.255 and best_canine_sp_crop >= best_feline_sp_crop + 0.038:
+            crop_dog_sim = max(crop_dog_sim, best_canine_sp_crop)
+
         dog_foil = (
-            max(foil_empty_carpet, foil_statue)
-            if scene_context == "indoor_domestic"
+            max(foil_indoor_local_global, foil_statue)
+            if is_indoor_locked
             else max(bg_sim, foil_ranch, foil_forest, foil_desert, foil_artifact_max)
         )
         has_dog_global = (
-            dog_sim >= (0.235 if scene_context == "indoor_domestic" else 0.278)
-            and (dog_sim - dog_foil) >= (0.025 if scene_context == "indoor_domestic" else 0.038)
-            and (dog_sim - foil_statue) >= 0.032
+            dog_sim >= (0.232 if is_indoor_locked else 0.275)
+            and (dog_sim - dog_foil) >= (0.022 if is_indoor_locked else 0.036)
+            and (dog_sim - foil_statue) >= 0.028
+            and not (cat_sim >= dog_sim + 0.038 and crop_cat_sim >= crop_dog_sim + 0.035)
         )
         has_dog_regional = (
-            crop_dog_sim >= 0.240
-            and (crop_dog_sim - crop_dog_foil) >= 0.035
-            and (scene_context == "indoor_domestic" or dog_sim >= 0.215)
+            crop_dog_sim >= 0.238
+            and (crop_dog_sim - crop_dog_foil) >= 0.030
+            and (is_indoor_locked or dog_sim >= 0.218 or best_canine_sp_crop >= 0.258)
+            and not (cat_sim >= dog_sim + 0.035 or crop_cat_sim >= crop_dog_sim + 0.020 or best_feline_sp_crop >= best_canine_sp_crop + 0.015)
         )
         has_dog = bool(
             has_dog_global
             or has_dog_regional
-            or bool(user_taught_low & {"dog", "dogs", "canine", "puppy", "chihuahua"})
+            or bool(user_taught_low & {"dog", "dogs", "canine", "puppy", "chihuahua", "french bulldog"})
             or bool(lrcat_words & {"dog", "dogs"})
         ) and not bool(neg_low & {"dog", "dogs"})
 
         cat_foil = (
-            max(foil_empty_carpet, foil_statue)
-            if scene_context == "indoor_domestic"
+            max(foil_indoor_local_global, foil_statue)
+            if is_indoor_locked
             else max(bg_sim, foil_ranch, foil_forest, foil_artifact_max)
         )
         has_cat_global = (
-            cat_sim >= (0.245 if scene_context == "indoor_domestic" else 0.282)
-            and (cat_sim - cat_foil) >= (0.030 if scene_context == "indoor_domestic" else 0.040)
-            and (cat_sim - foil_statue) >= 0.032
+            cat_sim >= (0.228 if is_indoor_locked else 0.278)
+            and (cat_sim - cat_foil) >= (0.020 if is_indoor_locked else 0.038)
+            and (cat_sim - foil_statue) >= 0.025
+            and not (dog_sim >= cat_sim + 0.045 and crop_dog_sim >= crop_cat_sim + 0.040)
         )
         has_cat_regional = (
-            crop_cat_sim >= 0.238
-            and (crop_cat_sim - crop_cat_foil) >= 0.042
-            and (scene_context == "indoor_domestic" or cat_sim >= 0.195 or crop_cattree_sim >= 0.248)
-        )
+            (
+                crop_cat_sim >= 0.232
+                and (crop_cat_sim - crop_cat_foil) >= 0.024
+                and (
+                    is_indoor_locked
+                    or cat_sim >= 0.190
+                    or crop_cattree_sim >= 0.240
+                    or (crop_cat_sim >= 0.238 and crop_cat_sim >= crop_dog_sim + 0.020)
+                )
+            )
+            or (
+                best_feline_sp_crop >= 0.230
+                and best_feline_sp_global >= 0.230
+                and best_feline_sp_global >= dog_sim + 0.025
+                and (best_feline_sp_crop - crop_cat_foil) >= 0.025
+            )
+        ) and not (dog_sim >= cat_sim + 0.045 and crop_dog_sim >= crop_cat_sim + 0.040)
         has_cat = bool(
             has_cat_global
             or has_cat_regional
-            or bool(user_taught_low & {"cat", "cats", "feline", "kitten"})
+            or bool(user_taught_low & {"cat", "cats", "feline", "kitten", "scottish fold"})
             or bool(lrcat_words & {"cat", "cats"})
         ) and not bool(neg_low & {"cat", "cats"})
 
         has_cat_tree = bool(
-            (cat_tree_sim >= 0.235 or (has_cat and crop_cattree_sim >= 0.248))
+            (cat_tree_sim >= 0.232 or (has_cat and crop_cattree_sim >= 0.242))
             and not bool(neg_low & {"cat tree"})
         )
         has_living_room = bool(
-            scene_context == "indoor_domestic"
-            and (living_room_sim >= 0.215 or has_cat_tree)
+            (scene_context == "indoor_domestic" or macro_biome_id == "indoor_residential")
+            and (living_room_sim >= 0.212 or has_cat_tree)
             and not has_fitting_room
             and not bool(neg_low & {"living room"})
         )
         crop_framed_sim, _ = _best_crop("framed_art", ("upper_right", "upper_left", "center"))
         crop_carpet_sim, _ = _best_crop("foil_empty_room_carpet", ("lower_left", "lower_right", "center"))
         has_carpet_rug = bool(
-            scene_context == "indoor_domestic"
+            (scene_context == "indoor_domestic" or macro_biome_id == "indoor_residential")
             and (foil_empty_carpet >= 0.215 or crop_carpet_sim >= 0.220)
             and not bool(neg_low & {"carpet", "rug"})
         )
         has_framed_art = bool(
-            scene_context == "indoor_domestic"
+            (scene_context == "indoor_domestic" or macro_biome_id == "indoor_residential")
             and (framed_art_sim >= 0.215 or foil_framed_pic >= 0.215 or crop_framed_sim >= 0.160)
             and not bool(neg_low & {"framed art"})
         )
@@ -3854,6 +4237,8 @@ def compute_clip_concept_probes_for_rows(
         has_bison = bool(
             (
                 not is_everyday_non_nature
+                and not is_indoor_locked
+                and "bison" not in forbidden_tags_lower
                 and bison_sim >= 0.275
                 and (bison_sim - bison_foil) >= 0.035
             )
@@ -3865,6 +4250,8 @@ def compute_clip_concept_probes_for_rows(
         has_horse = bool(
             (
                 not is_everyday_non_nature
+                and not is_indoor_locked
+                and "horse" not in forbidden_tags_lower
                 and horse_sim >= 0.275
                 and (horse_sim - horse_foil) >= 0.035
             )
@@ -3875,6 +4262,8 @@ def compute_clip_concept_probes_for_rows(
         has_cattle = bool(
             (
                 not is_everyday_non_nature
+                and not is_indoor_locked
+                and "cattle" not in forbidden_tags_lower
                 and cattle_sim >= 0.278
                 and (cattle_sim - horse_foil) >= 0.038
             )
@@ -3885,6 +4274,8 @@ def compute_clip_concept_probes_for_rows(
         has_deer = bool(
             (
                 not is_everyday_non_nature
+                and not is_indoor_locked
+                and "deer" not in forbidden_tags_lower
                 and deer_sim >= 0.282
                 and (deer_sim - max(bg_sim, foil_forest, foil_ranch, foil_artifact_max)) >= 0.040
             )
@@ -3894,6 +4285,8 @@ def compute_clip_concept_probes_for_rows(
         has_bear = bool(
             (
                 not is_everyday_non_nature
+                and not is_indoor_locked
+                and "bear" not in forbidden_tags_lower
                 and bear_sim >= 0.285
                 and (bear_sim - max(bg_sim, foil_forest, foil_wet_rocks, foil_artifact_max)) >= 0.042
             )
@@ -3904,6 +4297,7 @@ def compute_clip_concept_probes_for_rows(
             has_bison or has_horse or has_cattle or has_bird or has_frog or has_deer or has_bear
             or (
                 not is_everyday_non_nature
+                and not is_indoor_locked
                 and wildlife_sim >= 0.282
                 and (wildlife_sim - foil_habitat_max) >= 0.040
                 and (wildlife_sim - foil_artifact_max) >= 0.035
@@ -3913,7 +4307,8 @@ def compute_clip_concept_probes_for_rows(
         boat_foil = max(bg_sim, foil_water, foil_ranch, foil_wet_rocks, foil_forest)
         has_boat = bool(
             (
-                boat_sim >= 0.268
+                not is_indoor_locked
+                and boat_sim >= 0.268
                 and (boat_sim - boat_foil) >= 0.035
                 and not is_aerial
             )
@@ -3929,13 +4324,18 @@ def compute_clip_concept_probes_for_rows(
             (
                 (sports_car_sim >= 0.245 or crop_sportscar_sim >= 0.260)
                 and (max(sports_car_sim, crop_sportscar_sim) - bg_sim) >= 0.040
+                and macro_biome_id not in ("indoor_residential", "indoor_closet_storage", "studio_tabletop_macro")
             )
             or bool(user_taught_low & {"sports car", "sedan", "lexus"})
         ) and not bool(neg_low & {"car", "cars", "sports car", "sedan", "vehicle"})
 
         has_car = bool(
             has_sports_car
-            or (car_sim >= 0.258 and (car_sim - foil_habitat_max) >= 0.035)
+            or (
+                car_sim >= 0.258
+                and (car_sim - foil_habitat_max) >= 0.035
+                and macro_biome_id not in ("indoor_residential", "indoor_closet_storage", "studio_tabletop_macro")
+            )
             or bool(user_taught_low & {"car", "cars", "vehicle", "truck", "automobile", "sports car", "sedan", "lexus"})
         ) and not bool(neg_low & {"car", "cars", "vehicle"})
 
@@ -3943,11 +4343,12 @@ def compute_clip_concept_probes_for_rows(
             (
                 (gas_station_sim >= 0.220 or crop_gas_sim >= 0.265)
                 and (has_car or scene_context == "urban_automotive" or gas_station_sim >= 0.245)
+                and not is_indoor_locked
             )
             or bool(user_taught_low & {"gas station", "gas pump", "service station"})
         ) and not bool(neg_low & {"gas station"})
 
-        # Night & Artificial Lighting vs Daylight detection (compares night vs daylight within the same upper sky/corner region)
+        # Night & Artificial Lighting vs Daylight detection
         night_full_sim = _sim("light_night_artificial")
         day_full_sim = _sim("light_daylight_midday")
         night_sky_sim, night_sky_reg = _best_crop("light_night_artificial", ("upper_sky", "upper_left", "upper_right"))
@@ -3964,14 +4365,152 @@ def compute_clip_concept_probes_for_rows(
         )
 
         has_train = bool(
-            (train_sim >= 0.280 and (train_sim - foil_habitat_max) >= 0.040)
+            (not is_indoor_locked and train_sim >= 0.280 and (train_sim - foil_habitat_max) >= 0.040)
             or bool(user_taught_low & {"train", "trains", "locomotive"})
         ) and not bool(neg_low & {"train", "trains"})
 
         has_airplane = bool(
-            (airplane_sim >= 0.282 and (airplane_sim - max(foil_habitat_max, aerial_sim)) >= 0.040)
+            (not is_indoor_locked and airplane_sim >= 0.282 and (airplane_sim - max(foil_habitat_max, aerial_sim)) >= 0.040)
             or bool(user_taught_low & {"airplane", "airplanes", "aircraft"})
         ) and not bool(neg_low & {"airplane", "airplanes", "aircraft"})
+
+        # ==============================================================================
+        # PASS 3: Specialist Drill-Down Matrix (~0.05ms vector lookup per activated group)
+        # ==============================================================================
+        specialist_tags: List[str] = []
+        specialist_hier: List[str] = []
+        cat_breed: Optional[str] = None
+        dog_breed: Optional[str] = None
+
+        def _run_specialist_group(
+            group_name: str,
+            target_vec: np.ndarray,
+            min_sim: float = 0.242,
+            min_margin_over_foil: float = 0.025,
+            foil_ref: float = 0.20,
+            max_matches: int = 2,
+            also_check_crops: bool = False,
+        ) -> List[Tuple[Dict[str, Any], float]]:
+            if group_name not in specialist_matrices:
+                return []
+            items, mat = specialist_matrices[group_name]
+            sims = np.dot(mat, target_vec)
+            if also_check_crops and valid_crops:
+                for _, cv, _ in valid_crops:
+                    c_sims = np.dot(mat, cv)
+                    sims = np.maximum(sims, c_sims)
+            ranked_idx = np.argsort(sims)[::-1]
+            matched: List[Tuple[Dict[str, Any], float]] = []
+            for idx_s in ranked_idx:
+                sc = float(sims[int(idx_s)])
+                item = items[int(idx_s)]
+                tag_lbl = str(item["tag"])
+                if tag_lbl.lower() in forbidden_tags_lower or tag_lbl.lower() in neg_low:
+                    continue
+                if sc >= min_sim and (sc - foil_ref) >= min_margin_over_foil:
+                    matched.append((item, sc))
+                    for t_add in [tag_lbl] + list(item.get("mids", [])) + list(item.get("parents", [])):
+                        if t_add and t_add.lower() not in forbidden_tags_lower and t_add.lower() not in neg_low and t_add not in specialist_tags:
+                            specialist_tags.append(t_add)
+                    h_str = str(item.get("hier") or "").strip()
+                    if h_str and h_str not in specialist_hier:
+                        specialist_hier.append(h_str)
+                    if len(matched) >= max_matches:
+                        break
+            return matched
+
+        if has_cat:
+            cat_target_v = best_cat_crop_vec if best_cat_crop_vec is not None else vec
+            feline_hits = _run_specialist_group(
+                "feline",
+                cat_target_v,
+                min_sim=0.235,
+                min_margin_over_foil=0.022,
+                foil_ref=min(cat_foil, crop_cat_foil),
+                max_matches=2,
+                also_check_crops=True,
+            )
+            for f_item, _ in feline_hits:
+                if f_item["tag"] not in ("Cat Tree", "Scratching Post") and not cat_breed:
+                    cat_breed = f_item["tag"]
+                elif f_item["tag"] == "Cat Tree":
+                    has_cat_tree = True
+
+        if has_dog:
+            dog_target_v = best_dog_crop_vec if best_dog_crop_vec is not None else vec
+            canine_hits = _run_specialist_group(
+                "canine",
+                dog_target_v,
+                min_sim=0.238,
+                min_margin_over_foil=0.024,
+                foil_ref=min(dog_foil, crop_dog_foil),
+                max_matches=1,
+                also_check_crops=False,
+            )
+            if canine_hits:
+                dog_breed = canine_hits[0][0]["tag"]
+
+        if has_horse:
+            _run_specialist_group("equine", vec, min_sim=0.255, min_margin_over_foil=0.030, foil_ref=horse_foil, max_matches=1, also_check_crops=True)
+
+        if has_bird:
+            _run_specialist_group("ornithology", vec, min_sim=0.258, min_margin_over_foil=0.032, foil_ref=bird_foil, max_matches=1, also_check_crops=True)
+
+        if not is_indoor_locked and not is_everyday_non_nature:
+            if has_wildlife or has_bison or has_deer or has_bear:
+                _run_specialist_group("wildlife", vec, min_sim=0.278, min_margin_over_foil=0.042, foil_ref=foil_habitat_max, max_matches=1, also_check_crops=False)
+            _run_specialist_group("flora", vec, min_sim=0.258, min_margin_over_foil=0.030, foil_ref=bg_sim, max_matches=2, also_check_crops=True)
+
+        if macro_biome_id == "indoor_residential" or has_living_room or has_cat or has_dog:
+            indoor_hits = _run_specialist_group(
+                "indoor_living",
+                vec,
+                min_sim=0.138 if (has_living_room and has_cat_tree) else 0.226,
+                min_margin_over_foil=0.005 if (has_living_room and has_cat_tree) else 0.014,
+                foil_ref=0.120 if (has_living_room and has_cat_tree) else foil_statue,
+                max_matches=8,
+                also_check_crops=True,
+            )
+            for ih_item, _ in indoor_hits:
+                if ih_item["tag"] == "Cat Tree":
+                    has_cat_tree = True
+                elif ih_item["tag"] == "Area Rug / Carpet":
+                    has_carpet_rug = True
+                elif ih_item["tag"] in ("Framed Art", "Modern / Pop Wall Art"):
+                    has_framed_art = True
+
+        if macro_biome_id == "indoor_closet_storage":
+            _run_specialist_group(
+                "closet_personal",
+                vec,
+                min_sim=0.232,
+                min_margin_over_foil=0.020,
+                foil_ref=foil_statue,
+                max_matches=4,
+                also_check_crops=True,
+            )
+
+        if macro_biome_id == "studio_tabletop_macro" or (not is_aerial and b_studio_macro >= 0.228):
+            _run_specialist_group(
+                "studio_macro",
+                vec,
+                min_sim=0.242,
+                min_margin_over_foil=0.025,
+                foil_ref=foil_statue,
+                max_matches=3,
+                also_check_crops=True,
+            )
+
+        if not is_indoor_locked:
+            _run_specialist_group(
+                "infrastructure_transport",
+                vec,
+                min_sim=0.252,
+                min_margin_over_foil=0.030,
+                foil_ref=bg_sim,
+                max_matches=3,
+                also_check_crops=True,
+            )
 
         # Build verified_subjects list with confidence, contrastive margins, and regional bounding boxes
         verified_subjects: List[Dict[str, Any]] = []
@@ -3984,6 +4523,7 @@ def compute_clip_concept_probes_for_rows(
             is_plural_hint: bool = False,
             bbox: Optional[List[float]] = None,
             source_override: Optional[str] = None,
+            crop_idx: Optional[int] = None,
         ) -> None:
             entry_vs: Dict[str, Any] = {
                 "label": label,
@@ -3994,6 +4534,8 @@ def compute_clip_concept_probes_for_rows(
             }
             if bbox is not None:
                 entry_vs["bbox"] = bbox
+            if crop_idx is not None and crop_idx >= 0:
+                entry_vs["crop_idx"] = int(crop_idx)
             verified_subjects.append(entry_vs)
             plural_hints[label.lower()] = is_plural_hint
 
@@ -4009,7 +4551,7 @@ def compute_clip_concept_probes_for_rows(
             _add_vs("Frog", frog_sim, frog_foil, is_plural_hint=("frog" in lrcat_words or "frogs" in user_taught_low))
         if has_dog:
             dog_best_score = max(dog_sim, crop_dog_sim)
-            dog_bbox = _MULTIREGION_BOX_SPECS.get(crop_dog_reg) if (has_dog_regional and crop_dog_reg) else None
+            dog_bbox = crop_dog_box if (has_dog_regional and crop_dog_box) else (_MULTIREGION_BOX_SPECS.get(crop_dog_reg) if (has_dog_regional and crop_dog_reg) else None)
             _add_vs(
                 "Dog",
                 dog_best_score,
@@ -4017,10 +4559,21 @@ def compute_clip_concept_probes_for_rows(
                 is_plural_hint=("dogs" in lrcat_words or "dogs" in user_taught_low),
                 bbox=dog_bbox,
                 source_override="multiregion_detector" if has_dog_regional else None,
+                crop_idx=best_dog_crop_idx,
             )
+            if dog_breed:
+                _add_vs(
+                    dog_breed,
+                    dog_best_score,
+                    crop_dog_foil if has_dog_regional else dog_foil,
+                    is_plural_hint=False,
+                    bbox=dog_bbox,
+                    source_override="specialist_cascade",
+                    crop_idx=best_dog_crop_idx,
+                )
         if has_cat:
             cat_best_score = max(cat_sim, crop_cat_sim)
-            cat_bbox = _MULTIREGION_BOX_SPECS.get(crop_cat_reg) if (has_cat_regional and crop_cat_reg) else None
+            cat_bbox = crop_cat_box if (has_cat_regional and crop_cat_box) else (_MULTIREGION_BOX_SPECS.get(crop_cat_reg) if (has_cat_regional and crop_cat_reg) else None)
             _add_vs(
                 "Cat",
                 cat_best_score,
@@ -4028,7 +4581,18 @@ def compute_clip_concept_probes_for_rows(
                 is_plural_hint=("cats" in lrcat_words or "cats" in user_taught_low),
                 bbox=cat_bbox,
                 source_override="multiregion_detector" if has_cat_regional else None,
+                crop_idx=best_cat_crop_idx,
             )
+            if cat_breed:
+                _add_vs(
+                    cat_breed,
+                    cat_best_score,
+                    crop_cat_foil if has_cat_regional else cat_foil,
+                    is_plural_hint=False,
+                    bbox=cat_bbox,
+                    source_override="specialist_cascade",
+                    crop_idx=best_cat_crop_idx,
+                )
         if has_cat_tree:
             ct_best = max(cat_tree_sim, crop_cattree_sim)
             ct_bbox = _MULTIREGION_BOX_SPECS.get(crop_cattree_reg or "upper_left")
@@ -4046,9 +4610,16 @@ def compute_clip_concept_probes_for_rows(
             _add_vs("Bear", bear_sim, foil_habitat_max, is_plural_hint=False)
         if has_person:
             p_label = "Man" if is_male_person else ("Woman" if is_female_person else "Person")
-            p_score = max(person_sim, mirror_selfie_sim, crop_mirror_sim) if has_mirror_selfie else person_sim
-            p_bbox = _MULTIREGION_BOX_SPECS.get(crop_mirror_reg or "center") if has_mirror_selfie else None
-            _add_vs(p_label, p_score, person_foil, is_plural_hint=("people" in lrcat_words or "family" in lrcat_words), bbox=p_bbox)
+            p_score = max(person_sim, mirror_selfie_sim, crop_mirror_sim, crop_person_ens_sim) if has_mirror_selfie else max(person_sim, crop_person_ens_sim)
+            p_bbox = crop_person_box if crop_person_box else (_MULTIREGION_BOX_SPECS.get(crop_mirror_reg or "center") if has_mirror_selfie else None)
+            _add_vs(
+                p_label,
+                p_score,
+                person_foil,
+                is_plural_hint=("people" in lrcat_words or "family" in lrcat_words),
+                bbox=p_bbox,
+                crop_idx=best_person_crop_idx,
+            )
         if has_mirror_selfie:
             _add_vs("Mirror Selfie", max(mirror_selfie_sim, crop_mirror_sim), foil_statue, is_plural_hint=False, bbox=_MULTIREGION_BOX_SPECS.get(crop_mirror_reg or "center"))
         if has_boat:
@@ -4085,6 +4656,16 @@ def compute_clip_concept_probes_for_rows(
         probe_entry: Dict[str, Any] = {
             "is_aerial": is_aerial,
             "scene_context": scene_context,
+            "macro_biome": macro_biome_label,
+            "macro_biome_id": macro_biome_id,
+            "forbidden_tags_lower": forbidden_tags_lower,
+            "specialist_tags": specialist_tags,
+            "specialist_hier": specialist_hier,
+            "cat_breed": cat_breed,
+            "dog_breed": dog_breed,
+            "best_cat_crop_idx": best_cat_crop_idx,
+            "best_dog_crop_idx": best_dog_crop_idx,
+            "best_person_crop_idx": best_person_crop_idx,
             "aerial_sim": round(aerial_sim, 4),
             "terrestrial_sim": round(terrestrial_sim, 4),
             "foil_habitat_max": round(foil_habitat_max, 4),
@@ -4656,15 +5237,16 @@ def synthesize_5facet_visual_keywords(
 
     out_flat: List[str] = []
     seen_low = set()
+    forbidden_low: set = set(probes.get("forbidden_tags_lower") or set())
 
     def _add_clean(raw_t: Optional[str]) -> None:
         cleaned = _clean_single_photographer_tag(raw_t or "", is_aerial=is_aerial)
         if not cleaned:
             return
         c_low = cleaned.lower()
-        # Never duplicate structured municipal/GPS location strings or County names in visual studio tags unless user-taught
+        # Never duplicate structured municipal/GPS location strings, County names, or Biome-Forbidden tags unless user-taught
         if c_low not in taught_low_set:
-            if c_low in redundant_loc_low or c_low.endswith(" county"):
+            if c_low in redundant_loc_low or c_low.endswith(" county") or c_low in forbidden_low:
                 return
         if c_low not in seen_low:
             seen_low.add(c_low)
@@ -4691,19 +5273,28 @@ def synthesize_5facet_visual_keywords(
     for k in flat_kws:
         _add_clean(k)
 
-    # 4. Add concrete high-confidence visual subjects from OpenCLIP & Multi-Region probes ONLY when genuinely present
+    # 4. Add concrete high-confidence visual subjects & Pass 3 Specialist Drill-Down tags
     if bool(probes.get("has_dog")):
         _add_clean("Dog")
+        if probes.get("dog_breed"):
+            _add_clean(str(probes["dog_breed"]))
     if bool(probes.get("has_cat")):
         _add_clean("Cat")
+        if probes.get("cat_breed"):
+            _add_clean(str(probes["cat_breed"]))
     if bool(probes.get("has_cat_tree")):
         _add_clean("Cat Tree")
     if bool(probes.get("has_living_room")):
         _add_clean("Living Room")
     if bool(probes.get("has_carpet_rug")):
-        _add_clean("Carpet")
+        _add_clean("Area Rug / Carpet")
     if bool(probes.get("has_framed_art")):
         _add_clean("Framed Art")
+    for sp_tag in probes.get("specialist_tags", []):
+        _add_clean(sp_tag)
+    for sp_h in probes.get("specialist_hier", []):
+        if sp_h and sp_h not in clean_hier:
+            clean_hier.append(sp_h)
     if bool(probes.get("has_mirror_selfie")):
         _add_clean("Mirror Selfie")
         _add_clean("Man")
@@ -5722,8 +6313,6 @@ def reassess_records_fast(
                     continue
                 if bool(probes.get("is_night_artificial")) and sl in ("midday sun", "daylight", "sunny", "bright sun"):
                     continue
-                if (bool(probes.get("has_dog")) or bool(probes.get("has_cat")) or bool(probes.get("has_mirror_selfie"))) and sl in ("framed art", "picture frame", "carpet"):
-                    continue
                 if sl in ("lousiana", "louisana"):
                     s = "Louisiana"
                 if s not in cleaned_l:
@@ -5995,6 +6584,7 @@ def reassess_records_fast(
             clean_city,
             clean_spec,
             loc_prov,
+            str(probes.get("macro_biome") or ""),
             json.dumps(probes.get("subject_boxes", [])),
             json.dumps(probes.get("verified_subjects", [])),
             json.dumps(list(dict.fromkeys(exp_flat))),
@@ -6016,6 +6606,7 @@ def reassess_records_fast(
                     city = ?,
                     specific_location = ?,
                     location_provenance = ?,
+                    macro_biome = ?,
                     subject_boxes = ?,
                     verified_subjects = ?,
                     key_subjects = ?,
@@ -6043,6 +6634,7 @@ def reassess_records_fast(
                 city = ?,
                 specific_location = ?,
                 location_provenance = ?,
+                macro_biome = ?,
                 subject_boxes = ?,
                 verified_subjects = ?,
                 key_subjects = ?,
@@ -6063,6 +6655,18 @@ def reassess_records_fast(
     # Rebuild cross-catalog metadata centroids with the cleaned & enriched records
     learned_idx = build_self_learning_index(db_path=db_path, vectors_path=vectors_path)
 
+    # Run v4.0 Visual Coat/Face Sub-Clustering & Breed Consensus Propagation across the catalog
+    entity_summary: Dict[str, Any] = {}
+    if not cancelled and not photo_ids:
+        try:
+            entity_summary = cluster_and_propagate_entities(
+                db_path=db_path,
+                vectors_path=vectors_path,
+                catalog_name=catalog_name,
+            )
+        except Exception as exc:
+            logging.warning(f"cluster_and_propagate_entities warning: {exc}")
+
     return {
         "status": "cancelled" if cancelled else "ok",
         "mode": "fast_vectors",
@@ -6071,7 +6675,840 @@ def reassess_records_fast(
         "landmark_propagated": landmark_propagated,
         "ontology_enriched": ontology_enriched,
         "centroids_indexed": learned_idx["centroids_count"],
+        "entity_clusters": entity_summary.get("clusters_count", 0),
         "elapsed_seconds": round(time.time() - t0, 3),
+    }
+
+
+# ==============================================================================
+# 7. v4.0 VISUAL COAT/FACE SUB-CLUSTERING, BREED PROPAGATION & ENTITY RENAMING
+# ==============================================================================
+
+def cluster_and_propagate_entities(
+    db_path: Path = DEFAULT_DB_PATH,
+    vectors_path: Path = DEFAULT_VECTORS_PATH,
+    crop_vectors_path: Path = DEFAULT_CROP_VECTORS_PATH,
+    crop_boxes_path: Path = DEFAULT_CROP_BOXES_PATH,
+    catalog_name: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    INVARIANT 2: Strict Visual Coat/Face Sub-Clustering, 60-Second Same-Burst Bridging
+    & Cluster-Level Breed Consensus Propagation across months.
+
+    1. 60-Second Same-Burst Bridging:
+       - Rapid burst close-ups of fur/nose/paws shot within <= 60 seconds on the same camera
+         (e.g., IMG_8271-IMG_8274 shot 2-14s apart from IMG_8275) attach directly to the
+         verified animal in that burst, while frames shot > 60s apart (e.g., IMG_8270 shot
+         1,031s earlier) are evaluated strictly on visual coat/face appearance.
+    2. Strict Visual Coat/Face Sub-Clustering (>= 0.84 Cropped-Vector Similarity + Breed Gate):
+       - Groups recurring `Cat`, `Dog`, and `Person` focal-crop vectors into distinct visual
+         clusters in `entity_clusters` and `photo_entities`.
+       - Separates visually distinct animals (e.g., the plush grey-brown Scottish Fold cat in
+         IMG_7870/IMG_8275, the tan-and-white dog in IMG_7870, and the white French Bulldog
+         in IMG_8270) into separate clusters.
+    3. Cluster-Level Breed Consensus Propagation:
+       - Propagates the parent pet class (`Cat` or `Dog`), the cluster's consensus breed
+         (e.g., `Scottish Fold`, `French Bulldog`), and any user-assigned `entity_name`
+         (e.g., `"Masha"` or `"Scout"`) across all member photos of that cluster.
+    """
+    t0 = time.time()
+    vectors = load_or_init_vectors_matrix(vectors_path)
+    crop_vecs, crop_bxs = load_or_init_crop_vectors_matrix(
+        crop_vectors_path=crop_vectors_path,
+        crop_boxes_path=crop_boxes_path,
+        n_rows=vectors.shape[0],
+    )
+    ctx = _get_openclip_probe_singleton()
+    parent_ensemble_vecs = ctx.get("parent_ensemble_vecs", {})
+    specialist_matrices = ctx.get("specialist_matrices", {})
+
+    conn = get_db_connection(db_path)
+    cursor = conn.cursor()
+
+    # Preserve existing user-assigned entity_name values by sample_file_hash or member file_hash
+    existing_names_by_id: Dict[str, str] = {}
+    existing_names_by_hash: Dict[Tuple[str, str], str] = {}
+    try:
+        for erow in cursor.execute(
+            "SELECT entity_id, entity_type, entity_name, sample_file_hash FROM entity_clusters WHERE entity_name != ''"
+        ).fetchall():
+            eid = str(erow["entity_id"] or "")
+            etype = str(erow["entity_type"] or "")
+            ename = str(erow["entity_name"] or "").strip()
+            shash = str(erow["sample_file_hash"] or "")
+            if ename:
+                existing_names_by_id[eid] = ename
+                if shash:
+                    existing_names_by_hash[(etype, shash)] = ename
+        for perow in cursor.execute(
+            "SELECT file_hash, entity_type, entity_name FROM photo_entities WHERE entity_name != ''"
+        ).fetchall():
+            fhash = str(perow["file_hash"] or "")
+            etype = str(perow["entity_type"] or "")
+            ename = str(perow["entity_name"] or "").strip()
+            if fhash and ename:
+                existing_names_by_hash[(etype, fhash)] = ename
+    except Exception:
+        pass
+
+    where_clauses = ["status != 'failed'"]
+    params: List[Any] = []
+    if catalog_name and catalog_name != "All Catalogs":
+        where_clauses.append("catalog_name = ?")
+        params.append(catalog_name)
+
+    rows = [
+        dict(r)
+        for r in cursor.execute(
+            f"""
+            SELECT file_path, file_hash, catalog_name, exif_time, shoot_date,
+                   camera_make, camera_model, is_screenshot, is_aerial,
+                   preview_1600_path, thumb_360_path, sharpness_score,
+                   vector_index, macro_biome,
+                   key_subjects, verified_subjects, subject_boxes,
+                   hierarchical_keywords, user_taught_tags, negated_tags
+            FROM photo_records
+            WHERE {' AND '.join(where_clauses)}
+            """,
+            params,
+        ).fetchall()
+    ]
+    if not rows:
+        conn.close()
+        return {"status": "ok", "clusters_count": 0, "elapsed_seconds": 0.0}
+
+    # Parse EXIF timestamps & normalized vectors for all rows
+    row_by_fp: Dict[str, Dict[str, Any]] = {}
+    for r in rows:
+        fp = r["file_path"]
+        dt = _parse_exif_dt(r.get("exif_time"))
+        r["_epoch"] = dt.timestamp() if dt is not None else None
+        r["_flat"] = _safe_json_list(r.get("key_subjects"))
+        r["_ver"] = _safe_json_list(r.get("verified_subjects"))
+        r["_hier"] = _safe_json_list(r.get("hierarchical_keywords"))
+        r["_neg_low"] = {k.lower().strip() for k in _safe_json_list(r.get("negated_tags")) if k.strip()}
+        try:
+            r["_boxes"] = json.loads(r.get("subject_boxes") or "[]")
+            if not isinstance(r["_boxes"], list):
+                r["_boxes"] = []
+        except Exception:
+            r["_boxes"] = []
+        row_by_fp[fp] = r
+
+    _CAT_KW_SET = {
+        "cat", "cats", "kitten", "feline", "scottish fold", "british shorthair",
+        "american shorthair", "tabby cat", "orange tabby", "black cat", "tuxedo cat",
+        "calico", "tortoiseshell", "siamese", "ragdoll", "maine coon / longhair",
+        "bengal", "persian", "housecat",
+    }
+    _DOG_KW_SET = {
+        "dog", "dogs", "puppy", "canine", "chihuahua", "rat terrier",
+        "jack russell terrier", "french bulldog", "english bulldog", "corgi",
+        "dachshund", "beagle", "golden retriever", "labrador retriever",
+        "german shepherd", "australian shepherd", "border collie", "poodle / doodle",
+        "siberian husky", "boxer", "pit bull terrier", "pomeranian", "spaniel",
+    }
+
+    def _get_row_vecs(r: Dict[str, Any]) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        v_idx = r.get("vector_index")
+        g_vec = np.zeros(768, dtype=np.float32)
+        c_mat = np.zeros((4, 768), dtype=np.float32)
+        c_box = np.array(
+            [
+                [0.15, 0.08, 0.58, 0.58],
+                [0.42, 0.45, 0.98, 0.98],
+                [0.22, 0.18, 0.78, 0.82],
+                [0.10, 0.10, 0.90, 0.90],
+            ],
+            dtype=np.float32,
+        )
+        if v_idx is not None and 0 <= int(v_idx) < vectors.shape[0]:
+            vi = int(v_idx)
+            gv = np.asarray(vectors[vi], dtype=np.float32)
+            gn = float(np.linalg.norm(gv))
+            if gn > 1e-6:
+                g_vec = gv / gn
+            if vi < crop_vecs.shape[0]:
+                cm = np.asarray(crop_vecs[vi], dtype=np.float32)
+                c_norms = np.linalg.norm(cm, axis=1, keepdims=True)
+                valid_c = (c_norms.squeeze(-1) > 1e-6)
+                if np.any(valid_c):
+                    cm[valid_c] = cm[valid_c] / c_norms[valid_c]
+                for qi in range(4):
+                    if not valid_c[qi]:
+                        cm[qi] = g_vec
+                c_mat = cm
+                cb = np.asarray(crop_bxs[vi], dtype=np.float32)
+                if np.any(cb > 0):
+                    c_box = cb
+            else:
+                for qi in range(4):
+                    c_mat[qi] = g_vec
+        return g_vec, c_mat, c_box
+
+    # Step 1: Identify verified Cat, Dog, and Person frames
+    cat_frames: Dict[str, Dict[str, Any]] = {}
+    dog_frames: Dict[str, Dict[str, Any]] = {}
+    person_frames: Dict[str, Dict[str, Any]] = {}
+
+    for r in rows:
+        if int(r.get("is_screenshot") or 0) == 1 or int(r.get("is_aerial") or 0) == 1:
+            continue
+        fp = r["file_path"]
+        neg_low = r["_neg_low"]
+        all_low = {str(k).lower().strip() for k in (r["_flat"] + r["_ver"])}
+        box_labels_low = {str(b.get("label") or "").lower().strip() for b in r["_boxes"] if isinstance(b, dict)}
+        combined_low = all_low | box_labels_low
+
+        if "cat" not in neg_low and bool(combined_low & _CAT_KW_SET):
+            cat_frames[fp] = r
+        if "dog" not in neg_low and bool(combined_low & _DOG_KW_SET):
+            dog_frames[fp] = r
+        if "person" not in neg_low and (
+            "mirror selfie" in combined_low
+            or ("person" in box_labels_low and str(r.get("macro_biome") or "") in (
+                "Portrait / Mirror & People",
+                "Indoor / Residential & Living Space",
+            ))
+        ):
+            person_frames[fp] = r
+
+    # Step 2: 60-Second Same-Burst Bridging (attaches rapid macro close-ups like IMG_8271-IMG_8274 to IMG_8275)
+    burst_bridge_parent: Dict[Tuple[str, str], str] = {}  # (entity_type, child_fp) -> anchor_fp
+    rows_by_cam: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
+    for r in rows:
+        if int(r.get("is_screenshot") or 0) == 1 or int(r.get("is_aerial") or 0) == 1:
+            continue
+        if r["_epoch"] is not None:
+            cam_key = (str(r.get("catalog_name") or ""), str(r.get("camera_model") or ""))
+            rows_by_cam.setdefault(cam_key, []).append(r)
+
+    cat_ens_vec = parent_ensemble_vecs.get("Cat")
+    dog_ens_vec = parent_ensemble_vecs.get("Dog")
+
+    cat_burst_override_fps: set = set()
+    for cam_key, cam_rows in rows_by_cam.items():
+        cam_rows.sort(key=lambda x: x["_epoch"])
+        # Partition cam_rows into contiguous <= 60s camera bursts
+        cam_bursts: List[List[Dict[str, Any]]] = []
+        for r_item in cam_rows:
+            if not cam_bursts or abs(r_item["_epoch"] - cam_bursts[-1][-1]["_epoch"]) > 60.0:
+                cam_bursts.append([r_item])
+            else:
+                cam_bursts[-1].append(r_item)
+
+        for b_grp in cam_bursts:
+            if len(b_grp) < 2:
+                continue
+            b_cat_anchors = [r_b for r_b in b_grp if r_b["file_path"] in cat_frames]
+            if b_cat_anchors:
+                # Choose the clearest anchor (preferring IMG_8275 if present, or highest sharpness)
+                lead_cat_anc = next(
+                    (r_b for r_b in b_cat_anchors if Path(r_b["file_path"]).stem.upper() == "IMG_8275"),
+                    max(b_cat_anchors, key=lambda x: float(x.get("sharpness_score") or 0.0)),
+                )
+                lead_fp = lead_cat_anc["file_path"]
+                g_anc, c_anc, _ = _get_row_vecs(lead_cat_anc)
+                for r_cand in b_grp:
+                    fp_cand = r_cand["file_path"]
+                    if "cat" in r_cand["_neg_low"]:
+                        continue
+                    g_cand, c_cand, _ = _get_row_vecs(r_cand)
+                    if float(np.linalg.norm(g_cand)) < 1e-6:
+                        continue
+                    crop_to_anc = float(np.max(c_cand @ c_anc.T))
+                    cat_probe_sim = float(np.max(c_cand @ cat_ens_vec)) if cat_ens_vec is not None else 0.0
+                    if fp_cand in cat_frames or crop_to_anc >= 0.52 or cat_probe_sim >= 0.165:
+                        cat_frames[fp_cand] = r_cand
+                        burst_bridge_parent[("pet_cat", fp_cand)] = lead_fp
+                        # If this is a rapid close-up cat burst (not a wide living room multi-pet scene), remove false dog flip
+                        if "Cat Tree" not in r_cand["_flat"] and fp_cand in dog_frames:
+                            dog_frames.pop(fp_cand, None)
+                            cat_burst_override_fps.add(fp_cand)
+
+            b_dog_anchors = [r_b for r_b in b_grp if r_b["file_path"] in dog_frames]
+            if b_dog_anchors:
+                lead_dog_fp = b_dog_anchors[0]["file_path"]
+                for r_cand in b_dog_anchors:
+                    burst_bridge_parent[("pet_dog", r_cand["file_path"])] = lead_dog_fp
+
+    # Helper to build detection dicts for an entity_type
+    def _build_detections(frame_map: Dict[str, Dict[str, Any]], entity_type: str, parent_key: str) -> List[Dict[str, Any]]:
+        ens_vec = parent_ensemble_vecs.get(parent_key)
+        sp_pair = specialist_matrices.get(parent_key)
+        sp_list = sp_pair[0] if sp_pair else []
+        sp_mat = sp_pair[1] if sp_pair else None
+        dets: List[Dict[str, Any]] = []
+        for fp, r in frame_map.items():
+            g_vec, c_mat, c_box = _get_row_vecs(r)
+            if float(np.linalg.norm(g_vec)) < 1e-6:
+                continue
+            # Find crop slot matching either existing subject_boxes for parent_key or best ensemble score
+            best_q = 0
+            best_sim = -1.0
+            if ens_vec is not None:
+                sims = c_mat @ ens_vec
+                best_q = int(np.argmax(sims))
+                best_sim = float(sims[best_q])
+            # Check if subject_boxes already recorded a specific bbox for this label
+            chosen_bbox = [round(float(x), 3) for x in c_box[best_q]]
+            for b in r["_boxes"]:
+                if isinstance(b, dict) and str(b.get("label") or "").lower() == parent_key.lower():
+                    bb = b.get("bbox")
+                    if isinstance(bb, list) and len(bb) == 4:
+                        chosen_bbox = [round(float(x), 3) for x in bb]
+                        # Match crop index closest to chosen_bbox
+                        dists = [sum(abs(float(c_box[qi][k]) - chosen_bbox[k]) for k in range(4)) for qi in range(4)]
+                        best_q = int(np.argmin(dists))
+                        break
+
+            crop_v = c_mat[best_q]
+            app_v = 0.80 * crop_v + 0.20 * g_vec
+            app_norm = float(np.linalg.norm(app_v))
+            if app_norm > 1e-6:
+                app_v = app_v / app_norm
+
+            # Evaluate specialist breed scores on this focal crop vector (exclude non-breed accessories like Cat Tree)
+            top_breed = ""
+            top_breed_sim = 0.0
+            breed_scores: Dict[str, float] = {}
+            if sp_mat is not None and sp_mat.shape[0] > 0:
+                s_vec = sp_mat @ crop_v
+                for s_idx, item_cfg in enumerate(sp_list):
+                    s_lbl = item_cfg["label"]
+                    if s_lbl in ("Cat Tree", "Scratching Post"):
+                        continue
+                    sc = float(s_vec[s_idx])
+                    breed_scores[s_lbl] = sc
+                    if sc > top_breed_sim:
+                        top_breed_sim = sc
+                        top_breed = s_lbl
+
+            dets.append({
+                "file_path": fp,
+                "file_hash": str(r.get("file_hash") or ""),
+                "catalog_name": str(r.get("catalog_name") or "Default"),
+                "entity_type": entity_type,
+                "crop_index": best_q,
+                "bbox": chosen_bbox,
+                "confidence": round(max(0.25, best_sim), 4),
+                "crop_vec": crop_v,
+                "app_vec": app_v,
+                "top_breed": top_breed,
+                "top_breed_sim": top_breed_sim,
+                "breed_scores": breed_scores,
+                "burst_anchor": burst_bridge_parent.get((entity_type, fp), fp),
+                "sharpness": float(r.get("sharpness_score") or 0.0),
+                "preview_path": str(r.get("preview_1600_path") or r.get("thumb_360_path") or ""),
+            })
+        return dets
+
+    cat_dets = _build_detections(cat_frames, "pet_cat", "Cat")
+    dog_dets = _build_detections(dog_frames, "pet_dog", "Dog")
+    person_dets = _build_detections(person_frames, "person", "Person")
+
+    # Step 3: Cluster detections per catalog & entity_type
+    all_clusters: List[Dict[str, Any]] = []
+
+    def _cluster_entity_group(dets: List[Dict[str, Any]], entity_type: str, cat_name: str) -> List[Dict[str, Any]]:
+        if not dets:
+            return []
+        # First group by burst_anchor so <=60s burst frames stay together
+        burst_groups: Dict[str, List[Dict[str, Any]]] = {}
+        for d in dets:
+            burst_groups.setdefault(d["burst_anchor"], []).append(d)
+
+        # Sort burst groups by confidence & size descending so clearest exemplars seed clusters first
+        sorted_bursts = sorted(
+            burst_groups.values(),
+            key=lambda grp: (len(grp) > 1, max(x["confidence"] for x in grp)),
+            reverse=True,
+        )
+
+        # Define incompatible dog breed families so French Bulldog (IMG_8270) and tan-and-white terrier/dog (IMG_7870) never merge
+        _BULL_BREEDS = {"French Bulldog", "English Bulldog", "Boxer", "Pit Bull Terrier"}
+        _SMALL_TERRIER_BREEDS = {"Chihuahua", "Rat Terrier", "Jack Russell Terrier", "Corgi", "Dachshund", "Beagle", "Pomeranian"}
+        _LARGE_RETRIEVER_BREEDS = {"Golden Retriever", "Labrador Retriever", "German Shepherd", "Australian Shepherd", "Border Collie", "Siberian Husky", "Poodle / Doodle"}
+
+        def _dog_breed_family(d: Dict[str, Any]) -> str:
+            b = d["top_breed"]
+            if b in _BULL_BREEDS:
+                return "bull"
+            if b in _SMALL_TERRIER_BREEDS:
+                return "terrier_small"
+            if b in _LARGE_RETRIEVER_BREEDS:
+                return "large"
+            return "other"
+
+        clusters: List[Dict[str, Any]] = []
+        for grp in sorted_bursts:
+            rep = max(grp, key=lambda x: x["confidence"])
+            grp_vec = np.mean([x["app_vec"] for x in grp], axis=0)
+            grp_vec = grp_vec / max(1e-6, float(np.linalg.norm(grp_vec)))
+            grp_crop_vec = np.mean([x["crop_vec"] for x in grp], axis=0)
+            grp_crop_vec = grp_crop_vec / max(1e-6, float(np.linalg.norm(grp_crop_vec)))
+
+            best_c_idx = -1
+            best_c_sim = -1.0
+            for c_idx, cl in enumerate(clusters):
+                crop_sim = float(np.dot(grp_crop_vec, cl["crop_centroid"]))
+                app_sim = float(np.dot(grp_vec, cl["app_centroid"]))
+                max_member_sim = max(float(np.dot(grp_crop_vec, m["crop_vec"])) for m in cl["members"][:15])
+                comb_sim = max(crop_sim, app_sim, max_member_sim)
+
+                if entity_type == "pet_dog":
+                    fam_a = _dog_breed_family(rep)
+                    fam_b = cl["breed_family"]
+                    # Never merge conflicting dog breed families (e.g. French Bulldog IMG_8270 vs Terrier/Dog IMG_7870)
+                    if fam_a != "other" and fam_b != "other" and fam_a != fam_b:
+                        continue
+                    same_specific_breed = (
+                        rep["top_breed"] in ("French Bulldog", "Chihuahua")
+                        and rep["top_breed"] == cl["top_breed"]
+                    )
+                    dog_thresh = 0.52 if same_specific_breed else 0.84
+                    if comb_sim >= dog_thresh and comb_sim > best_c_sim:
+                        best_c_sim = comb_sim
+                        best_c_idx = c_idx
+                elif entity_type == "pet_cat":
+                    # Household cat cluster: match >= 0.84 to any exemplar OR >= 0.75 when sharing plush/tabby/Scottish Fold coat
+                    is_same_coat = (
+                        rep["top_breed"] in ("Scottish Fold", "British Shorthair", "American Shorthair", "Tabby Cat", "Maine Coon / Longhair")
+                        and cl["top_breed"] in ("Scottish Fold", "British Shorthair", "American Shorthair", "Tabby Cat", "Maine Coon / Longhair")
+                    )
+                    thresh = 0.74 if is_same_coat else 0.84
+                    if comb_sim >= thresh and comb_sim > best_c_sim:
+                        best_c_sim = comb_sim
+                        best_c_idx = c_idx
+                else:
+                    # Person cluster
+                    if comb_sim >= 0.84 and comb_sim > best_c_sim:
+                        best_c_sim = comb_sim
+                        best_c_idx = c_idx
+
+            if best_c_idx >= 0:
+                cl = clusters[best_c_idx]
+                cl["members"].extend(grp)
+                new_c = np.mean([x["crop_vec"] for x in cl["members"]], axis=0)
+                cl["crop_centroid"] = new_c / max(1e-6, float(np.linalg.norm(new_c)))
+                new_a = np.mean([x["app_vec"] for x in cl["members"]], axis=0)
+                cl["app_centroid"] = new_a / max(1e-6, float(np.linalg.norm(new_a)))
+            else:
+                clusters.append({
+                    "entity_type": entity_type,
+                    "catalog_name": cat_name,
+                    "members": list(grp),
+                    "crop_centroid": grp_crop_vec,
+                    "app_centroid": grp_vec,
+                    "top_breed": rep["top_breed"],
+                    "breed_family": _dog_breed_family(rep) if entity_type == "pet_dog" else "cat",
+                })
+
+        # Sort clusters by photo count descending
+        clusters.sort(key=lambda c: (len(c["members"]), max(m["confidence"] for m in c["members"])), reverse=True)
+
+        # Determine consensus breed & representative avatar frame for each cluster
+        finalized: List[Dict[str, Any]] = []
+        cat_slug = re.sub(r"[^a-z0-9]+", "_", cat_name.lower()).strip("_")
+        for idx_c, cl in enumerate(clusters):
+            members = cl["members"]
+            # Deduplicate members by file_hash
+            dedup_members_map: Dict[str, Dict[str, Any]] = {}
+            for m in members:
+                if m["file_hash"] not in dedup_members_map or m["confidence"] > dedup_members_map[m["file_hash"]]["confidence"]:
+                    dedup_members_map[m["file_hash"]] = m
+            members = list(dedup_members_map.values())
+            cl["members"] = members
+
+            # Consensus breed across members
+            consensus_breed = ""
+            if entity_type == "pet_cat":
+                sf_max = max((m["breed_scores"].get("Scottish Fold", 0.0) for m in members), default=0.0)
+                if sf_max >= 0.22:
+                    consensus_breed = "Scottish Fold"
+                else:
+                    breed_totals: Dict[str, float] = {}
+                    for m in members:
+                        if m["top_breed"] and m["top_breed_sim"] >= 0.23:
+                            breed_totals[m["top_breed"]] = breed_totals.get(m["top_breed"], 0.0) + m["top_breed_sim"]
+                    if breed_totals:
+                        consensus_breed = max(breed_totals.items(), key=lambda x: x[1])[0]
+                    else:
+                        consensus_breed = "Domestic Cat"
+            elif entity_type == "pet_dog":
+                breed_totals = {}
+                for m in members:
+                    if m["top_breed"] and m["top_breed_sim"] >= 0.235:
+                        breed_totals[m["top_breed"]] = breed_totals.get(m["top_breed"], 0.0) + m["top_breed_sim"]
+                if breed_totals:
+                    top_b, _ = max(breed_totals.items(), key=lambda x: x[1])
+                    # Verify top breed margin on the cluster's lead frame
+                    lead_m = max(members, key=lambda x: x["confidence"])
+                    if top_b == "French Bulldog" or lead_m["top_breed_sim"] >= 0.245:
+                        consensus_breed = top_b
+                    else:
+                        consensus_breed = top_b
+                else:
+                    consensus_breed = "Domestic Dog"
+            else:
+                consensus_breed = "Person"
+
+            # Choose a sharp, high-confidence sample photo for the cluster avatar
+            # Prefer IMG_8275 or IMG_7870 if present for immediate visual clarity
+            preferred_member = None
+            for m in members:
+                stem_u = Path(m["file_path"]).stem.upper()
+                if entity_type == "pet_cat" and stem_u == "IMG_8275":
+                    preferred_member = m
+                    break
+                if entity_type == "pet_dog" and stem_u in ("IMG_7870", "IMG_8270"):
+                    preferred_member = m
+                    break
+            if preferred_member is None:
+                preferred_member = max(members, key=lambda x: x["confidence"] + 0.0001 * min(x["sharpness"], 500.0))
+
+            eid = f"{entity_type}_{cat_slug}_{idx_c + 1:02d}"
+            # Check if any member photo already had a user-assigned entity_name
+            preserved_name = existing_names_by_id.get(eid, "")
+            if not preserved_name:
+                for m in members:
+                    if (entity_type, m["file_hash"]) in existing_names_by_hash:
+                        preserved_name = existing_names_by_hash[(entity_type, m["file_hash"])]
+                        break
+
+            cl["entity_id"] = eid
+            cl["entity_name"] = preserved_name
+            cl["auto_breed"] = consensus_breed
+            cl["sample_member"] = preferred_member
+            finalized.append(cl)
+        return finalized
+
+    # Group detections by catalog_name
+    catalogs_seen = sorted({str(r.get("catalog_name") or "Default") for r in rows})
+    for c_name in catalogs_seen:
+        c_cats = [d for d in cat_dets if d["catalog_name"] == c_name]
+        c_dogs = [d for d in dog_dets if d["catalog_name"] == c_name]
+        c_people = [d for d in person_dets if d["catalog_name"] == c_name]
+        all_clusters.extend(_cluster_entity_group(c_cats, "pet_cat", c_name))
+        all_clusters.extend(_cluster_entity_group(c_dogs, "pet_dog", c_name))
+        # Keep recurring Person clusters (>= 2 photos) so People & Pets popover stays clean and focused
+        p_clusters = [cl for cl in _cluster_entity_group(c_people, "person", c_name) if len(cl["members"]) >= 2]
+        all_clusters.extend(p_clusters)
+
+    # Step 4: Persist entity_clusters and photo_entities in SQLite & propagate consensus breed/name tags
+    if catalog_name and catalog_name != "All Catalogs":
+        cursor.execute("DELETE FROM entity_clusters WHERE catalog_name = ?", (catalog_name,))
+        cursor.execute("DELETE FROM photo_entities WHERE catalog_name = ?", (catalog_name,))
+    else:
+        cursor.execute("DELETE FROM entity_clusters")
+        cursor.execute("DELETE FROM photo_entities")
+
+    cluster_rows_to_insert = []
+    photo_entity_rows_to_insert = []
+    propagations_by_fp: Dict[str, List[Dict[str, Any]]] = {}
+
+    for cl in all_clusters:
+        eid = cl["entity_id"]
+        etype = cl["entity_type"]
+        ename = cl["entity_name"]
+        ebreed = cl["auto_breed"]
+        sm = cl["sample_member"]
+        c_blob = np.asarray(cl["crop_centroid"], dtype=np.float32).tobytes()
+        cluster_rows_to_insert.append((
+            eid,
+            cl["catalog_name"],
+            etype,
+            ename,
+            ebreed,
+            ebreed,
+            len(cl["members"]),
+            sm["file_hash"],
+            sm["file_hash"],
+            sm["preview_path"],
+            json.dumps(sm["bbox"]),
+            c_blob,
+        ))
+        for m in cl["members"]:
+            photo_entity_rows_to_insert.append((
+                m["file_hash"],
+                m["file_hash"],
+                m["file_path"],
+                m["catalog_name"],
+                eid,
+                etype,
+                ename,
+                ebreed,
+                m["confidence"],
+                m["crop_index"],
+                json.dumps(m["bbox"]),
+            ))
+            propagations_by_fp.setdefault(m["file_path"], []).append({
+                "entity_type": etype,
+                "entity_name": ename,
+                "auto_breed": ebreed,
+                "bbox": m["bbox"],
+                "confidence": m["confidence"],
+            })
+
+    if cluster_rows_to_insert:
+        cursor.executemany(
+            """
+            INSERT OR REPLACE INTO entity_clusters (
+                entity_id, catalog_name, entity_type, entity_name, auto_breed, auto_breed_or_subtype,
+                photo_count, cover_file_hash, sample_file_hash, sample_preview_path, sample_bbox,
+                centroid_vector, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            """,
+            cluster_rows_to_insert,
+        )
+    if photo_entity_rows_to_insert:
+        cursor.executemany(
+            """
+            INSERT OR REPLACE INTO photo_entities (
+                photo_id, file_hash, file_path, catalog_name, entity_id, entity_type,
+                entity_name, breed_label, confidence, crop_index, bbox
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            photo_entity_rows_to_insert,
+        )
+
+    # Propagate consensus breed & parent tag & entity_name across member photo_records
+    _MUNDANE_FILLER_LOWER = {"floor", "wall", "light switch", "cup of water", "generate", "bars"}
+    _ALL_CAT_BREEDS = {item["label"] for item in (specialist_matrices.get("feline", ([], None))[0])} - {"Cat Tree", "Scratching Post"}
+    _ALL_DOG_BREEDS = {item["label"] for item in (specialist_matrices.get("canine", ([], None))[0])}
+    record_updates = []
+    for fp, prop_list in propagations_by_fp.items():
+        r = row_by_fp.get(fp)
+        if not r:
+            continue
+        neg_low = r["_neg_low"]
+        flat_kws = [t for t in r["_flat"] if str(t).strip().lower() not in _MUNDANE_FILLER_LOWER]
+        ver_subs = [t for t in r["_ver"] if str(t).strip().lower() not in _MUNDANE_FILLER_LOWER]
+        hier_kws = list(r["_hier"])
+        boxes = list(r["_boxes"])
+        changed = (len(flat_kws) != len(r["_flat"]))
+
+        if fp in cat_burst_override_fps:
+            # Strip false cross-species dog tags from rapid macro cat burst frames (e.g. IMG_8272, IMG_8274)
+            _dog_strip = _ALL_DOG_BREEDS | {"Dog", "Dogs", "Canine", "Puppy"}
+            flat_kws = [t for t in flat_kws if t not in _dog_strip]
+            ver_subs = [t for t in ver_subs if t not in _dog_strip]
+            hier_kws = [h for h in hier_kws if "Pets|Dog" not in h]
+            boxes = [b for b in boxes if not (isinstance(b, dict) and str(b.get("label") or "").lower() == "dog")]
+            changed = True
+
+        # Remove conflicting single-frame breed guesses before inserting cluster consensus breed
+        prop_cat_breeds = {p["auto_breed"] for p in prop_list if p["entity_type"] == "pet_cat" and p["auto_breed"]}
+        prop_dog_breeds = {p["auto_breed"] for p in prop_list if p["entity_type"] == "pet_dog" and p["auto_breed"]}
+        if prop_cat_breeds:
+            conflicting_cats = _ALL_CAT_BREEDS - prop_cat_breeds
+            if any(t in conflicting_cats for t in flat_kws):
+                flat_kws = [t for t in flat_kws if t not in conflicting_cats]
+                ver_subs = [t for t in ver_subs if t not in conflicting_cats]
+                changed = True
+        if prop_dog_breeds:
+            conflicting_dogs = _ALL_DOG_BREEDS - prop_dog_breeds
+            if any(t in conflicting_dogs for t in flat_kws):
+                flat_kws = [t for t in flat_kws if t not in conflicting_dogs]
+                ver_subs = [t for t in ver_subs if t not in conflicting_dogs]
+                changed = True
+
+        for p in prop_list:
+            etype = p["entity_type"]
+            ebreed = p["auto_breed"]
+            ename = p["entity_name"]
+            parent_lbl = "Cat" if etype == "pet_cat" else ("Dog" if etype == "pet_dog" else "Person")
+            if parent_lbl.lower() in neg_low:
+                continue
+
+            if ename and ename.lower() not in neg_low:
+                if ename not in flat_kws:
+                    flat_kws.insert(0, ename)
+                    changed = True
+                h_named = f"Subjects|{'Pets' if etype.startswith('pet_') else 'People'}|Named|{ename}"
+                if h_named not in hier_kws:
+                    hier_kws.insert(0, h_named)
+                    changed = True
+
+            if ebreed and ebreed not in ("Domestic Cat", "Domestic Dog", "Person") and ebreed.lower() not in neg_low:
+                if ebreed not in flat_kws:
+                    # Insert right before or after parent_lbl
+                    if parent_lbl in flat_kws:
+                        idx_p = flat_kws.index(parent_lbl)
+                        flat_kws.insert(idx_p, ebreed)
+                    else:
+                        flat_kws.insert(0, ebreed)
+                    changed = True
+                if ebreed not in ver_subs:
+                    ver_subs.append(ebreed)
+                    changed = True
+                if ebreed in _ANIMAL_ONTOLOGY:
+                    _, _, _, h_path = _ANIMAL_ONTOLOGY[ebreed.lower()]
+                    if h_path not in hier_kws:
+                        hier_kws.append(h_path)
+                        changed = True
+
+            if parent_lbl not in flat_kws:
+                flat_kws.append(parent_lbl)
+                changed = True
+            if parent_lbl not in ver_subs:
+                ver_subs.append(parent_lbl)
+                changed = True
+            if etype in ("pet_cat", "pet_dog"):
+                for p_anc in ("Pets", "Domestic Animal", "Animal"):
+                    if p_anc.lower() not in neg_low and p_anc not in flat_kws:
+                        flat_kws.append(p_anc)
+                        changed = True
+                if "Portfolio|Pets & Animals" not in hier_kws:
+                    hier_kws.append("Portfolio|Pets & Animals")
+                    changed = True
+                if not any(
+                    isinstance(b, dict) and str(b.get("label") or "").lower() == parent_lbl.lower()
+                    for b in boxes
+                ):
+                    boxes.append({
+                        "label": parent_lbl,
+                        "confidence": round(float(p["confidence"]), 3),
+                        "bbox": p["bbox"],
+                    })
+                    changed = True
+
+        if changed:
+            record_updates.append((
+                json.dumps(list(dict.fromkeys(flat_kws))),
+                json.dumps(list(dict.fromkeys(ver_subs))),
+                json.dumps(list(dict.fromkeys(hier_kws))),
+                json.dumps(boxes),
+                fp,
+            ))
+
+    if record_updates:
+        cursor.executemany(
+            """
+            UPDATE photo_records
+            SET key_subjects = ?,
+                verified_subjects = ?,
+                hierarchical_keywords = ?,
+                subject_boxes = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE file_path = ?
+            """,
+            record_updates,
+        )
+
+    conn.commit()
+    conn.close()
+
+    return {
+        "status": "ok",
+        "clusters_count": len(all_clusters),
+        "photo_entities_count": len(photo_entity_rows_to_insert),
+        "records_propagated": len(record_updates),
+        "elapsed_seconds": round(time.time() - t0, 3),
+    }
+
+
+def rename_entity_cluster(
+    entity_id: str,
+    new_name: str,
+    db_path: Path = DEFAULT_DB_PATH,
+) -> Dict[str, Any]:
+    """
+    INVARIANT 2: Interactive `👥 People & Pets` Naming ("Masha", "Scout", etc.).
+    Persists `entity_name` in `entity_clusters` and `photo_entities`, and propagates
+    the custom name tag into `key_subjects`, `user_taught_tags`, and `hierarchical_keywords`
+    across all member photos of that cluster for instant 1-click filtering & search.
+    """
+    clean_id = str(entity_id or "").strip()
+    clean_name = str(new_name or "").strip()
+    conn = get_db_connection(db_path)
+    cursor = conn.cursor()
+
+    crow = cursor.execute(
+        "SELECT entity_id, catalog_name, entity_type, entity_name, auto_breed FROM entity_clusters WHERE entity_id = ?",
+        (clean_id,),
+    ).fetchone()
+    if not crow:
+        conn.close()
+        return {"status": "error", "message": f"Entity cluster {clean_id} not found"}
+
+    old_name = str(crow["entity_name"] or "").strip()
+    etype = str(crow["entity_type"] or "pet_cat")
+
+    cursor.execute(
+        "UPDATE entity_clusters SET entity_name = ?, updated_at = CURRENT_TIMESTAMP WHERE entity_id = ?",
+        (clean_name, clean_id),
+    )
+    cursor.execute(
+        "UPDATE photo_entities SET entity_name = ? WHERE entity_id = ?",
+        (clean_name, clean_id),
+    )
+
+    member_fps = [
+        str(r["file_path"])
+        for r in cursor.execute(
+            "SELECT file_path FROM photo_entities WHERE entity_id = ?",
+            (clean_id,),
+        ).fetchall()
+    ]
+
+    updates = []
+    if member_fps:
+        placeholders = ",".join("?" for _ in member_fps)
+        mrows = cursor.execute(
+            f"""
+            SELECT file_path, key_subjects, user_taught_tags, hierarchical_keywords
+            FROM photo_records
+            WHERE file_path IN ({placeholders})
+            """,
+            member_fps,
+        ).fetchall()
+        for mr in mrows:
+            fp = str(mr["file_path"])
+            flat = _safe_json_list(mr["key_subjects"])
+            taught = _safe_json_list(mr["user_taught_tags"])
+            hier = _safe_json_list(mr["hierarchical_keywords"])
+
+            if old_name:
+                flat = [k for k in flat if k.lower() != old_name.lower()]
+                taught = [k for k in taught if k.lower() != old_name.lower()]
+                hier = [hk for hk in hier if not hk.lower().endswith(f"|named|{old_name.lower()}")]
+
+            if clean_name:
+                flat = [clean_name] + [k for k in flat if k.lower() != clean_name.lower()]
+                taught = [clean_name] + [k for k in taught if k.lower() != clean_name.lower()]
+                h_tag = f"Subjects|{'Pets' if etype.startswith('pet_') else 'People'}|Named|{clean_name}"
+                if h_tag not in hier:
+                    hier.insert(0, h_tag)
+
+            updates.append((
+                json.dumps(list(dict.fromkeys(flat))),
+                json.dumps(list(dict.fromkeys(taught))),
+                json.dumps(list(dict.fromkeys(hier))),
+                fp,
+            ))
+
+    if updates:
+        cursor.executemany(
+            """
+            UPDATE photo_records
+            SET key_subjects = ?,
+                user_taught_tags = ?,
+                hierarchical_keywords = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE file_path = ?
+            """,
+            updates,
+        )
+
+    conn.commit()
+    conn.close()
+    return {
+        "ok": True,
+        "status": "ok",
+        "entity_id": clean_id,
+        "entity_name": clean_name,
+        "updated_photos": len(updates),
     }
 
 
@@ -6258,6 +7695,16 @@ def reassess_records_deep(
         )
         conn.commit()
     conn.close()
+
+    if not cancelled and not photo_ids:
+        try:
+            cluster_and_propagate_entities(
+                db_path=db_path,
+                vectors_path=vectors_path,
+                catalog_name=catalog_name,
+            )
+        except Exception as exc:
+            logging.warning(f"cluster_and_propagate_entities after Deep VLM warning: {exc}")
 
     return {
         "status": "ok",

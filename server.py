@@ -34,6 +34,8 @@ from config_paths import (
     APP_NAME,
     APP_VERSION,
     DATA_VAULT_DIR,
+    DEFAULT_CROP_BOXES_PATH,
+    DEFAULT_CROP_VECTORS_PATH,
     ensure_data_vault_migrated,
     get_version_info,
 )
@@ -60,8 +62,10 @@ from pipeline import load_settings, run_pipeline
 from stage1_engine import (
     DEFAULT_COLOR_SIGS_PATH,
     bridge_same_day_gps_locations,
+    build_or_update_crop_vectors_mps,
     detect_hardware_profile,
     load_or_init_color_signatures,
+    load_or_init_crop_vectors_matrix,
     load_or_init_vectors_matrix,
     run_stage1_pipeline,
     sync_external_edits,
@@ -70,11 +74,13 @@ from stage2_vlm import (
     STAGE2_PAUSE_EVENT,
     _GENERIC_VISUAL_NOUNS_KEEP,
     apply_clean_slate_wipe_to_record,
+    cluster_and_propagate_entities,
     compute_clip_concept_probes_for_rows,
     discover_visual_subjects_for_records,
     parse_natural_language_teach,
     reassess_records_deep,
     reassess_records_fast,
+    rename_entity_cluster,
     run_stage2_vlm,
 )
 from studio_jobs_undo import (
@@ -115,8 +121,22 @@ VECTORS_CACHE: Optional[np.ndarray] = None
 VECTORS_MTIME: float = 0.0
 VECTORS_NORM_CACHE: Optional[np.ndarray] = None
 
+CROP_VECTORS_CACHE: Optional[np.ndarray] = None
+CROP_VECTORS_MTIME: float = 0.0
+CROP_VECTORS_NORM_CACHE: Optional[np.ndarray] = None
+
 COLOR_SIGS_CACHE: Optional[np.ndarray] = None
 COLOR_SIGS_MTIME: float = 0.0
+
+SEARCH_INDEX_CACHE: Dict[str, Any] = {
+    "db_mtime_sig": (0.0, 0.0),
+    "by_key": {},
+}
+
+
+def invalidate_search_index_cache() -> None:
+    SEARCH_INDEX_CACHE["db_mtime_sig"] = (0.0, 0.0)
+    SEARCH_INDEX_CACHE["by_key"] = {}
 
 CLIP_MODEL = None
 CLIP_TOKENIZER = None
@@ -182,6 +202,29 @@ def get_normalized_vectors_matrix() -> np.ndarray:
     if VECTORS_NORM_CACHE is None:
         return np.zeros((0, 768), dtype=np.float32)
     return VECTORS_NORM_CACHE
+
+
+def get_crop_vectors_matrix() -> np.ndarray:
+    global CROP_VECTORS_CACHE, CROP_VECTORS_MTIME, CROP_VECTORS_NORM_CACHE
+    cv_path = DEFAULT_CROP_VECTORS_PATH
+    if not cv_path.exists():
+        return np.zeros((0, 4, 768), dtype=np.float16)
+    mtime = cv_path.stat().st_mtime
+    if CROP_VECTORS_CACHE is None or mtime != CROP_VECTORS_MTIME:
+        CROP_VECTORS_CACHE, _ = load_or_init_crop_vectors_matrix(cv_path, DEFAULT_CROP_BOXES_PATH)
+        CROP_VECTORS_MTIME = mtime
+        mat_f32 = CROP_VECTORS_CACHE.astype(np.float32)
+        norms = np.linalg.norm(mat_f32, axis=-1, keepdims=True)
+        norms[norms < 1e-8] = 1.0
+        CROP_VECTORS_NORM_CACHE = mat_f32 / norms
+    return CROP_VECTORS_CACHE
+
+
+def get_normalized_crop_vectors_matrix() -> np.ndarray:
+    get_crop_vectors_matrix()
+    if CROP_VECTORS_NORM_CACHE is None:
+        return np.zeros((0, 4, 768), dtype=np.float32)
+    return CROP_VECTORS_NORM_CACHE
 
 
 def get_color_signatures_matrix() -> np.ndarray:
@@ -1049,8 +1092,10 @@ def _stem_word(w: str) -> str:
 
 
 _QUERY_HYPERNYM_MAP: Dict[str, Set[str]] = {
-    "animal": {"animal", "animals", "wildlife", "fauna", "bison", "buffalo", "horse", "horses", "cattle", "cow", "cows", "elk", "deer", "bird", "birds", "pelican", "dog", "sheep", "livestock", "mammal"},
-    "animals": {"animal", "animals", "wildlife", "fauna", "bison", "buffalo", "horse", "horses", "cattle", "cow", "cows", "elk", "deer", "bird", "birds", "pelican", "dog", "sheep", "livestock", "mammal"},
+    "animal": {"animal", "animals", "wildlife", "fauna", "bison", "buffalo", "horse", "horses", "cattle", "cow", "cows", "elk", "deer", "bird", "birds", "pelican", "dog", "cat", "kitten", "scottish fold", "french bulldog", "sheep", "livestock", "mammal"},
+    "animals": {"animal", "animals", "wildlife", "fauna", "bison", "buffalo", "horse", "horses", "cattle", "cow", "cows", "elk", "deer", "bird", "birds", "pelican", "dog", "cat", "kitten", "scottish fold", "french bulldog", "sheep", "livestock", "mammal"},
+    "pet": {"cat", "kitten", "scottish fold", "tabby cat", "dog", "puppy", "french bulldog", "chihuahua", "terrier", "retriever", "domestic cat", "domestic dog"},
+    "pets": {"cat", "kitten", "scottish fold", "tabby cat", "dog", "puppy", "french bulldog", "chihuahua", "terrier", "retriever", "domestic cat", "domestic dog"},
     "wildlife": {"animal", "animals", "wildlife", "fauna", "bison", "buffalo", "elk", "deer", "bird", "birds", "pelican"},
     "person": {"person", "people", "human", "man", "woman", "male", "female", "photographer", "mitch rouse (subject)", "mitch shooting", "cowboy", "rancher", "rider", "portrait", "family"},
     "people": {"person", "people", "human", "man", "woman", "male", "female", "photographer", "mitch rouse (subject)", "mitch shooting", "cowboy", "rancher", "rider", "portrait", "family"},
@@ -1063,8 +1108,8 @@ _QUERY_HYPERNYM_MAP: Dict[str, Set[str]] = {
     "mitch": {"mitch rouse (subject)", "identity|mitch rouse", "mitch shooting", "photographer"},
     "flower": {"flower", "flowers", "wildflowers", "lupine", "poppies", "flora", "plants"},
     "flowers": {"flower", "flowers", "wildflowers", "lupine", "poppies", "flora", "plants"},
-    "plant": {"plant", "plants", "flora", "wildflowers", "trees", "forest", "foliage", "vegetation"},
-    "plants": {"plant", "plants", "flora", "wildflowers", "trees", "forest", "foliage", "vegetation"},
+    "plant": {"plant", "plants", "flora", "wildflowers", "trees", "forest", "foliage", "vegetation", "houseplant", "pothos", "monstera"},
+    "plants": {"plant", "plants", "flora", "wildflowers", "trees", "forest", "foliage", "vegetation", "houseplant", "pothos", "monstera"},
     "building": {"building", "buildings", "structure", "architecture", "barn", "farmstead", "ranch", "house", "cabin", "shed", "silo", "pier", "bridge", "door", "doors", "wooden door", "colonial door"},
     "buildings": {"building", "buildings", "structure", "architecture", "barn", "farmstead", "ranch", "house", "cabin", "shed", "silo", "pier", "bridge", "door", "doors", "wooden door", "colonial door"},
     "structure": {"structure", "architecture", "infrastructure", "barn", "farmstead", "ranch", "corral", "fence", "pier", "bridge", "train", "oil rig", "door", "doors", "wooden door", "colonial door", "archway"},
@@ -1077,25 +1122,41 @@ _QUERY_HYPERNYM_MAP: Dict[str, Set[str]] = {
     "iceland": {"iceland", "hallgrimskirkja", "kirkjufell", "jokulsarlon", "diamond beach", "reynisfjara", "gullfoss", "reykjavik"},
 }
 
+_STRICT_BIOLOGICAL_COUNTABLE_KEYS = {
+    "cat", "cats", "kitten", "kittens", "feline", "scottish fold", "tabby cat",
+    "dog", "dogs", "puppy", "puppies", "canine", "french bulldog",
+    "frog", "frogs", "toad", "toads", "amphibian",
+    "alligator", "alligators", "crocodile", "crocodiles",
+    "bird", "birds", "pelican", "pelicans", "heron", "egret", "eagle", "hawk", "owl",
+    "horse", "horses", "mustang", "mustangs", "foal",
+    "bison", "buffalo", "cattle", "cow", "cows", "deer", "elk", "moose", "bear", "bears", "whale", "whales",
+    "person", "people", "human", "man", "men", "woman", "women",
+}
+
 
 def _extract_countable_query_targets(query_str: str) -> List[Set[str]]:
     """
     If the search query asks for one or more countable discrete subjects (e.g. 'birds', 'frogs',
-    'dogs', 'boats', 'people', 'horses', 'bison'), returns the list of required target tag sets.
+    'dogs', 'cats', 'scottish fold', 'boats', 'people', 'horses', 'bison'), returns the list of required target tag sets.
+    For multi-word open-vocabulary scene phrases (3+ words like 'fence in front of overpass' or 'bohemian throw blanket on couch'),
+    only biological animals/people enforce strict verified subject presence so open-vocabulary scene queries can score focal crops.
     """
     q_low = (query_str or "").strip().lower()
     if not q_low:
         return []
     # Do not treat compound structure/place queries like 'boathouse' or 'wildlife refuge' as countable subject queries
-    if any(p in q_low for p in ("boathouse", "wildlife refuge", "birdseye", "bird's eye", "dogwood", "cathedral", "sawhorse")):
+    if any(p in q_low for p in ("boathouse", "wildlife refuge", "birdseye", "bird's eye", "dogwood", "cathedral", "sawhorse", "catwalk")):
         return []
     if q_low in COUNTABLE_SEARCH_CONCEPTS:
         return [COUNTABLE_SEARCH_CONCEPTS[q_low]]
     q_words = [w for w in re.split(r"[^a-z0-9]+", q_low) if len(w) >= 2]
+    is_long_open_vocab_phrase = len(q_words) >= 3
     groups: List[Set[str]] = []
     seen_roots: Set[str] = set()
     for w in q_words:
         if w in COUNTABLE_SEARCH_CONCEPTS:
+            if is_long_open_vocab_phrase and w not in _STRICT_BIOLOGICAL_COUNTABLE_KEYS:
+                continue
             target_set = COUNTABLE_SEARCH_CONCEPTS[w]
             sig = "|".join(sorted(target_set))
             if sig not in seen_roots:
@@ -1104,16 +1165,7 @@ def _extract_countable_query_targets(query_str: str) -> List[Set[str]]:
     return groups
 
 
-def _passes_countable_subject_search_gate(r: Dict[str, Any], required_groups: List[Set[str]]) -> bool:
-    """
-    High-Trust Search Gate for Countable Discrete Subjects:
-    Requires positive presence verification in verified_subjects, user_taught_tags,
-    lrcat_keywords, or verified key_subjects (excluding negated_tags and compound place names).
-    Never allows unverified OpenCLIP habitat similarity or substring collisions ('boathouse' != 'boat').
-    """
-    if not required_groups:
-        return True
-
+def _compute_row_verified_countable_set(r: Dict[str, Any]) -> Set[str]:
     neg_low = {str(n).strip().lower() for n in _parse_json_list(r.get("negated_tags")) if str(n).strip()}
     verified_tokens: Set[str] = set()
     verified_phrases: Set[str] = set()
@@ -1129,7 +1181,6 @@ def _passes_countable_subject_search_gate(r: Dict[str, Any], required_groups: Li
             tl = str(t or "").strip().lower().replace("_", " ")
             if not tl or tl in neg_low:
                 continue
-            # Ignore compound place/structure names that contain animal/boat words as modifiers
             if any(p in tl for p in ("wildlife refuge", "boathouse", "hawkeye", "deer creek", "bighorn", "eagle mountain", "pigeon point")):
                 continue
             verified_phrases.add(tl)
@@ -1137,8 +1188,121 @@ def _passes_countable_subject_search_gate(r: Dict[str, Any], required_groups: Li
                 if w not in neg_low:
                     verified_tokens.add(w)
 
-    all_verified = verified_phrases | verified_tokens
+    return verified_phrases | verified_tokens
+
+
+def _passes_countable_subject_search_gate(r: Dict[str, Any], required_groups: List[Set[str]]) -> bool:
+    """
+    High-Trust Search Gate for Countable Discrete Subjects:
+    Requires positive presence verification in verified_subjects, user_taught_tags,
+    lrcat_keywords, or verified key_subjects (excluding negated_tags and compound place names).
+    Never allows unverified OpenCLIP habitat similarity or substring collisions ('boathouse' != 'boat').
+    """
+    if not required_groups:
+        return True
+    all_verified = r.get("_all_verified_countable")
+    if all_verified is None:
+        all_verified = _compute_row_verified_countable_set(r)
     return all(bool(all_verified & grp) for grp in required_groups)
+
+
+def _get_db_mtime_signature() -> Tuple[float, float, float]:
+    db_m = DEFAULT_DB_PATH.stat().st_mtime if DEFAULT_DB_PATH.exists() else 0.0
+    wal_p = Path(str(DEFAULT_DB_PATH) + "-wal")
+    wal_m = wal_p.stat().st_mtime if wal_p.exists() else 0.0
+    vec_m = DEFAULT_VECTORS_PATH.stat().st_mtime if DEFAULT_VECTORS_PATH.exists() else 0.0
+    return (db_m, wal_m, vec_m)
+
+
+def _get_cached_query_rows(where_sql: str, params_tuple: Tuple[Any, ...]) -> Tuple[List[Dict[str, Any]], Set[str]]:
+    sig = _get_db_mtime_signature()
+    if SEARCH_INDEX_CACHE.get("db_mtime_sig") != sig:
+        SEARCH_INDEX_CACHE["db_mtime_sig"] = sig
+        SEARCH_INDEX_CACHE["by_key"] = {}
+
+    cache_key = (where_sql, params_tuple)
+    cached = SEARCH_INDEX_CACHE["by_key"].get(cache_key)
+    if cached is not None:
+        return cached
+
+    conn = get_db_connection(DEFAULT_DB_PATH)
+    cursor = conn.cursor()
+    sql = f"""
+        SELECT file_path, file_hash, sibling_path, catalog_name,
+               exif_time, shoot_date, status, camera_make, camera_model,
+               focal_length, shutter_speed, aperture, iso,
+               gps_lat, gps_lon, gps_alt, gps_ground_truth, is_screenshot,
+               title, caption, sub_location, specific_location, city, state_region, country,
+               star_rating, color_label, pick_flag,
+               lrcat_keywords, existing_keywords, key_subjects, hierarchical_keywords,
+               user_context_notes, user_taught_tags, negated_tags, subject_boxes, verified_subjects, location_provenance,
+               thumb_360_path, preview_1600_path,
+               sharpness_score, is_unsharp, colorfulness_score, is_monochrome,
+               laion_aesthetic_score, keepers_taste_bonus, aesthetic_score,
+               sequence_id, sequence_frame_index, sequence_length, is_sequence_hero,
+               vector_index, in_keepers, file_mtime, updated_at
+        FROM photo_records
+        WHERE {where_sql}
+    """
+    raw_rows = [dict(r) for r in cursor.execute(sql, list(params_tuple)).fetchall()]
+
+    # Also load entity names / breeds per file_hash from photo_entities + entity_clusters
+    entity_tags_by_hash: Dict[str, List[str]] = {}
+    try:
+        ent_rows = cursor.execute(
+            """
+            SELECT pe.file_hash, ec.entity_name, ec.auto_breed, ec.entity_id
+            FROM photo_entities pe
+            JOIN entity_clusters ec ON pe.entity_id = ec.entity_id
+            """
+        ).fetchall()
+        for er in ent_rows:
+            fh = er["file_hash"]
+            if not fh:
+                continue
+            lst = entity_tags_by_hash.setdefault(fh, [])
+            if er["entity_name"]:
+                lst.append(str(er["entity_name"]).strip())
+            if er["auto_breed"]:
+                lst.append(str(er["auto_breed"]).strip())
+            if er["entity_id"]:
+                lst.append(str(er["entity_id"]).strip())
+    except Exception:
+        pass
+    conn.close()
+
+    unique_catalog_tags: Set[str] = set()
+    for r in raw_rows:
+        ctags = _extract_non_boilerplate_tags(r)
+        fh = r.get("file_hash")
+        if fh and fh in entity_tags_by_hash:
+            for et in entity_tags_by_hash[fh]:
+                if et and et not in ctags:
+                    ctags.append(et)
+        r["_clean_tags"] = ctags
+        ctags_low = {t.lower().replace("_", " ") for t in ctags}
+        r["_clean_tags_lower_set"] = ctags_low
+        unique_catalog_tags.update(ctags_low)
+        stem_name = Path(r.get("file_path") or "").stem.lower()
+        corpus_str = " ".join(ctags_low) + " " + stem_name.replace("_", " ")
+        r["_corpus_tokens_str"] = corpus_str
+        c_words = [w for w in re.split(r"[^a-z0-9]+", corpus_str) if len(w) >= 2]
+        r["_corpus_words"] = c_words
+        r["_corpus_stems"] = {_stem_word(w) for w in c_words}
+        v_cnt = _compute_row_verified_countable_set(r)
+        if fh and fh in entity_tags_by_hash:
+            for et in entity_tags_by_hash[fh]:
+                etl = et.lower().strip()
+                v_cnt.add(etl)
+                v_cnt.update(re.findall(r"[a-z0-9]+", etl))
+        r["_all_verified_countable"] = v_cnt
+        r["_entity_tokens"] = [et.lower() for et in entity_tags_by_hash.get(fh, [])] if fh else []
+
+    if unique_catalog_tags:
+        encode_text_batch(list(unique_catalog_tags))
+
+    SEARCH_INDEX_CACHE["by_key"][cache_key] = (raw_rows, unique_catalog_tags)
+    return raw_rows, unique_catalog_tags
 
 
 def _apply_sort_by(
@@ -1218,6 +1382,7 @@ async def query_photos(
     catalog: str = Query("All Catalogs", description="Filter by catalog_name or 'All Catalogs'"),
     query: Optional[str] = Query(None, description="Semantic text query or keyword search"),
     q: Optional[str] = Query(None, description="Alias for query"),
+    entity_id: Optional[str] = Query(None, description="Optional People & Pets entity_id filter"),
     trip_id: Optional[str] = Query(None, description="Optional trip_id filter from Trips & Map view"),
     portfolio_theme: Optional[str] = Query(None, description="Optional 10,000-foot Portfolio Category or Sub-Region filter"),
     year: Optional[str] = Query(None, description="Optional 4-digit shoot year filter (e.g. '2009')"),
@@ -1257,9 +1422,6 @@ async def query_photos(
     else:
         effective_collapse = False
 
-    conn = get_db_connection(DEFAULT_DB_PATH)
-    cursor = conn.cursor()
-
     where_clauses = ["status != 'failed'"]
     params: List[Any] = []
 
@@ -1287,37 +1449,21 @@ async def query_photos(
             params.extend(date_list)
 
     if collection_id is not None:
-        c_rows = cursor.execute(
+        conn = get_db_connection(DEFAULT_DB_PATH)
+        c_rows = conn.execute(
             "SELECT photo_id FROM collection_items WHERE collection_id = ? ORDER BY sort_order ASC, added_at ASC",
             (collection_id,),
         ).fetchall()
+        conn.close()
         c_ids = [r["photo_id"] for r in c_rows if r["photo_id"]]
         if not c_ids:
-            conn.close()
             return {"total": 0, "page": page, "limit": limit, "aesthetic_cutoff": 0.0, "photos": []}
         ph_c = ",".join("?" for _ in c_ids)
         where_clauses.append(f"(file_hash IN ({ph_c}) OR file_path IN ({ph_c}))")
         params.extend(c_ids + c_ids)
 
-    sql = f"""
-        SELECT file_path, file_hash, sibling_path, catalog_name,
-               exif_time, shoot_date, status, camera_make, camera_model,
-               focal_length, shutter_speed, aperture, iso,
-               gps_lat, gps_lon, gps_alt, gps_ground_truth, is_screenshot,
-               title, caption, sub_location, specific_location, city, state_region, country,
-               star_rating, color_label, pick_flag,
-               lrcat_keywords, existing_keywords, key_subjects, hierarchical_keywords,
-               user_context_notes, user_taught_tags, negated_tags, subject_boxes, verified_subjects, location_provenance,
-               thumb_360_path, preview_1600_path,
-               sharpness_score, is_unsharp, colorfulness_score, is_monochrome,
-               laion_aesthetic_score, keepers_taste_bonus, aesthetic_score,
-               sequence_id, sequence_frame_index, sequence_length, is_sequence_hero,
-               vector_index, in_keepers, file_mtime, updated_at
-        FROM photo_records
-        WHERE {' AND '.join(where_clauses)}
-    """
-    rows = [dict(r) for r in cursor.execute(sql, params).fetchall()]
-    conn.close()
+    cached_rows, unique_catalog_tags = _get_cached_query_rows(" AND ".join(where_clauses), tuple(params))
+    rows = list(cached_rows)
 
     if not rows:
         return {
@@ -1327,6 +1473,14 @@ async def query_photos(
             "aesthetic_cutoff": 0.0,
             "photos": [],
         }
+
+    # Optional People & Pets entity_id filter
+    if entity_id and entity_id.strip():
+        eid_low = entity_id.strip().lower()
+        rows = [
+            r for r in rows
+            if eid_low in r.get("_entity_tokens", []) or eid_low in r.get("_clean_tags_lower_set", set())
+        ]
 
     # Optional trip_id filter
     if trip_id:
@@ -1367,7 +1521,6 @@ async def query_photos(
         pt_clean = portfolio_theme.strip()
         pt_low = pt_clean.lower()
         target_hier = f"portfolio|{pt_low}"
-        # First check if this is one of the 9 canonical 10,000-foot Portfolio Categories
         exact_cat_rows = [
             r for r in rows
             if any(str(hk).lower() == target_hier for hk in _parse_json_list(r.get("hierarchical_keywords")))
@@ -1393,7 +1546,7 @@ async def query_photos(
                     pt_rows.append(r)
             rows = pt_rows
 
-    # 1. Systemic Search Engine: Contrastive Background Suppression & Tag-Coherence Gating
+    # 1. Systemic Search Engine: Sub-15ms Open-Vocabulary Multi-Crop + Verified Tag Hybrid Search
     if active_query:
         q_lower = active_query.lower()
         _QUERY_STOPWORDS = {"of", "the", "in", "at", "on", "to", "for", "and", "a", "an", "by", "from"}
@@ -1403,47 +1556,68 @@ async def query_photos(
         q_stems_meaningful = [_stem_word(w) for w in q_words_meaningful if len(w) >= 3]
 
         text_vec = encode_text_query(active_query)
-        raw_q_emb_map = encode_text_batch([q_lower])
-        raw_q_vec = raw_q_emb_map.get(q_lower, text_vec)
+        raw_q_vec = TEXT_EMBED_CACHE.get(active_query.strip())
+        if raw_q_vec is None:
+            raw_q_vec = TEXT_EMBED_CACHE.get(q_lower)
+        if raw_q_vec is None:
+            raw_q_vec = text_vec
         norm_vectors = get_normalized_vectors_matrix()
+        norm_crop_vectors = get_normalized_crop_vectors_matrix()
 
-        # Pre-compute image-vector cosine similarities & background baseline margins in vectorized NumPy
+        # Pre-compute image-vector cosine similarities across 1x global + 4 focal sub-crops in vectorized BLAS
         n_vecs = len(norm_vectors)
         if text_vec is not None and n_vecs > 0:
-            all_raw_sims = np.dot(norm_vectors, text_vec)
+            global_sims = np.dot(norm_vectors, text_vec)
+            if len(norm_crop_vectors) > 0:
+                n_crops = min(n_vecs, len(norm_crop_vectors))
+                crop_flat = norm_crop_vectors[:n_crops].reshape(-1, 768)
+                max_crop_sims = np.max(np.dot(crop_flat, text_vec).reshape(n_crops, 4), axis=1)
+                all_raw_sims = global_sims.copy()
+                all_raw_sims[:n_crops] = np.maximum(global_sims[:n_crops], max_crop_sims * 0.985)
+            else:
+                all_raw_sims = global_sims
+            global _BG_SIMS_ALL_CACHE, _BG_SIMS_ALL_LEN
             if BACKGROUND_BASELINE_VECS is not None and len(BACKGROUND_BASELINE_VECS) > 0:
-                bg_sims_all = np.max(np.dot(norm_vectors, BACKGROUND_BASELINE_VECS.T), axis=1)
+                if globals().get("_BG_SIMS_ALL_CACHE") is None or globals().get("_BG_SIMS_ALL_LEN") != n_vecs:
+                    _BG_SIMS_ALL_CACHE = np.max(np.dot(norm_vectors, BACKGROUND_BASELINE_VECS.T), axis=1)
+                    _BG_SIMS_ALL_LEN = n_vecs
+                bg_sims_all = _BG_SIMS_ALL_CACHE
             else:
                 bg_sims_all = np.full(n_vecs, 0.22, dtype=np.float32)
         else:
             all_raw_sims = np.zeros(n_vecs, dtype=np.float32)
             bg_sims_all = np.zeros(n_vecs, dtype=np.float32)
 
-        # Collect unique non-boilerplate tags across candidate rows & batch-encode for semantic tag coherence
-        row_clean_tags: List[List[str]] = []
-        unique_catalog_tags = set()
-        for r in rows:
-            ctags = _extract_non_boilerplate_tags(r)
-            row_clean_tags.append(ctags)
-            for t in ctags:
-                unique_catalog_tags.add(t.lower().replace("_", " "))
+        # Compute adaptive Z-score cosine floor across candidate rows to prevent low-confidence tail false positives
+        cand_v_indices = [
+            int(r["vector_index"])
+            for r in rows
+            if r.get("vector_index") is not None and 0 <= int(r["vector_index"]) < n_vecs
+        ]
+        if cand_v_indices and len(all_raw_sims) > 0:
+            cand_sims = all_raw_sims[cand_v_indices]
+            adaptive_z_cutoff = max(0.252, float(np.mean(cand_sims)) + 2.25 * float(np.std(cand_sims)))
+        else:
+            adaptive_z_cutoff = 0.255
 
-        tag_emb_map = encode_text_batch(list(unique_catalog_tags)) if raw_q_vec is not None else {}
         tag_sim_lookup: Dict[str, float] = {}
-        if raw_q_vec is not None and tag_emb_map:
-            for t_str, t_vec in tag_emb_map.items():
-                tag_sim_lookup[t_str] = float(np.dot(raw_q_vec, t_vec))
+        if raw_q_vec is not None and unique_catalog_tags:
+            for t_str in unique_catalog_tags:
+                t_vec = TEXT_EMBED_CACHE.get(t_str)
+                if t_vec is not None:
+                    tag_sim_lookup[t_str] = float(np.dot(raw_q_vec, t_vec))
 
         scored_candidates: List[Tuple[int, float, Dict[str, Any]]] = []
         countable_query_groups = _extract_countable_query_targets(active_query)
 
-        for idx_r, r in enumerate(rows):
+        for r in rows:
             # High-Trust Search Gate: when searching for countable subjects (birds, frogs, dogs, boats, people, etc.),
             # strictly require positive verified subject presence and never pad with habitat/vector similarity matches.
             if countable_query_groups and not _passes_countable_subject_search_gate(r, countable_query_groups):
                 continue
 
-            ctags = row_clean_tags[idx_r]
+            ctags = r.get("_clean_tags") or []
+            ctags_lower_set = r.get("_clean_tags_lower_set") or set()
             v_idx = r.get("vector_index")
             raw_clip_sim = 0.0
             bg_clip_sim = 0.22
@@ -1453,15 +1627,12 @@ async def query_photos(
 
             contrastive_margin = raw_clip_sim - bg_clip_sim
 
-            # Check lexical alignment across non-boilerplate tags, locations, title, and filename
-            stem_name = Path(r.get("file_path") or "").stem.lower()
-            corpus_tokens_str = " ".join(ctags).lower().replace("_", " ") + " " + stem_name.replace("_", " ")
-            corpus_words = [w for w in re.split(r"[^a-z0-9]+", corpus_tokens_str) if len(w) >= 2]
-            corpus_stems = {_stem_word(w) for w in corpus_words}
+            corpus_tokens_str = r.get("_corpus_tokens_str") or ""
+            corpus_words = r.get("_corpus_words") or []
+            corpus_stems = r.get("_corpus_stems") or set()
 
             lexical_score = 0.0
             if q_lower in corpus_tokens_str:
-                # Check if it's a whole-word or prefix match vs accidental inner substring
                 if len(q_words_meaningful) >= 2:
                     lexical_score = 1.0
                 elif any(w == q_lower or w.startswith(q_lower) or _stem_word(w) in q_stems for w in corpus_words):
@@ -1472,7 +1643,6 @@ async def query_photos(
                 lexical_score = 0.85
 
             # Check parent-category / hypernym ontological expansion match (single-concept queries or full phrase)
-            ctags_lower_set = {t.lower().replace("_", " ") for t in ctags}
             has_hypernym_match = False
             hyp_candidates = [q_lower] if len(q_words_meaningful) >= 2 else ([q_lower] + q_words_meaningful)
             for qw in hyp_candidates:
@@ -1484,38 +1654,36 @@ async def query_photos(
 
             # Semantic tag-to-query similarity across the photo's non-boilerplate tags
             max_tag_clip_sim = 0.0
-            if ctags and tag_sim_lookup:
+            if ctags_lower_set and tag_sim_lookup:
                 max_tag_clip_sim = max(
-                    (tag_sim_lookup.get(t.lower().replace("_", " "), 0.0) for t in ctags),
+                    (tag_sim_lookup.get(tl, 0.0) for tl in ctags_lower_set),
                     default=0.0,
                 )
 
             # Tag-Coherence Gating:
             # Never penalize when the query is a parent/hypernym concept or when max_tag_clip_sim >= 0.72.
             gated_clip_sim = raw_clip_sim
-            if not has_hypernym_match and len(ctags) >= 3 and lexical_score == 0.0 and max_tag_clip_sim < 0.72:
+            if not has_hypernym_match and len(ctags) >= 3 and lexical_score == 0.0 and max_tag_clip_sim < 0.72 and raw_clip_sim < adaptive_z_cutoff + 0.025:
                 gated_clip_sim = raw_clip_sim * 0.50
 
             # Tiered Ranking & Strict Cutoff (boost parent-concept & high tag-coherence matches)
             tier = 0
             rank_score = 0.0
             if lexical_score >= 0.50 or has_hypernym_match:
-                # Tier 3: Exact/prefix/stem/parent-hypernym match in curated/VLM/ontology tags or location
+                # Tier 3: Exact/prefix/stem/parent-hypernym match in curated/VLM/ontology/entity tags or location
                 tier = 3
                 rank_score = 3.0 + lexical_score + (0.15 if has_hypernym_match else 0.0) + raw_clip_sim
             elif max_tag_clip_sim >= 0.80 and (raw_clip_sim >= 0.215 or contrastive_margin >= 0.0):
                 # Tier 2: High semantic tag-confirmed match (>= 0.80) + positive visual support
                 tier = 2
                 rank_score = 2.0 + max_tag_clip_sim * 0.6 + raw_clip_sim
-            elif gated_clip_sim >= 0.255 and contrastive_margin >= 0.018:
-                # Tier 1: High-margin contrastive visual match (passes floor AND beats background baseline)
+            elif gated_clip_sim >= adaptive_z_cutoff and contrastive_margin >= 0.018:
+                # Tier 1: High-margin contrastive visual match (passes adaptive Z-score floor AND beats background baseline)
                 tier = 1
                 rank_score = 1.0 + gated_clip_sim + contrastive_margin
 
             if tier > 0:
-                r["match_tier"] = tier
-                r["match_score"] = round(rank_score, 4)
-                scored_candidates.append((tier, rank_score, r))
+                scored_candidates.append((tier, round(rank_score, 4), r))
 
         # If query is a known geographic place in OFFLINE_GAZETTEER and has exact Tier 3 matches,
         # do not dilute with Tier 1/2 OpenCLIP neighboring-country/state tag similarity matches.
@@ -1539,7 +1707,6 @@ async def query_photos(
             aesthetic_cutoff = float(np.percentile(scores, target_pct))
             filtered_rows = [r for r in filtered_rows if float(r.get("aesthetic_score") or 0.0) >= aesthetic_cutoff]
             if not active_query and norm_sort_by == "capture_desc":
-                # When browsing top aesthetic percentiles without an explicit non-default sort, sort by aesthetic_score DESC
                 filtered_rows.sort(key=lambda r: float(r.get("aesthetic_score") or 0.0), reverse=True)
 
     # 3. Collapse Strafing Runs into Hero Cards (if enabled)
@@ -1566,7 +1733,7 @@ async def query_photos(
     # 4. Pagination (supports both offset and page)
     start_idx = offset if offset is not None else (page - 1) * limit
     end_idx = start_idx + limit
-    page_items = final_list[start_idx:end_idx]
+    page_items = [dict(r) for r in final_list[start_idx:end_idx]]
 
     if ids_only:
         stub_items = [
@@ -1588,6 +1755,8 @@ async def query_photos(
         }
 
     for item in page_items:
+        for internal_k in ("_clean_tags", "_clean_tags_lower_set", "_corpus_tokens_str", "_corpus_words", "_corpus_stems", "_all_verified_countable", "_entity_tokens"):
+            item.pop(internal_k, None)
         _serialize_photo_item(item)
 
     return {
@@ -1598,6 +1767,85 @@ async def query_photos(
         "aesthetic_cutoff": round(aesthetic_cutoff, 2),
         "photos": page_items,
     }
+
+
+# ==============================================================================
+# 2A. PEOPLE & PETS IDENTITY CLUSTERS & INLINE RENAMING ("Masha", "Scout", etc.)
+# ==============================================================================
+class EntityRenameRequest(BaseModel):
+    entity_name: str
+
+
+@app.get("/api/entities")
+def list_entity_clusters(
+    catalog: str = Query("All Catalogs", description="Filter by catalog_name or 'All Catalogs'"),
+):
+    conn = get_db_connection(DEFAULT_DB_PATH)
+    cursor = conn.cursor()
+    cat_clean = (catalog or "").strip()
+    if cat_clean and cat_clean.lower() not in ("all catalogs", "all", "all photos"):
+        target_cat = "Keepers" if cat_clean.lower() == "keepers" else cat_clean
+        rows = cursor.execute(
+            """
+            SELECT ec.entity_id, ec.catalog_name, ec.entity_type, ec.entity_name,
+                   ec.auto_breed, ec.photo_count, ec.cover_file_hash, ec.sample_file_hash, ec.updated_at,
+                   pr.thumb_360_path, pr.file_path
+            FROM entity_clusters ec
+            LEFT JOIN photo_records pr ON COALESCE(NULLIF(ec.cover_file_hash, ''), ec.sample_file_hash) = pr.file_hash
+            WHERE ec.catalog_name = ?
+            ORDER BY
+                CASE WHEN ec.entity_name IS NOT NULL AND ec.entity_name != '' THEN 0 ELSE 1 END,
+                CASE WHEN ec.entity_type IN ('Cat', 'Dog', 'pet_cat', 'pet_dog') THEN 0 ELSE 1 END,
+                ec.photo_count DESC
+            """,
+            (target_cat,),
+        ).fetchall()
+    else:
+        rows = cursor.execute(
+            """
+            SELECT ec.entity_id, ec.catalog_name, ec.entity_type, ec.entity_name,
+                   ec.auto_breed, ec.photo_count, ec.cover_file_hash, ec.sample_file_hash, ec.updated_at,
+                   pr.thumb_360_path, pr.file_path
+            FROM entity_clusters ec
+            LEFT JOIN photo_records pr ON COALESCE(NULLIF(ec.cover_file_hash, ''), ec.sample_file_hash) = pr.file_hash
+            ORDER BY
+                CASE WHEN ec.entity_name IS NOT NULL AND ec.entity_name != '' THEN 0 ELSE 1 END,
+                CASE WHEN ec.entity_type IN ('Cat', 'Dog', 'pet_cat', 'pet_dog') THEN 0 ELSE 1 END,
+                ec.photo_count DESC
+            """
+        ).fetchall()
+    conn.close()
+
+    type_map = {"pet_cat": "Cat", "pet_dog": "Dog", "person": "Person"}
+    entities = []
+    for r in rows:
+        d = dict(r)
+        raw_t = str(d.get("entity_type") or "")
+        d["entity_type"] = type_map.get(raw_t, raw_t or "Pet")
+        thumb_p = d.get("thumb_360_path")
+        cover_hash = d.get("cover_file_hash") or d.get("sample_file_hash")
+        if thumb_p and Path(thumb_p).exists():
+            d["thumb_url"] = f"/media/thumbs_360/{Path(thumb_p).name}"
+        elif cover_hash:
+            d["thumb_url"] = f"/media/thumbs_360/{cover_hash}.webp"
+        else:
+            d["thumb_url"] = None
+        entities.append(d)
+
+    return {"total": len(entities), "entities": entities}
+
+
+@app.post("/api/entities/{entity_id}/rename")
+def api_rename_entity_cluster(entity_id: str, req: EntityRenameRequest):
+    result = rename_entity_cluster(
+        db_path=DEFAULT_DB_PATH,
+        entity_id=entity_id,
+        new_name=req.entity_name,
+    )
+    invalidate_search_index_cache()
+    if not result.get("ok"):
+        raise HTTPException(status_code=404, detail=result.get("error", "Entity cluster not found"))
+    return result
 
 
 # ==============================================================================
@@ -3461,7 +3709,7 @@ async def trigger_pipeline_run(payload: RunPipelineRequest, background_tasks: Ba
         extract_sharpness: bool,
         fast_only: Optional[bool],
     ):
-        global PIPELINE_STATUS, VECTORS_MTIME, COLOR_SIGS_MTIME
+        global PIPELINE_STATUS, VECTORS_MTIME, CROP_VECTORS_MTIME, COLOR_SIGS_MTIME
         initial_phase = (
             "Step 1: Importing Photos, Extracting GPS & Building Previews..."
             if stage in (0, 1)
@@ -3525,7 +3773,9 @@ async def trigger_pipeline_run(payload: RunPipelineRequest, background_tasks: Ba
 
                 # Invalidate in-memory vector & color signature caches so newly ingested rows are immediately available
                 VECTORS_MTIME = 0.0
+                CROP_VECTORS_MTIME = 0.0
                 COLOR_SIGS_MTIME = 0.0
+                invalidate_search_index_cache()
 
                 if stage == 0 or run_ai_tagging:
                     if not JOB_MANAGER.check_pause_or_cancel():
@@ -3556,6 +3806,7 @@ async def trigger_pipeline_run(payload: RunPipelineRequest, background_tasks: Ba
                     catalog_name=catalog_name,
                     progress_callback=_progress_cb,
                 )
+            invalidate_search_index_cache()
             PIPELINE_STATUS["running"] = False
             PIPELINE_STATUS["phase"] = "Completed"
             PIPELINE_STATUS["completed_at"] = datetime.now().isoformat()
@@ -3726,6 +3977,7 @@ async def trigger_reassess(payload: ReassessRequest):
                         encode_text_batch_fn=encode_text_batch,
                         progress_cb=_reassess_cb,
                     )
+                invalidate_search_index_cache()
                 JOB_MANAGER.finish_job(result=rep, phase="Re-Assessment Complete")
             except Exception as exc:
                 logging.error(f"Background reassessment error ({mode}): {exc}")
@@ -3766,6 +4018,7 @@ async def trigger_reassess(payload: ReassessRequest):
                     progress_cb=_reassess_cb,
                 ),
             )
+        invalidate_search_index_cache()
         JOB_MANAGER.finish_job(result=report, phase="Re-Assessment Complete")
     except Exception as exc:
         JOB_MANAGER.finish_job(error=str(exc), phase="Re-Assessment Error")

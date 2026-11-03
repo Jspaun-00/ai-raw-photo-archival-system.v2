@@ -51,6 +51,12 @@ GENERIC_NOISE_TAGS: Set[str] = {
     "whats",
     "look at it",
     "tag what's in there",
+    "floor",
+    "wall",
+    "light switch",
+    "cup of water",
+    "generate",
+    "bars",
 }
 
 AERIAL_ONLY_LANDMARKS: Dict[str, Tuple[str, str]] = {
@@ -99,10 +105,64 @@ _ANIMAL_ONTOLOGY: Dict[str, Tuple[str, List[str], List[str], str]] = {
     "dog": ("Dog", ["Canine", "Pet", "Mammals"], ["Animal", "Pets", "Fauna"], "Subjects|Animals|Pets|Dog"),
     "dogs": ("Dogs", ["Dog", "Canine", "Pet", "Mammals"], ["Animals", "Pets", "Fauna"], "Subjects|Animals|Pets|Dog"),
     "puppy": ("Puppy", ["Dog", "Canine", "Pet", "Mammals"], ["Animal", "Pets", "Fauna"], "Subjects|Animals|Pets|Dog"),
-    "chihuahua": ("Chihuahua", ["Dog", "Canine", "Pet", "Mammals"], ["Animal", "Pets", "Fauna"], "Subjects|Animals|Pets|Dog"),
+    "chihuahua": ("Chihuahua", ["Dog", "Canine", "Pet", "Mammals"], ["Animal", "Pets", "Fauna"], "Subjects|Animals|Pets|Dog|Chihuahua"),
+    "rat terrier": ("Rat Terrier", ["Dog", "Canine", "Pet", "Mammals"], ["Animal", "Pets", "Fauna"], "Subjects|Animals|Pets|Dog|Rat_Terrier"),
+    "jack russell terrier": ("Jack Russell Terrier", ["Dog", "Canine", "Pet", "Mammals"], ["Animal", "Pets", "Fauna"], "Subjects|Animals|Pets|Dog|Jack_Russell_Terrier"),
+    "french bulldog": ("French Bulldog", ["Dog", "Canine", "Pet", "Mammals"], ["Animal", "Pets", "Fauna"], "Subjects|Animals|Pets|Dog|French_Bulldog"),
+    "english bulldog": ("English Bulldog", ["Dog", "Canine", "Pet", "Mammals"], ["Animal", "Pets", "Fauna"], "Subjects|Animals|Pets|Dog|English_Bulldog"),
+    "corgi": ("Corgi", ["Dog", "Canine", "Pet", "Mammals"], ["Animal", "Pets", "Fauna"], "Subjects|Animals|Pets|Dog|Corgi"),
+    "dachshund": ("Dachshund", ["Dog", "Canine", "Pet", "Mammals"], ["Animal", "Pets", "Fauna"], "Subjects|Animals|Pets|Dog|Dachshund"),
+    "beagle": ("Beagle", ["Dog", "Canine", "Pet", "Mammals"], ["Animal", "Pets", "Fauna"], "Subjects|Animals|Pets|Dog|Beagle"),
+    "golden retriever": ("Golden Retriever", ["Dog", "Canine", "Pet", "Mammals"], ["Animal", "Pets", "Fauna"], "Subjects|Animals|Pets|Dog|Golden_Retriever"),
+    "labrador retriever": ("Labrador Retriever", ["Dog", "Canine", "Pet", "Mammals"], ["Animal", "Pets", "Fauna"], "Subjects|Animals|Pets|Dog|Labrador_Retriever"),
+    "german shepherd": ("German Shepherd", ["Dog", "Canine", "Pet", "Mammals"], ["Animal", "Pets", "Fauna"], "Subjects|Animals|Pets|Dog|German_Shepherd"),
+    "australian shepherd": ("Australian Shepherd", ["Dog", "Canine", "Pet", "Mammals"], ["Animal", "Pets", "Fauna"], "Subjects|Animals|Pets|Dog|Australian_Shepherd"),
+    "border collie": ("Border Collie", ["Dog", "Canine", "Pet", "Mammals"], ["Animal", "Pets", "Fauna"], "Subjects|Animals|Pets|Dog|Border_Collie"),
+    "poodle / doodle": ("Poodle / Doodle", ["Dog", "Canine", "Pet", "Mammals"], ["Animal", "Pets", "Fauna"], "Subjects|Animals|Pets|Dog|Poodle_Doodle"),
+    "siberian husky": ("Siberian Husky", ["Dog", "Canine", "Pet", "Mammals"], ["Animal", "Pets", "Fauna"], "Subjects|Animals|Pets|Dog|Siberian_Husky"),
+    "boxer": ("Boxer", ["Dog", "Canine", "Pet", "Mammals"], ["Animal", "Pets", "Fauna"], "Subjects|Animals|Pets|Dog|Boxer"),
+    "pit bull terrier": ("Pit Bull Terrier", ["Dog", "Canine", "Pet", "Mammals"], ["Animal", "Pets", "Fauna"], "Subjects|Animals|Pets|Dog|Pit_Bull_Terrier"),
+    "pomeranian": ("Pomeranian", ["Dog", "Canine", "Pet", "Mammals"], ["Animal", "Pets", "Fauna"], "Subjects|Animals|Pets|Dog|Pomeranian"),
+    "spaniel": ("Spaniel", ["Dog", "Canine", "Pet", "Mammals"], ["Animal", "Pets", "Fauna"], "Subjects|Animals|Pets|Dog|Spaniel"),
     "cat": ("Cat", ["Feline", "Pet", "Mammals"], ["Animal", "Pets", "Fauna"], "Subjects|Animals|Pets|Cat"),
     "cats": ("Cats", ["Cat", "Feline", "Pet", "Mammals"], ["Animals", "Pets", "Fauna"], "Subjects|Animals|Pets|Cat"),
     "kitten": ("Kitten", ["Cat", "Feline", "Pet", "Mammals"], ["Animal", "Pets", "Fauna"], "Subjects|Animals|Pets|Cat"),
+    "scottish fold": ("Scottish Fold", ["Cat", "Feline", "Pet", "Mammals"], ["Animal", "Pets", "Fauna"], "Subjects|Animals|Pets|Cat|Scottish_Fold"),
+    "british shorthair": ("British Shorthair", ["Cat", "Feline", "Pet", "Mammals"], ["Animal", "Pets", "Fauna"], "Subjects|Animals|Pets|Cat|British_Shorthair"),
+    "american shorthair": ("American Shorthair", ["Cat", "Feline", "Pet", "Mammals"], ["Animal", "Pets", "Fauna"], "Subjects|Animals|Pets|Cat|American_Shorthair"),
+    "tabby cat": ("Tabby Cat", ["Cat", "Feline", "Pet", "Mammals"], ["Animal", "Pets", "Fauna"], "Subjects|Animals|Pets|Cat|Tabby_Cat"),
+    "orange tabby": ("Orange Tabby", ["Tabby Cat", "Cat", "Feline", "Pet"], ["Animal", "Pets", "Fauna"], "Subjects|Animals|Pets|Cat|Orange_Tabby"),
+    "black cat": ("Black Cat", ["Cat", "Feline", "Pet", "Mammals"], ["Animal", "Pets", "Fauna"], "Subjects|Animals|Pets|Cat|Black_Cat"),
+    "tuxedo cat": ("Tuxedo Cat", ["Cat", "Feline", "Pet", "Mammals"], ["Animal", "Pets", "Fauna"], "Subjects|Animals|Pets|Cat|Tuxedo_Cat"),
+    "calico": ("Calico", ["Cat", "Feline", "Pet", "Mammals"], ["Animal", "Pets", "Fauna"], "Subjects|Animals|Pets|Cat|Calico"),
+    "tortoiseshell": ("Tortoiseshell", ["Cat", "Feline", "Pet", "Mammals"], ["Animal", "Pets", "Fauna"], "Subjects|Animals|Pets|Cat|Tortoiseshell"),
+    "siamese": ("Siamese", ["Cat", "Feline", "Pet", "Mammals"], ["Animal", "Pets", "Fauna"], "Subjects|Animals|Pets|Cat|Siamese"),
+    "ragdoll": ("Ragdoll", ["Cat", "Feline", "Pet", "Mammals"], ["Animal", "Pets", "Fauna"], "Subjects|Animals|Pets|Cat|Ragdoll"),
+    "maine coon / longhair": ("Maine Coon / Longhair", ["Cat", "Feline", "Pet", "Mammals"], ["Animal", "Pets", "Fauna"], "Subjects|Animals|Pets|Cat|Maine_Coon"),
+    "bengal": ("Bengal", ["Cat", "Feline", "Pet", "Mammals"], ["Animal", "Pets", "Fauna"], "Subjects|Animals|Pets|Cat|Bengal"),
+    "persian": ("Persian", ["Cat", "Feline", "Pet", "Mammals"], ["Animal", "Pets", "Fauna"], "Subjects|Animals|Pets|Cat|Persian"),
+    "arabian horse": ("Arabian Horse", ["Horse", "Horses", "Equine"], ["Animal", "Animals", "Fauna"], "Subjects|Animals|Horses|Arabian_Horse"),
+    "thoroughbred": ("Thoroughbred", ["Horse", "Horses", "Equine"], ["Animal", "Animals", "Fauna"], "Subjects|Animals|Horses|Thoroughbred"),
+    "clydesdale / draft horse": ("Clydesdale / Draft Horse", ["Horse", "Horses", "Equine"], ["Animal", "Animals", "Fauna"], "Subjects|Animals|Horses|Draft_Horse"),
+    "appaloosa": ("Appaloosa", ["Horse", "Horses", "Equine"], ["Animal", "Animals", "Fauna"], "Subjects|Animals|Horses|Appaloosa"),
+    "paint / pinto horse": ("Paint / Pinto Horse", ["Horse", "Horses", "Equine"], ["Animal", "Animals", "Fauna"], "Subjects|Animals|Horses|Paint_Horse"),
+    "palomino": ("Palomino", ["Horse", "Horses", "Equine"], ["Animal", "Animals", "Fauna"], "Subjects|Animals|Horses|Palomino"),
+    "pony": ("Pony", ["Horse", "Horses", "Equine"], ["Animal", "Animals", "Fauna"], "Subjects|Animals|Horses|Pony"),
+    "great blue heron": ("Great Blue Heron", ["Heron", "Bird", "Birds", "Wading_Bird"], ["Animal", "Animals", "Wildlife", "Fauna"], "Subjects|Animals|Birds|Great_Blue_Heron"),
+    "snowy egret": ("Snowy Egret", ["Egret", "Bird", "Birds", "Wading_Bird"], ["Animal", "Animals", "Wildlife", "Fauna"], "Subjects|Animals|Birds|Snowy_Egret"),
+    "brown pelican": ("Brown Pelican", ["Pelican", "Bird", "Birds", "Seabird"], ["Animal", "Animals", "Wildlife", "Fauna"], "Subjects|Animals|Birds|Brown_Pelican"),
+    "avocet": ("Avocet", ["Bird", "Birds", "Wading_Bird"], ["Animal", "Animals", "Wildlife", "Fauna"], "Subjects|Animals|Birds|Avocet"),
+    "cormorant": ("Cormorant", ["Bird", "Birds", "Seabird"], ["Animal", "Animals", "Wildlife", "Fauna"], "Subjects|Animals|Birds|Cormorant"),
+    "red-tailed hawk": ("Red-Tailed Hawk", ["Hawk", "Bird", "Birds", "Raptor"], ["Animal", "Animals", "Wildlife", "Fauna"], "Subjects|Animals|Birds|Red_Tailed_Hawk"),
+    "great horned owl": ("Great Horned Owl", ["Owl", "Bird", "Birds", "Raptor"], ["Animal", "Animals", "Wildlife", "Fauna"], "Subjects|Animals|Birds|Great_Horned_Owl"),
+    "hummingbird": ("Hummingbird", ["Bird", "Birds"], ["Animal", "Animals", "Wildlife", "Fauna"], "Subjects|Animals|Birds|Hummingbird"),
+    "mallard": ("Mallard", ["Duck", "Bird", "Birds", "Waterfowl"], ["Animal", "Animals", "Wildlife", "Fauna"], "Subjects|Animals|Birds|Mallard"),
+    "canada goose": ("Canada Goose", ["Goose", "Geese", "Bird", "Birds", "Waterfowl"], ["Animal", "Animals", "Wildlife", "Fauna"], "Subjects|Animals|Birds|Canada_Goose"),
+    "grizzly / black bear": ("Grizzly / Black Bear", ["Bear", "Mammals"], ["Animal", "Animals", "Wildlife", "Fauna"], "Subjects|Animals|Wildlife|Bear"),
+    "red fox": ("Red Fox", ["Fox", "Canine", "Mammals"], ["Animal", "Animals", "Wildlife", "Fauna"], "Subjects|Animals|Wildlife|Red_Fox"),
+    "sea otter": ("Sea Otter", ["Marine_Life", "Mammals"], ["Animal", "Animals", "Wildlife", "Fauna"], "Subjects|Animals|Marine|Sea_Otter"),
+    "seal / sea lion": ("Seal / Sea Lion", ["Seal", "Sea Lion", "Marine_Life", "Mammals"], ["Animal", "Animals", "Wildlife", "Fauna"], "Subjects|Animals|Marine|Seal_Sea_Lion"),
+    "humpback whale": ("Humpback Whale", ["Whale", "Marine_Life", "Mammals"], ["Animal", "Animals", "Wildlife", "Fauna"], "Subjects|Animals|Marine|Humpback_Whale"),
     "pet": ("Pet", ["Pets", "Domestic_Animal"], ["Animal", "Animals"], "Subjects|Animals|Pets"),
     "pets": ("Pets", ["Pet", "Domestic_Animal"], ["Animal", "Animals"], "Subjects|Animals|Pets"),
     "frog": ("Frog", ["Amphibian"], ["Animal", "Wildlife", "Fauna"], "Subjects|Animals|Wildlife|Frog"),
@@ -200,6 +260,20 @@ _FLORA_ONTOLOGY: Dict[str, Tuple[str, List[str], List[str], str]] = {
     "forest": ("Forest", ["Trees", "Woods"], ["Plants", "Flora"], "Subjects|Flora|Forest"),
     "kelp": ("Kelp", ["Giant_Kelp", "Marine_Flora", "Seaweed"], ["Plants", "Flora"], "Subjects|Flora|Marine|Kelp"),
     "giant kelp": ("Giant Kelp", ["Kelp", "Marine_Flora", "Seaweed"], ["Plants", "Flora"], "Subjects|Flora|Marine|Kelp"),
+    "coast redwood": ("Coast Redwood", ["Redwood", "Tree", "Trees", "Forest"], ["Plants", "Flora"], "Subjects|Flora|Trees|Coast_Redwood"),
+    "giant sequoia": ("Giant Sequoia", ["Redwood", "Tree", "Trees", "Forest"], ["Plants", "Flora"], "Subjects|Flora|Trees|Giant_Sequoia"),
+    "quaking aspen": ("Quaking Aspen", ["Aspen", "Tree", "Trees", "Forest"], ["Plants", "Flora"], "Subjects|Flora|Trees|Quaking_Aspen"),
+    "monterey cypress": ("Monterey Cypress", ["Cypress", "Tree", "Trees"], ["Plants", "Flora"], "Subjects|Flora|Trees|Monterey_Cypress"),
+    "ponderosa pine": ("Ponderosa Pine", ["Pine Tree", "Tree", "Trees", "Conifer"], ["Plants", "Flora"], "Subjects|Flora|Trees|Ponderosa_Pine"),
+    "orchard blossoms": ("Orchard Blossoms", ["Blossoms", "Flowers", "Tree", "Trees"], ["Plants", "Flora"], "Subjects|Flora|Trees|Orchard_Blossoms"),
+    "saguaro cactus": ("Saguaro Cactus", ["Saguaro", "Cactus", "Desert_Flora"], ["Plants", "Flora"], "Subjects|Flora|Desert_Plants|Saguaro_Cactus"),
+    "california poppies": ("California Poppies", ["Poppies", "Wildflowers", "Flowers"], ["Plants", "Flora"], "Subjects|Flora|Wildflowers|California_Poppies"),
+    "monstera": ("Monstera", ["Houseplant", "Indoor_Plant"], ["Plants", "Flora"], "Subjects|Flora|Houseplants|Monstera"),
+    "pothos": ("Pothos", ["Houseplant", "Indoor_Plant"], ["Plants", "Flora"], "Subjects|Flora|Houseplants|Pothos"),
+    "fiddle leaf fig": ("Fiddle Leaf Fig", ["Houseplant", "Indoor_Plant", "Tree"], ["Plants", "Flora"], "Subjects|Flora|Houseplants|Fiddle_Leaf_Fig"),
+    "succulent": ("Succulent", ["Houseplant", "Desert_Flora"], ["Plants", "Flora"], "Subjects|Flora|Houseplants|Succulent"),
+    "morel / mushroom": ("Morel / Mushroom", ["Mushroom", "Fungi"], ["Plants", "Flora", "Botanical"], "Subjects|Flora|Fungi|Morel_Mushroom"),
+    "mushroom": ("Morel / Mushroom", ["Mushroom", "Fungi"], ["Plants", "Flora", "Botanical"], "Subjects|Flora|Fungi|Morel_Mushroom"),
 }
 
 _STRUCTURE_ONTOLOGY: Dict[str, Tuple[str, List[str], List[str], str]] = {
@@ -253,8 +327,69 @@ _STRUCTURE_ONTOLOGY: Dict[str, Tuple[str, List[str], List[str], str]] = {
     "living room": ("Living Room", ["Indoor", "Interior", "Room"], ["Interiors", "Domestic"], "Architecture|Interiors|Living_Room"),
     "fitting room": ("Fitting Room", ["Dressing Room", "Mirror", "Indoor", "Interior"], ["Interiors", "Commercial"], "Architecture|Interiors|Fitting_Room"),
     "cat tree": ("Cat Tree", ["Scratching Post", "Pet Furniture", "Indoor"], ["Interiors", "Pets"], "Subjects|Animals|Pets|Cat_Tree"),
-    "carpet": ("Carpet", ["Area Rug", "Rug", "Floor"], ["Interiors", "Domestic"], "Architecture|Interiors|Carpet"),
+    "scratching post": ("Scratching Post", ["Cat Tree", "Pet Furniture", "Indoor"], ["Interiors", "Pets"], "Subjects|Animals|Pets|Scratching_Post"),
+    "carpet": ("Carpet", ["Area Rug / Carpet", "Rug", "Floor"], ["Interiors", "Domestic"], "Architecture|Interiors|Carpet"),
+    "area rug / carpet": ("Area Rug / Carpet", ["Carpet", "Area Rug", "Indoor"], ["Interiors", "Decor"], "Architecture|Interiors|Area_Rug_Carpet"),
+    "couch": ("Couch", ["Sofa", "Furniture", "Living Room", "Indoor"], ["Interiors", "Furniture"], "Architecture|Interiors|Couch"),
+    "bohemian tapestry / woven throw": ("Bohemian Tapestry / Woven Throw", ["Throw Blanket", "Tapestry", "Textiles", "Indoor"], ["Interiors", "Textiles"], "Architecture|Interiors|Bohemian_Tapestry_Throw"),
     "framed art": ("Framed Art", ["Picture Frame", "Wall Art"], ["Interiors", "Decor"], "Architecture|Interiors|Framed_Art"),
+    "modern / pop wall art": ("Modern / Pop Wall Art", ["Framed Art", "Wall Art", "Indoor"], ["Interiors", "Decor"], "Architecture|Interiors|Modern_Pop_Wall_Art"),
+    "decorative lamp": ("Decorative Lamp", ["Lamp", "Lighting", "Indoor"], ["Interiors", "Decor"], "Architecture|Interiors|Decorative_Lamp"),
+    "center-pivot irrigation": ("Center-Pivot Irrigation", ["Circular Crop Field", "Farmland", "Agriculture"], ["Agriculture", "Aerial"], "Landscape|Agriculture|Center_Pivot_Irrigation"),
+    "circular crop field": ("Circular Crop Field", ["Center-Pivot Irrigation", "Farmland", "Agriculture"], ["Agriculture", "Aerial"], "Landscape|Agriculture|Circular_Crop_Field"),
+    "apricot / stone fruit orchard": ("Apricot / Stone Fruit Orchard", ["Orchard", "Farmland", "Agriculture"], ["Agriculture"], "Landscape|Agriculture|Stone_Fruit_Orchard"),
+    "almond orchard": ("Almond Orchard", ["Orchard", "Farmland", "Agriculture"], ["Agriculture"], "Landscape|Agriculture|Almond_Orchard"),
+    "vineyard rows": ("Vineyard Rows", ["Vineyard", "Farmland", "Agriculture"], ["Agriculture"], "Landscape|Agriculture|Vineyard_Rows"),
+    "citrus grove": ("Citrus Grove", ["Orchard", "Farmland", "Agriculture"], ["Agriculture"], "Landscape|Agriculture|Citrus_Grove"),
+    "wheat / grain field": ("Wheat / Grain Field", ["Farmland", "Agriculture"], ["Agriculture"], "Landscape|Agriculture|Wheat_Grain_Field"),
+    "green farmland": ("Green Farmland", ["Farmland", "Agriculture"], ["Agriculture"], "Landscape|Agriculture|Green_Farmland"),
+    "ploughed / fallow field": ("Ploughed / Fallow Field", ["Farmland", "Agriculture"], ["Agriculture"], "Landscape|Agriculture|Ploughed_Fallow_Field"),
+    "contour farming": ("Contour Farming", ["Farmland", "Agriculture", "Rolling Hills"], ["Agriculture"], "Landscape|Agriculture|Contour_Farming"),
+    "irrigation canal": ("Irrigation Canal", ["Canal", "Farmland", "Agriculture"], ["Agriculture", "Infrastructure"], "Landscape|Agriculture|Irrigation_Canal"),
+    "grain silo": ("Grain Silo", ["Silo", "Barn", "Agriculture"], ["Structure", "Agriculture"], "Architecture|Ranch|Grain_Silo"),
+    "tractor / combine": ("Tractor / Combine", ["Farm Machinery", "Agriculture"], ["Agriculture", "Transportation"], "Subjects|Agriculture|Tractor_Combine"),
+    "highway overpass": ("Highway Overpass", ["Overpass", "Bridge", "Freeway", "Infrastructure"], ["Structure", "Infrastructure"], "Architecture|Infrastructure|Highway_Overpass"),
+    "cloverleaf interchange": ("Cloverleaf Interchange", ["Highway Overpass", "Freeway", "Interchange", "Infrastructure"], ["Structure", "Infrastructure"], "Architecture|Infrastructure|Cloverleaf_Interchange"),
+    "suspension bridge": ("Suspension Bridge", ["Bridge", "Infrastructure"], ["Structure", "Infrastructure"], "Architecture|Infrastructure|Suspension_Bridge"),
+    "steel truss bridge": ("Steel Truss Bridge", ["Bridge", "Infrastructure"], ["Structure", "Infrastructure"], "Architecture|Infrastructure|Steel_Truss_Bridge"),
+    "viaduct": ("Viaduct", ["Bridge", "Overpass", "Infrastructure"], ["Structure", "Infrastructure"], "Architecture|Infrastructure|Viaduct"),
+    "skyscraper": ("Skyscraper", ["Building", "Architecture", "Cityscape"], ["Structure", "Architecture"], "Architecture|Urban|Skyscraper"),
+    "glass curtain wall": ("Glass Curtain Wall", ["Skyscraper", "Building", "Architecture"], ["Structure", "Architecture"], "Architecture|Urban|Glass_Curtain_Wall"),
+    "construction scaffolding": ("Construction Scaffolding", ["Building", "Construction", "Infrastructure"], ["Structure", "Infrastructure"], "Architecture|Urban|Construction_Scaffolding"),
+    "amusement pier": ("Amusement Pier", ["Pier", "Coastline", "Ferris Wheel"], ["Structure", "Coast"], "Architecture|Coastal|Amusement_Pier"),
+    "ferris wheel": ("Ferris Wheel", ["Amusement Pier", "Pier"], ["Structure", "Recreation"], "Architecture|Coastal|Ferris_Wheel"),
+    "roller coaster": ("Roller Coaster", ["Amusement Pier", "Pier"], ["Structure", "Recreation"], "Architecture|Coastal|Roller_Coaster"),
+    "shipping port / cranes": ("Shipping Port / Cranes", ["Port", "Industrial", "Maritime"], ["Structure", "Industrial"], "Architecture|Industrial|Shipping_Port_Cranes"),
+    "oil derrick / pumpjack": ("Oil Derrick / Pumpjack", ["Pumpjack", "Oil Rig", "Oil Field", "Industrial"], ["Structure", "Industrial"], "Architecture|Industrial|Oil_Derrick_Pumpjack"),
+    "refinery": ("Refinery", ["Oil Facility", "Industrial"], ["Structure", "Industrial"], "Architecture|Industrial|Refinery"),
+    "solar farm": ("Solar Farm", ["Energy Infrastructure", "Industrial"], ["Structure", "Industrial"], "Architecture|Industrial|Solar_Farm"),
+    "wind turbine": ("Wind Turbine", ["Energy Infrastructure", "Industrial"], ["Structure", "Industrial"], "Architecture|Industrial|Wind_Turbine"),
+    "ferrofluid": ("Ferrofluid", ["Magnetic Spikes / Magnetism", "Macro Photography", "Science"], ["Science", "Macro"], "Subjects|Science_And_Macro|Ferrofluid"),
+    "magnetic spikes / magnetism": ("Magnetic Spikes / Magnetism", ["Ferrofluid", "Macro Photography", "Science"], ["Science", "Macro"], "Subjects|Science_And_Macro|Magnetic_Spikes"),
+    "macro photography": ("Macro Photography", ["Close-Up", "Studio"], ["Science", "Macro"], "Subjects|Science_And_Macro|Macro_Photography"),
+    "photomicrography / microscopic": ("Photomicrography / Microscopic", ["Macro Photography", "Science"], ["Science", "Macro"], "Subjects|Science_And_Macro|Photomicrography"),
+    "light refraction": ("Light Refraction", ["Optical Prism / Dispersion", "Optics", "Science"], ["Science", "Optics"], "Subjects|Science_And_Macro|Light_Refraction"),
+    "optical prism / dispersion": ("Optical Prism / Dispersion", ["Light Refraction", "Optics", "Science"], ["Science", "Optics"], "Subjects|Science_And_Macro|Optical_Prism"),
+    "caustics": ("Caustics", ["Light Refraction", "Optics"], ["Science", "Optics"], "Subjects|Science_And_Macro|Caustics"),
+    "diffusion filter / halation": ("Diffusion Filter / Halation", ["Optics", "Lighting"], ["Science", "Optics"], "Subjects|Science_And_Macro|Diffusion_Filter"),
+    "water droplet / splash": ("Water Droplet / Splash", ["Macro Photography", "Water"], ["Science", "Macro"], "Subjects|Science_And_Macro|Water_Droplet"),
+    "oil and water abstract": ("Oil and Water Abstract", ["Macro Photography", "Abstract"], ["Science", "Macro"], "Subjects|Science_And_Macro|Oil_And_Water"),
+    "stop motion set": ("Stop Motion Set", ["Studio", "Tabletop"], ["Studio", "Production"], "Subjects|Studio_And_Product|Stop_Motion_Set"),
+    "scanography / scanner art": ("Scanography / Scanner Art", ["Studio", "Abstract"], ["Studio", "Fine_Art"], "Subjects|Studio_And_Product|Scanography"),
+    "whiskey / bourbon bottle": ("Whiskey / Bourbon Bottle", ["Spirits Decanter", "Product Photography", "Bottle"], ["Studio", "Product"], "Subjects|Studio_And_Product|Whiskey_Bourbon_Bottle"),
+    "spirits decanter": ("Spirits Decanter", ["Whiskey / Bourbon Bottle", "Product Photography"], ["Studio", "Product"], "Subjects|Studio_And_Product|Spirits_Decanter"),
+    "rocks glass / tumbler": ("Rocks Glass / Tumbler", ["Glassware", "Product Photography"], ["Studio", "Product"], "Subjects|Studio_And_Product|Rocks_Glass_Tumbler"),
+    "cosmetic lotion bottle": ("Cosmetic Lotion Bottle", ["Product Photography", "Bottle"], ["Studio", "Product"], "Subjects|Studio_And_Product|Cosmetic_Lotion_Bottle"),
+    "dropper / serum bottle": ("Dropper / Serum Bottle", ["Product Photography", "Bottle"], ["Studio", "Product"], "Subjects|Studio_And_Product|Dropper_Serum_Bottle"),
+    "perfume flacon": ("Perfume Flacon", ["Product Photography", "Bottle"], ["Studio", "Product"], "Subjects|Studio_And_Product|Perfume_Flacon"),
+    "luxury watch": ("Luxury Watch", ["Watch", "Product Photography", "Macro Photography"], ["Studio", "Product"], "Subjects|Studio_And_Product|Luxury_Watch"),
+    "sneakers": ("Sneakers", ["Footwear", "Shoes", "Apparel"], ["Personal_Storage", "Apparel"], "Subjects|Personal_And_Apparel|Sneakers"),
+    "boots": ("Boots", ["Footwear", "Shoes", "Apparel"], ["Personal_Storage", "Apparel"], "Subjects|Personal_And_Apparel|Boots"),
+    "dresser drawer": ("Dresser Drawer", ["Personal Storage", "Closet", "Indoor"], ["Interiors", "Personal_Storage"], "Architecture|Interiors|Dresser_Drawer"),
+    "wardrobe": ("Wardrobe", ["Closet", "Personal Storage", "Indoor"], ["Interiors", "Personal_Storage"], "Architecture|Interiors|Wardrobe"),
+    "adult novelty": ("Adult Novelty", ["Personal Wellness", "Intimate Wellness"], ["Personal_Storage", "Intimate_Wellness"], "Subjects|Personal_Wellness|Adult_Novelty"),
+    "vibrator": ("Vibrator", ["Adult Novelty", "Personal Wellness"], ["Personal_Storage", "Intimate_Wellness"], "Subjects|Personal_Wellness|Vibrator"),
+    "silicone toy": ("Silicone Toy", ["Adult Novelty", "Personal Wellness"], ["Personal_Storage", "Intimate_Wellness"], "Subjects|Personal_Wellness|Silicone_Toy"),
 }
 
 CONCEPT_PROBE_PROMPTS: Dict[str, str] = {
@@ -373,7 +508,633 @@ CONCEPT_PROBE_PROMPTS: Dict[str, str] = {
     "light_night_artificial": "nighttime photograph with dark night sky illuminated by bright artificial canopy or street lights",
     "light_daylight_midday": "bright sunny daytime photograph under natural midday blue sky",
     "foil_empty_room_carpet": "an empty carpet, rug, floor, or empty living room furniture with no dog and no cat",
+    # --- v4.0 LOCAL CROP FOILS (Per-Crop Local Foil Tension) ---
+    "foil_blanket_pillow_fabric": "folded throw blanket, woven bohemian tapestry fabric, patterned pillow, bedspread, or upholstery textile with no cat and no dog",
+    "foil_crumpled_clothing": "crumpled clothing, folded shirts, laundry fabric, towels, or cloth material with no animal and no pet",
+    "foil_empty_furniture_wall": "empty sofa, empty couch cushion, empty carpet floor, plain interior wall, baseboard, or empty room corner with no pet and no person",
 }
+
+# --- v4.0 PASS 1: MACRO SCENE BIOME LOCK & STRICT MUTUAL-EXCLUSION GATES ---
+MACRO_BIOME_DEFINITIONS: Dict[str, Dict[str, Any]] = {
+    "Indoor / Residential & Living Space": {
+        "prompts": [
+            "an indoor living room, bedroom, apartment, or house interior with sofa, couch, bed, area rug, carpet, or cat tree",
+            "an indoor domestic home room with furniture, lamps, throw blanket, framed wall art, and houseplants",
+        ],
+        "forbidden_tags_lower": {
+            "alligator", "bison", "buffalo", "american bison", "bear", "grizzly bear", "grizzly / black bear",
+            "whale", "humpback whale", "dolphin", "seal", "sea lion", "seal / sea lion", "sea otter",
+            "pelican", "pelicans", "brown pelican", "great blue heron", "heron", "snowy egret", "egret",
+            "sandhill crane", "crane", "avocet", "cormorant", "seagull", "gull", "bald eagle", "eagle",
+            "red-tailed hawk", "hawk", "osprey", "great horned owl", "owl", "mallard", "canada goose",
+            "goose", "geese", "snow geese", "duck", "ducks", "waterfowl", "frog", "frogs", "toad",
+            "elk", "mule deer", "deer", "moose", "bighorn sheep", "pronghorn", "antelope", "coyote",
+            "wolf", "red fox", "fox", "horse", "horses", "quarter horse", "mustang", "cattle", "cow", "cows",
+            "canyon", "butte", "buttes", "mitten buttes", "highway overpass", "overpass",
+            "cloverleaf interchange", "suspension bridge", "steel truss bridge", "viaduct",
+            "center-pivot irrigation", "circular crop field", "oil derrick / pumpjack", "pumpjack",
+            "oil rig", "refinery", "solar farm", "wind turbine", "grain silo", "silo", "tractor / combine",
+        },
+        "allowed_domains": {
+            "feline", "canine", "people", "indoor_decor_textiles", "indoor_flora", "studio_product",
+        },
+    },
+    "Indoor / Closet, Drawer & Personal Storage": {
+        "prompts": [
+            "inside an indoor closet, wardrobe, dresser drawer, shelf, or personal storage compartment",
+            "a close-up inside a bedroom drawer, closet shelf, shoe rack, or personal storage space",
+        ],
+        "forbidden_tags_lower": {
+            "architecture", "building", "buildings", "industrial storage", "industrial", "industrial facility",
+            "skyscraper", "glass curtain wall", "construction scaffolding", "bridge", "highway overpass",
+            "overpass", "alligator", "bison", "buffalo", "bear", "grizzly / black bear", "whale",
+            "humpback whale", "pelican", "brown pelican", "frog", "frogs", "canyon", "butte", "buttes",
+            "mountain", "mountains", "horse", "horses", "cattle", "cow", "cows",
+        },
+        "allowed_domains": {
+            "closet_storage_wellness", "feline", "canine", "people", "studio_product",
+        },
+    },
+    "Studio / Tabletop, Product & Scientific Macro": {
+        "prompts": [
+            "a studio tabletop product photograph of a bottle, spirits decanter, glass tumbler, cosmetic bottle, or luxury watch",
+            "a scientific macro or optical physics photograph of ferrofluid, magnetic spikes, light refraction prism, caustics, water droplets, or photomicrography",
+        ],
+        "forbidden_tags_lower": {
+            "alligator", "bison", "buffalo", "bear", "whale", "pelican", "frog", "frogs",
+            "canyon", "butte", "buttes", "highway overpass", "center-pivot irrigation",
+        },
+        "allowed_domains": {
+            "science_macro_optical", "studio_product", "closet_storage_wellness", "indoor_flora",
+        },
+    },
+    "Portrait / Mirror & People": {
+        "prompts": [
+            "a portrait of a person, man, woman, group photo, or mirror selfie holding a smartphone in front of a mirror",
+            "a close-up or medium portrait of people, friends, family, or photographer",
+        ],
+        "forbidden_tags_lower": {
+            "alligator", "bison", "buffalo", "whale", "humpback whale", "frog", "frogs",
+            "center-pivot irrigation", "circular crop field", "oil derrick / pumpjack",
+        },
+        "allowed_domains": {
+            "people", "feline", "canine", "indoor_decor_textiles", "closet_storage_wellness",
+        },
+    },
+    "Urban / Automotive, Bridges & Architecture": {
+        "prompts": [
+            "an urban street, car, sports sedan, gas station, city buildings, skyscraper, bridge, or highway overpass",
+            "architecture, historic colonial doors, urban infrastructure, train tracks, or modern buildings",
+        ],
+        "forbidden_tags_lower": {
+            "alligator", "bison", "buffalo", "whale", "humpback whale", "frog", "frogs",
+            "adult novelty", "vibrator", "silicone toy",
+        },
+        "allowed_domains": {
+            "civil_infrastructure", "urban_automotive", "people", "feline", "canine",
+        },
+    },
+    "Aerial / Agriculture, Infrastructure & Topo": {
+        "prompts": [
+            "high altitude aerial photography looking down from an aircraft at farmland, circular crop fields, orchards, rivers, or oil fields",
+            "bird's-eye view aerial landscape of agricultural fields, highway interchanges, coastlines, or topographic terrain",
+        ],
+        "forbidden_tags_lower": {
+            "cat", "cats", "kitten", "scottish fold", "dog", "dogs", "puppy", "chihuahua", "french bulldog",
+            "cat tree", "couch", "bohemian tapestry / woven throw", "framed art", "adult novelty",
+            "vibrator", "silicone toy", "frog", "frogs",
+        },
+        "allowed_domains": {
+            "aerial_agriculture", "civil_infrastructure", "ornithology_wildlife", "flora_trees", "equine",
+        },
+    },
+    "Outdoor / Wilderness, Ranch, Coastal & Flora": {
+        "prompts": [
+            "an outdoor natural landscape of mountains, canyon, desert buttes, forest trees, river, coastline, beach, or rural ranch pasture",
+            "outdoor nature photography of wildlife, birds, horses, cattle, wildflowers, trees, rocks, or ocean surf",
+        ],
+        "forbidden_tags_lower": {
+            "adult novelty", "vibrator", "silicone toy", "dresser drawer", "wardrobe", "cat tree",
+        },
+        "allowed_domains": {
+            "ornithology_wildlife", "flora_trees", "equine", "civil_infrastructure", "feline", "canine", "people",
+        },
+    },
+}
+
+# --- v4.0 PASS 3: MULTI-PROMPT ENSEMBLE ANCHORS (Computed Once at Startup, 0ms Runtime Overhead) ---
+MULTI_PROMPT_PARENT_ENSEMBLES: Dict[str, List[str]] = {
+    "cat": [
+        "a photograph of a live domestic cat, kitten, or housecat",
+        "an indoor sleeping cat curled up on a bed, sofa, couch, pillow, or blanket",
+        "close-up of domestic feline fur, plush grey-brown or tabby cat coat, cat ears, whiskers, nose, or paws",
+        "a domestic cat sitting or lounging on a carpeted cat tree tower or scratching post indoors",
+        "a plush grey-brown Scottish Fold or British Shorthair cat indoors",
+    ],
+    "dog": [
+        "a photograph of a live domestic dog, puppy, or canine companion",
+        "a small tan and white dog, Chihuahua, or Rat Terrier standing or lying on a rug or carpet indoors",
+        "a white French Bulldog or compact muscular dog with bat ears indoors",
+        "a domestic dog looking at the camera inside a living room or outdoors",
+    ],
+    "person": [
+        "a portrait of a person, human, man, woman, or family",
+        "a person taking a mirror selfie holding a smartphone in front of a mirror",
+        "a candid photograph of a man, woman, friend, or photographer",
+    ],
+    "cat_tree": [
+        "a carpeted cat tree tower, multi-level cat condo, or sisal scratching post indoors",
+        "a plush beige or grey pet cat tree platform by a living room couch or window",
+    ],
+    "couch": [
+        "an indoor living room couch, upholstered sofa, or sectional sofa with cushions",
+        "a domestic sofa or couch inside a home living space",
+    ],
+    "bohemian_throw": [
+        "a patterned bohemian tapestry throw blanket or woven decorative throw draped over a couch or bed",
+        "a colorful woven textile blanket or patterned throw fabric on indoor furniture",
+    ],
+    "area_rug": [
+        "an indoor area rug, woven floor rug, or domestic living room carpet",
+        "a patterned rug or carpet on an indoor floor",
+    ],
+    "framed_art": [
+        "framed wall art, picture frames, or gallery prints hanging on an interior living room wall",
+        "modern pop wall art or framed illustration mounted on an indoor wall",
+    ],
+    "decorative_lamp": [
+        "an indoor decorative table lamp, floor lamp, or modern accent lighting fixture in a room",
+    ],
+}
+
+# --- v4.0 PASS 3: SPECIALIST DRILL-DOWN MATRIX ---
+# Maps each specialist tag -> {domain, parent, hierarchy, prompts, min_cos, margin}
+SPECIALIST_DRILLDOWN_TAXONOMY: List[Dict[str, Any]] = [
+    # 1. Feline (Cat / Kitten)
+    {"tag": "Scottish Fold", "domain": "feline", "parent": "Cat", "hierarchy": "Subjects|Animals|Pets|Cat|Scottish_Fold", "min_cos": 0.235, "prompts": [
+        "a plush grey-brown or blue-grey Scottish Fold cat with folded ears and round face",
+        "a dense plush grey-brown shorthair cat with small folded ears lounging on a cat tree or bed",
+        "close-up of plush grey-brown Scottish Fold cat fur, paws, whiskers, or round head",
+    ]},
+    {"tag": "British Shorthair", "domain": "feline", "parent": "Cat", "hierarchy": "Subjects|Animals|Pets|Cat|British_Shorthair", "min_cos": 0.250, "prompts": [
+        "a solid blue-grey British Shorthair cat with upright ears and copper eyes",
+    ]},
+    {"tag": "American Shorthair", "domain": "feline", "parent": "Cat", "hierarchy": "Subjects|Animals|Pets|Cat|American_Shorthair", "min_cos": 0.250, "prompts": [
+        "an American Shorthair domestic cat with classic striped coat",
+    ]},
+    {"tag": "Tabby Cat", "domain": "feline", "parent": "Cat", "hierarchy": "Subjects|Animals|Pets|Cat|Tabby_Cat", "min_cos": 0.245, "prompts": [
+        "a striped brown or grey mackerel tabby cat with M forehead markings",
+    ]},
+    {"tag": "Orange Tabby", "domain": "feline", "parent": "Cat", "hierarchy": "Subjects|Animals|Pets|Cat|Orange_Tabby", "min_cos": 0.250, "prompts": [
+        "a ginger orange tabby cat or marmalade cat with orange striped fur",
+    ]},
+    {"tag": "Black Cat", "domain": "feline", "parent": "Cat", "hierarchy": "Subjects|Animals|Pets|Cat|Black_Cat", "min_cos": 0.250, "prompts": [
+        "a solid black domestic cat with sleek black fur",
+    ]},
+    {"tag": "Tuxedo Cat", "domain": "feline", "parent": "Cat", "hierarchy": "Subjects|Animals|Pets|Cat|Tuxedo_Cat", "min_cos": 0.250, "prompts": [
+        "a black and white bicolor tuxedo cat with white chest and paws",
+    ]},
+    {"tag": "Calico", "domain": "feline", "parent": "Cat", "hierarchy": "Subjects|Animals|Pets|Cat|Calico", "min_cos": 0.250, "prompts": [
+        "a tri-color calico cat with white, orange, and black patches",
+    ]},
+    {"tag": "Tortoiseshell", "domain": "feline", "parent": "Cat", "hierarchy": "Subjects|Animals|Pets|Cat|Tortoiseshell", "min_cos": 0.250, "prompts": [
+        "a mottled tortoiseshell cat with brindled black and orange fur",
+    ]},
+    {"tag": "Siamese", "domain": "feline", "parent": "Cat", "hierarchy": "Subjects|Animals|Pets|Cat|Siamese", "min_cos": 0.255, "prompts": [
+        "a sleek cream Siamese cat with dark seal point face, ears, and blue eyes",
+    ]},
+    {"tag": "Ragdoll", "domain": "feline", "parent": "Cat", "hierarchy": "Subjects|Animals|Pets|Cat|Ragdoll", "min_cos": 0.255, "prompts": [
+        "a fluffy longhaired Ragdoll cat with blue eyes and colorpoint coat",
+    ]},
+    {"tag": "Maine Coon / Longhair", "domain": "feline", "parent": "Cat", "hierarchy": "Subjects|Animals|Pets|Cat|Maine_Coon", "min_cos": 0.255, "prompts": [
+        "a large fluffy Maine Coon or domestic longhair cat with tufted ears and bushy tail",
+    ]},
+    {"tag": "Bengal", "domain": "feline", "parent": "Cat", "hierarchy": "Subjects|Animals|Pets|Cat|Bengal", "min_cos": 0.255, "prompts": [
+        "a spotted rosette Bengal cat with leopard-like markings",
+    ]},
+    {"tag": "Persian", "domain": "feline", "parent": "Cat", "hierarchy": "Subjects|Animals|Pets|Cat|Persian", "min_cos": 0.255, "prompts": [
+        "a flat-faced longhaired Persian cat with luxurious fluffy coat",
+    ]},
+    {"tag": "Cat Tree", "domain": "indoor_decor_textiles", "parent": "Cat Tree", "hierarchy": "Subjects|Animals|Pets|Cat_Tree", "min_cos": 0.235, "prompts": [
+        "a carpeted cat tree tower, multi-level cat condo, or sisal scratching post indoors",
+    ]},
+    {"tag": "Scratching Post", "domain": "indoor_decor_textiles", "parent": "Cat Tree", "hierarchy": "Subjects|Animals|Pets|Scratching_Post", "min_cos": 0.245, "prompts": [
+        "a sisal rope cat scratching post or carpeted scratching pole",
+    ]},
+
+    # 2. Canine (Dog / Puppy)
+    {"tag": "Chihuahua", "domain": "canine", "parent": "Dog", "hierarchy": "Subjects|Animals|Pets|Dog|Chihuahua", "min_cos": 0.240, "prompts": [
+        "a small tan and white Chihuahua or Chihuahua mix dog with large upright ears",
+    ]},
+    {"tag": "Rat Terrier", "domain": "canine", "parent": "Dog", "hierarchy": "Subjects|Animals|Pets|Dog|Rat_Terrier", "min_cos": 0.240, "prompts": [
+        "a small sleek tan and white Rat Terrier or feist dog with upright ears",
+    ]},
+    {"tag": "Jack Russell Terrier", "domain": "canine", "parent": "Dog", "hierarchy": "Subjects|Animals|Pets|Dog|Jack_Russell_Terrier", "min_cos": 0.245, "prompts": [
+        "a small white and tan Jack Russell Terrier dog",
+    ]},
+    {"tag": "French Bulldog", "domain": "canine", "parent": "Dog", "hierarchy": "Subjects|Animals|Pets|Dog|French_Bulldog", "min_cos": 0.240, "prompts": [
+        "a compact muscular French Bulldog with large upright bat ears and flat snout",
+        "a white or cream French Bulldog sitting indoors",
+    ]},
+    {"tag": "English Bulldog", "domain": "canine", "parent": "Dog", "hierarchy": "Subjects|Animals|Pets|Dog|English_Bulldog", "min_cos": 0.250, "prompts": [
+        "a stocky wrinkled English Bulldog with heavy jowls",
+    ]},
+    {"tag": "Corgi", "domain": "canine", "parent": "Dog", "hierarchy": "Subjects|Animals|Pets|Dog|Corgi", "min_cos": 0.250, "prompts": [
+        "a short-legged Pembroke Welsh Corgi dog with fox-like face",
+    ]},
+    {"tag": "Dachshund", "domain": "canine", "parent": "Dog", "hierarchy": "Subjects|Animals|Pets|Dog|Dachshund", "min_cos": 0.250, "prompts": [
+        "a long-bodied short-legged Dachshund wiener dog",
+    ]},
+    {"tag": "Beagle", "domain": "canine", "parent": "Dog", "hierarchy": "Subjects|Animals|Pets|Dog|Beagle", "min_cos": 0.250, "prompts": [
+        "a tricolor hound Beagle dog with floppy ears",
+    ]},
+    {"tag": "Golden Retriever", "domain": "canine", "parent": "Dog", "hierarchy": "Subjects|Animals|Pets|Dog|Golden_Retriever", "min_cos": 0.250, "prompts": [
+        "a long-coated golden yellow Golden Retriever dog",
+    ]},
+    {"tag": "Labrador Retriever", "domain": "canine", "parent": "Dog", "hierarchy": "Subjects|Animals|Pets|Dog|Labrador_Retriever", "min_cos": 0.250, "prompts": [
+        "a short-coated yellow, black, or chocolate Labrador Retriever dog",
+    ]},
+    {"tag": "German Shepherd", "domain": "canine", "parent": "Dog", "hierarchy": "Subjects|Animals|Pets|Dog|German_Shepherd", "min_cos": 0.250, "prompts": [
+        "a tan and black German Shepherd dog with pointed ears",
+    ]},
+    {"tag": "Australian Shepherd", "domain": "canine", "parent": "Dog", "hierarchy": "Subjects|Animals|Pets|Dog|Australian_Shepherd", "min_cos": 0.250, "prompts": [
+        "a fluffy merle Australian Shepherd herding dog",
+    ]},
+    {"tag": "Border Collie", "domain": "canine", "parent": "Dog", "hierarchy": "Subjects|Animals|Pets|Dog|Border_Collie", "min_cos": 0.250, "prompts": [
+        "a black and white Border Collie herding dog",
+    ]},
+    {"tag": "Poodle / Doodle", "domain": "canine", "parent": "Dog", "hierarchy": "Subjects|Animals|Pets|Dog|Poodle_Doodle", "min_cos": 0.250, "prompts": [
+        "a curly-coated Poodle, Goldendoodle, or Labradoodle dog",
+    ]},
+    {"tag": "Siberian Husky", "domain": "canine", "parent": "Dog", "hierarchy": "Subjects|Animals|Pets|Dog|Siberian_Husky", "min_cos": 0.250, "prompts": [
+        "a thick-coated Siberian Husky or Alaskan Malamute dog with wolf-like markings",
+    ]},
+    {"tag": "Boxer", "domain": "canine", "parent": "Dog", "hierarchy": "Subjects|Animals|Pets|Dog|Boxer", "min_cos": 0.250, "prompts": [
+        "a muscular fawn and white Boxer dog with square jaw",
+    ]},
+    {"tag": "Pit Bull Terrier", "domain": "canine", "parent": "Dog", "hierarchy": "Subjects|Animals|Pets|Dog|Pit_Bull_Terrier", "min_cos": 0.250, "prompts": [
+        "a muscular short-haired American Pit Bull Terrier or Staffordshire Terrier dog",
+    ]},
+    {"tag": "Pomeranian", "domain": "canine", "parent": "Dog", "hierarchy": "Subjects|Animals|Pets|Dog|Pomeranian", "min_cos": 0.250, "prompts": [
+        "a tiny fluffy Pomeranian toy dog",
+    ]},
+    {"tag": "Spaniel", "domain": "canine", "parent": "Dog", "hierarchy": "Subjects|Animals|Pets|Dog|Spaniel", "min_cos": 0.250, "prompts": [
+        "a Cocker Spaniel, Cavalier King Charles Spaniel, or Springer Spaniel with long wavy ears",
+    ]},
+
+    # 3. Equine (Horse)
+    {"tag": "Mustang", "domain": "equine", "parent": "Horse", "hierarchy": "Subjects|Animals|Horses|Mustang", "min_cos": 0.245, "prompts": [
+        "wild Mustang horses running across open desert or western range",
+    ]},
+    {"tag": "Quarter Horse", "domain": "equine", "parent": "Horse", "hierarchy": "Subjects|Animals|Horses|Quarter_Horse", "min_cos": 0.245, "prompts": [
+        "American Quarter Horse working ranch horse in pasture or corral",
+    ]},
+    {"tag": "Arabian Horse", "domain": "equine", "parent": "Horse", "hierarchy": "Subjects|Animals|Horses|Arabian_Horse", "min_cos": 0.250, "prompts": [
+        "an Arabian horse with dished face profile and high arched tail",
+    ]},
+    {"tag": "Thoroughbred", "domain": "equine", "parent": "Horse", "hierarchy": "Subjects|Animals|Horses|Thoroughbred", "min_cos": 0.250, "prompts": [
+        "a tall athletic Thoroughbred horse",
+    ]},
+    {"tag": "Clydesdale / Draft Horse", "domain": "equine", "parent": "Horse", "hierarchy": "Subjects|Animals|Horses|Draft_Horse", "min_cos": 0.250, "prompts": [
+        "a heavy Clydesdale, Percheron, or Belgian draft horse with feathered hooves",
+    ]},
+    {"tag": "Appaloosa", "domain": "equine", "parent": "Horse", "hierarchy": "Subjects|Animals|Horses|Appaloosa", "min_cos": 0.250, "prompts": [
+        "a spotted Appaloosa horse with leopard blanket coat pattern",
+    ]},
+    {"tag": "Paint / Pinto Horse", "domain": "equine", "parent": "Horse", "hierarchy": "Subjects|Animals|Horses|Paint_Horse", "min_cos": 0.245, "prompts": [
+        "a two-tone American Paint or Pinto horse with white and brown patches",
+    ]},
+    {"tag": "Palomino", "domain": "equine", "parent": "Horse", "hierarchy": "Subjects|Animals|Horses|Palomino", "min_cos": 0.245, "prompts": [
+        "a golden yellow Palomino horse with white silver mane and tail",
+    ]},
+    {"tag": "Foal", "domain": "equine", "parent": "Horse", "hierarchy": "Subjects|Animals|Horses|Foal", "min_cos": 0.250, "prompts": [
+        "a young foal or colt standing beside a mare horse",
+    ]},
+    {"tag": "Pony", "domain": "equine", "parent": "Horse", "hierarchy": "Subjects|Animals|Horses|Pony", "min_cos": 0.250, "prompts": [
+        "a small stocky pony with thick mane",
+    ]},
+
+    # 4. Ornithology, Wildlife & Flora
+    {"tag": "Great Blue Heron", "domain": "ornithology_wildlife", "parent": "Bird", "hierarchy": "Subjects|Animals|Birds|Great_Blue_Heron", "min_cos": 0.245, "prompts": [
+        "a tall Great Blue Heron wading bird with long legs and dagger bill",
+    ]},
+    {"tag": "Snowy Egret", "domain": "ornithology_wildlife", "parent": "Bird", "hierarchy": "Subjects|Animals|Birds|Snowy_Egret", "min_cos": 0.245, "prompts": [
+        "a white Snowy Egret or Great Egret wading bird in shallow water",
+    ]},
+    {"tag": "Brown Pelican", "domain": "ornithology_wildlife", "parent": "Bird", "hierarchy": "Subjects|Animals|Birds|Brown_Pelican", "min_cos": 0.245, "prompts": [
+        "a Brown Pelican or White Pelican seabird with large throat pouch flying over ocean",
+    ]},
+    {"tag": "Sandhill Crane", "domain": "ornithology_wildlife", "parent": "Bird", "hierarchy": "Subjects|Animals|Birds|Sandhill_Crane", "min_cos": 0.245, "prompts": [
+        "tall grey Sandhill Cranes with red crown in wetland marsh or field",
+    ]},
+    {"tag": "Avocet", "domain": "ornithology_wildlife", "parent": "Bird", "hierarchy": "Subjects|Animals|Birds|Avocet", "min_cos": 0.250, "prompts": [
+        "an American Avocet or shorebird with upturned bill wading in shallow water",
+    ]},
+    {"tag": "Cormorant", "domain": "ornithology_wildlife", "parent": "Bird", "hierarchy": "Subjects|Animals|Birds|Cormorant", "min_cos": 0.250, "prompts": [
+        "a dark Cormorant seabird perched on coastal rocks or pilings drying its wings",
+    ]},
+    {"tag": "Seagull", "domain": "ornithology_wildlife", "parent": "Bird", "hierarchy": "Subjects|Animals|Birds|Gull", "min_cos": 0.245, "prompts": [
+        "a white and grey seagull or coastal gull flying over beach or pier",
+    ]},
+    {"tag": "Bald Eagle", "domain": "ornithology_wildlife", "parent": "Bird", "hierarchy": "Subjects|Animals|Birds|Bald_Eagle", "min_cos": 0.250, "prompts": [
+        "a Bald Eagle raptor with white head and yellow beak",
+    ]},
+    {"tag": "Red-Tailed Hawk", "domain": "ornithology_wildlife", "parent": "Bird", "hierarchy": "Subjects|Animals|Birds|Red_Tailed_Hawk", "min_cos": 0.250, "prompts": [
+        "a Red-Tailed Hawk or Buteo raptor perched or soaring",
+    ]},
+    {"tag": "Osprey", "domain": "ornithology_wildlife", "parent": "Bird", "hierarchy": "Subjects|Animals|Birds|Osprey", "min_cos": 0.250, "prompts": [
+        "an Osprey sea hawk diving or perched near water",
+    ]},
+    {"tag": "Great Horned Owl", "domain": "ornithology_wildlife", "parent": "Bird", "hierarchy": "Subjects|Animals|Birds|Great_Horned_Owl", "min_cos": 0.250, "prompts": [
+        "a Great Horned Owl or nocturnal owl with ear tufts and yellow eyes",
+    ]},
+    {"tag": "Hummingbird", "domain": "ornithology_wildlife", "parent": "Bird", "hierarchy": "Subjects|Animals|Birds|Hummingbird", "min_cos": 0.255, "prompts": [
+        "a tiny iridescent hummingbird hovering near flowers",
+    ]},
+    {"tag": "Mallard", "domain": "ornithology_wildlife", "parent": "Bird", "hierarchy": "Subjects|Animals|Birds|Mallard", "min_cos": 0.250, "prompts": [
+        "a Mallard duck with iridescent green head swimming on water",
+    ]},
+    {"tag": "Canada Goose", "domain": "ornithology_wildlife", "parent": "Bird", "hierarchy": "Subjects|Animals|Birds|Canada_Goose", "min_cos": 0.250, "prompts": [
+        "a Canada Goose with black neck and white chinstrap",
+    ]},
+    {"tag": "Bison", "domain": "ornithology_wildlife", "parent": "Bison", "hierarchy": "Subjects|Animals|Wildlife|Bison", "min_cos": 0.245, "prompts": [
+        "shaggy brown American Bison or buffalo grazing on prairie or snow",
+    ]},
+    {"tag": "Elk", "domain": "ornithology_wildlife", "parent": "Wildlife", "hierarchy": "Subjects|Animals|Wildlife|Elk", "min_cos": 0.250, "prompts": [
+        "a rocky mountain Elk bull or herd with large antlers",
+    ]},
+    {"tag": "Mule Deer", "domain": "ornithology_wildlife", "parent": "Wildlife", "hierarchy": "Subjects|Animals|Wildlife|Deer", "min_cos": 0.250, "prompts": [
+        "a Mule Deer or white-tailed deer with large ears in nature",
+    ]},
+    {"tag": "Moose", "domain": "ornithology_wildlife", "parent": "Wildlife", "hierarchy": "Subjects|Animals|Wildlife|Moose", "min_cos": 0.255, "prompts": [
+        "a large Moose with broad palmate antlers in willow marsh or forest",
+    ]},
+    {"tag": "Bighorn Sheep", "domain": "ornithology_wildlife", "parent": "Wildlife", "hierarchy": "Subjects|Animals|Wildlife|Bighorn_Sheep", "min_cos": 0.255, "prompts": [
+        "a Rocky Mountain or Desert Bighorn Sheep ram with curved horns on cliff",
+    ]},
+    {"tag": "Grizzly / Black Bear", "domain": "ornithology_wildlife", "parent": "Wildlife", "hierarchy": "Subjects|Animals|Wildlife|Bear", "min_cos": 0.255, "prompts": [
+        "a live wild Grizzly Bear or Black Bear in forest or mountain meadow",
+    ]},
+    {"tag": "Coyote", "domain": "ornithology_wildlife", "parent": "Wildlife", "hierarchy": "Subjects|Animals|Wildlife|Coyote", "min_cos": 0.255, "prompts": [
+        "a wild Coyote walking through sagebrush, desert, or snowy field",
+    ]},
+    {"tag": "Red Fox", "domain": "ornithology_wildlife", "parent": "Wildlife", "hierarchy": "Subjects|Animals|Wildlife|Red_Fox", "min_cos": 0.255, "prompts": [
+        "a wild Red Fox with orange fur and bushy white-tipped tail",
+    ]},
+    {"tag": "Sea Otter", "domain": "ornithology_wildlife", "parent": "Wildlife", "hierarchy": "Subjects|Animals|Marine|Sea_Otter", "min_cos": 0.255, "prompts": [
+        "a floating Sea Otter in Pacific kelp forest water",
+    ]},
+    {"tag": "Seal / Sea Lion", "domain": "ornithology_wildlife", "parent": "Wildlife", "hierarchy": "Subjects|Animals|Marine|Seal_Sea_Lion", "min_cos": 0.250, "prompts": [
+        "harbor seals or California sea lions hauled out on coastal rocks or beach",
+    ]},
+    {"tag": "Humpback Whale", "domain": "ornithology_wildlife", "parent": "Wildlife", "hierarchy": "Subjects|Animals|Marine|Humpback_Whale", "min_cos": 0.255, "prompts": [
+        "a Humpback Whale or gray whale tail fluke or breaching in ocean water",
+    ]},
+    {"tag": "Coast Redwood", "domain": "flora_trees", "parent": "Trees", "hierarchy": "Subjects|Flora|Trees|Coast_Redwood", "min_cos": 0.245, "prompts": [
+        "towering Coast Redwood tree trunks in misty Pacific Northwest forest",
+    ]},
+    {"tag": "Giant Sequoia", "domain": "flora_trees", "parent": "Trees", "hierarchy": "Subjects|Flora|Trees|Giant_Sequoia", "min_cos": 0.250, "prompts": [
+        "massive cinnamon-red Giant Sequoia tree trunk in Sierra Nevada grove",
+    ]},
+    {"tag": "Quaking Aspen", "domain": "flora_trees", "parent": "Trees", "hierarchy": "Subjects|Flora|Trees|Quaking_Aspen", "min_cos": 0.245, "prompts": [
+        "white-barked Quaking Aspen trees with golden yellow autumn leaves",
+    ]},
+    {"tag": "Monterey Cypress", "domain": "flora_trees", "parent": "Trees", "hierarchy": "Subjects|Flora|Trees|Monterey_Cypress", "min_cos": 0.245, "prompts": [
+        "windswept gnarled Monterey Cypress tree on rocky California coastline or bayou cypress swamp",
+    ]},
+    {"tag": "Joshua Tree", "domain": "flora_trees", "parent": "Trees", "hierarchy": "Subjects|Flora|Trees|Joshua_Tree", "min_cos": 0.245, "prompts": [
+        "spiky branching Joshua Tree yucca brevifolia in Mojave Desert",
+    ]},
+    {"tag": "Ponderosa Pine", "domain": "flora_trees", "parent": "Trees", "hierarchy": "Subjects|Flora|Trees|Ponderosa_Pine", "min_cos": 0.245, "prompts": [
+        "tall Ponderosa Pine or alpine conifer evergreen forest trees",
+    ]},
+    {"tag": "Oak", "domain": "flora_trees", "parent": "Trees", "hierarchy": "Subjects|Flora|Trees|Oak", "min_cos": 0.245, "prompts": [
+        "spreading California live oak or valley oak tree with gnarly branches",
+    ]},
+    {"tag": "Palm", "domain": "flora_trees", "parent": "Trees", "hierarchy": "Subjects|Flora|Trees|Palm", "min_cos": 0.245, "prompts": [
+        "tall tropical fan palm trees or desert palm oasis",
+    ]},
+    {"tag": "Orchard Blossoms", "domain": "flora_trees", "parent": "Trees", "hierarchy": "Subjects|Flora|Trees|Orchard_Blossoms", "min_cos": 0.245, "prompts": [
+        "blooming white and pink fruit orchard trees in spring blossom rows",
+    ]},
+    {"tag": "Saguaro Cactus", "domain": "flora_trees", "parent": "Cactus", "hierarchy": "Subjects|Flora|Desert_Plants|Saguaro_Cactus", "min_cos": 0.245, "prompts": [
+        "tall columnar Saguaro cactus with arms in Sonoran desert",
+    ]},
+    {"tag": "California Poppies", "domain": "flora_trees", "parent": "Wildflowers", "hierarchy": "Subjects|Flora|Wildflowers|California_Poppies", "min_cos": 0.245, "prompts": [
+        "vibrant orange California poppies blooming on hillside",
+    ]},
+    {"tag": "Lupine", "domain": "flora_trees", "parent": "Wildflowers", "hierarchy": "Subjects|Flora|Wildflowers|Lupine", "min_cos": 0.245, "prompts": [
+        "purple and blue lupine wildflowers blooming in meadow",
+    ]},
+    {"tag": "Wildflowers", "domain": "flora_trees", "parent": "Wildflowers", "hierarchy": "Subjects|Flora|Wildflowers", "min_cos": 0.240, "prompts": [
+        "field of colorful blooming wildflowers in meadow or desert",
+    ]},
+    {"tag": "Monstera", "domain": "indoor_flora", "parent": "Plants", "hierarchy": "Subjects|Flora|Houseplants|Monstera", "min_cos": 0.245, "prompts": [
+        "a tropical Monstera deliciosa houseplant with split fenestrated green leaves",
+    ]},
+    {"tag": "Pothos", "domain": "indoor_flora", "parent": "Plants", "hierarchy": "Subjects|Flora|Houseplants|Pothos", "min_cos": 0.245, "prompts": [
+        "trailing green and variegated Pothos ivy vine houseplant in pot",
+    ]},
+    {"tag": "Fiddle Leaf Fig", "domain": "indoor_flora", "parent": "Plants", "hierarchy": "Subjects|Flora|Houseplants|Fiddle_Leaf_Fig", "min_cos": 0.245, "prompts": [
+        "an indoor Fiddle Leaf Fig tree houseplant with large violin-shaped leaves",
+    ]},
+    {"tag": "Succulent", "domain": "indoor_flora", "parent": "Plants", "hierarchy": "Subjects|Flora|Houseplants|Succulent", "min_cos": 0.245, "prompts": [
+        "fleshy rosette succulent plant, aloe, or echeveria in planter",
+    ]},
+    {"tag": "Morel / Mushroom", "domain": "flora_trees", "parent": "Plants", "hierarchy": "Subjects|Flora|Fungi|Morel_Mushroom", "min_cos": 0.255, "prompts": [
+        "wild morel mushroom or forest fungi fruiting body on woodland floor",
+    ]},
+
+    # 5. Aerial Agriculture & Civil Infrastructure
+    {"tag": "Center-Pivot Irrigation", "domain": "aerial_agriculture", "parent": "Farmland", "hierarchy": "Landscape|Agriculture|Center_Pivot_Irrigation", "min_cos": 0.240, "prompts": [
+        "aerial view of circular center-pivot irrigation crop fields and wheeled sprinkler arm",
+    ]},
+    {"tag": "Circular Crop Field", "domain": "aerial_agriculture", "parent": "Farmland", "hierarchy": "Landscape|Agriculture|Circular_Crop_Field", "min_cos": 0.240, "prompts": [
+        "overhead aerial geometry of green and gold circular agricultural crop circles in desert farmland",
+    ]},
+    {"tag": "Apricot / Stone Fruit Orchard", "domain": "aerial_agriculture", "parent": "Farmland", "hierarchy": "Landscape|Agriculture|Stone_Fruit_Orchard", "min_cos": 0.245, "prompts": [
+        "aerial or eye-level view of apricot, peach, or cherry stone fruit orchard tree rows",
+    ]},
+    {"tag": "Almond Orchard", "domain": "aerial_agriculture", "parent": "Farmland", "hierarchy": "Landscape|Agriculture|Almond_Orchard", "min_cos": 0.245, "prompts": [
+        "geometric grid rows of California almond orchard trees",
+    ]},
+    {"tag": "Vineyard Rows", "domain": "aerial_agriculture", "parent": "Farmland", "hierarchy": "Landscape|Agriculture|Vineyard_Rows", "min_cos": 0.245, "prompts": [
+        "parallel trellised grapevine vineyard rows across rolling hills",
+    ]},
+    {"tag": "Citrus Grove", "domain": "aerial_agriculture", "parent": "Farmland", "hierarchy": "Landscape|Agriculture|Citrus_Grove", "min_cos": 0.245, "prompts": [
+        "dense dark green round citrus orange or lemon grove orchard trees",
+    ]},
+    {"tag": "Wheat / Grain Field", "domain": "aerial_agriculture", "parent": "Farmland", "hierarchy": "Landscape|Agriculture|Wheat_Grain_Field", "min_cos": 0.240, "prompts": [
+        "golden wheat fields, harvested grain stubble, or rippling cereal crops",
+    ]},
+    {"tag": "Green Farmland", "domain": "aerial_agriculture", "parent": "Farmland", "hierarchy": "Landscape|Agriculture|Green_Farmland", "min_cos": 0.240, "prompts": [
+        "lush emerald green cultivated farmland pastures and agricultural fields",
+    ]},
+    {"tag": "Ploughed / Fallow Field", "domain": "aerial_agriculture", "parent": "Farmland", "hierarchy": "Landscape|Agriculture|Ploughed_Fallow_Field", "min_cos": 0.240, "prompts": [
+        "dark ploughed soil furrows and tilled fallow agricultural earth",
+    ]},
+    {"tag": "Contour Farming", "domain": "aerial_agriculture", "parent": "Farmland", "hierarchy": "Landscape|Agriculture|Contour_Farming", "min_cos": 0.240, "prompts": [
+        "sweeping curved contour farming strips and terraced Palouse agricultural hills",
+    ]},
+    {"tag": "Irrigation Canal", "domain": "aerial_agriculture", "parent": "Farmland", "hierarchy": "Landscape|Agriculture|Irrigation_Canal", "min_cos": 0.245, "prompts": [
+        "concrete-lined agricultural aqueduct or irrigation canal channel cutting through farmland",
+    ]},
+    {"tag": "Grain Silo", "domain": "aerial_agriculture", "parent": "Barn", "hierarchy": "Architecture|Ranch|Grain_Silo", "min_cos": 0.245, "prompts": [
+        "cylindrical metal or concrete grain silos and tall rural grain elevator towers",
+    ]},
+    {"tag": "Tractor / Combine", "domain": "aerial_agriculture", "parent": "Farmland", "hierarchy": "Subjects|Agriculture|Tractor_Combine", "min_cos": 0.250, "prompts": [
+        "agricultural farm tractor or combine harvester working in a field",
+    ]},
+    {"tag": "Highway Overpass", "domain": "civil_infrastructure", "parent": "Bridge", "hierarchy": "Architecture|Infrastructure|Highway_Overpass", "min_cos": 0.240, "prompts": [
+        "elevated concrete highway overpass, freeway ramp, or road bridge span",
+    ]},
+    {"tag": "Cloverleaf Interchange", "domain": "civil_infrastructure", "parent": "Bridge", "hierarchy": "Architecture|Infrastructure|Cloverleaf_Interchange", "min_cos": 0.245, "prompts": [
+        "aerial view of curving multi-level freeway cloverleaf interchange ramps",
+    ]},
+    {"tag": "Suspension Bridge", "domain": "civil_infrastructure", "parent": "Bridge", "hierarchy": "Architecture|Infrastructure|Suspension_Bridge", "min_cos": 0.245, "prompts": [
+        "a tall suspension bridge or cable-stayed bridge with towers and steel cables over water",
+    ]},
+    {"tag": "Steel Truss Bridge", "domain": "civil_infrastructure", "parent": "Bridge", "hierarchy": "Architecture|Infrastructure|Steel_Truss_Bridge", "min_cos": 0.245, "prompts": [
+        "an industrial steel truss bridge or arch bridge with riveted metal girders",
+    ]},
+    {"tag": "Viaduct", "domain": "civil_infrastructure", "parent": "Bridge", "hierarchy": "Architecture|Infrastructure|Viaduct", "min_cos": 0.245, "prompts": [
+        "a long multi-arch concrete or stone viaduct bridge spanning a valley or urban rail corridor",
+    ]},
+    {"tag": "Skyscraper", "domain": "civil_infrastructure", "parent": "Building", "hierarchy": "Architecture|Urban|Skyscraper", "min_cos": 0.240, "prompts": [
+        "tall modern downtown skyscrapers and high-rise commercial office towers",
+    ]},
+    {"tag": "Glass Curtain Wall", "domain": "civil_infrastructure", "parent": "Building", "hierarchy": "Architecture|Urban|Glass_Curtain_Wall", "min_cos": 0.245, "prompts": [
+        "geometric reflective glass curtain wall facade of a modern skyscraper",
+    ]},
+    {"tag": "Construction Scaffolding", "domain": "civil_infrastructure", "parent": "Building", "hierarchy": "Architecture|Urban|Construction_Scaffolding", "min_cos": 0.250, "prompts": [
+        "metal construction scaffolding, tower crane, or building structural framework",
+    ]},
+    {"tag": "Amusement Pier", "domain": "civil_infrastructure", "parent": "Pier", "hierarchy": "Architecture|Coastal|Amusement_Pier", "min_cos": 0.245, "prompts": [
+        "coastal ocean amusement pier boardwalk with carnival rides over the surf",
+    ]},
+    {"tag": "Ferris Wheel", "domain": "civil_infrastructure", "parent": "Pier", "hierarchy": "Architecture|Coastal|Ferris_Wheel", "min_cos": 0.250, "prompts": [
+        "an illuminated Ferris wheel on a pier or carnival midway",
+    ]},
+    {"tag": "Roller Coaster", "domain": "civil_infrastructure", "parent": "Pier", "hierarchy": "Architecture|Coastal|Roller_Coaster", "min_cos": 0.250, "prompts": [
+        "looping steel or wooden roller coaster tracks at an amusement park or pier",
+    ]},
+    {"tag": "Shipping Port / Cranes", "domain": "civil_infrastructure", "parent": "Industrial", "hierarchy": "Architecture|Industrial|Shipping_Port_Cranes", "min_cos": 0.250, "prompts": [
+        "industrial seaport container terminal with gantry cranes and cargo ships",
+    ]},
+    {"tag": "Oil Derrick / Pumpjack", "domain": "civil_infrastructure", "parent": "Oil Fields", "hierarchy": "Architecture|Industrial|Oil_Derrick_Pumpjack", "min_cos": 0.245, "prompts": [
+        "nodding donkey oil field pumpjacks, oil derricks, and steam pipelines",
+    ]},
+    {"tag": "Refinery", "domain": "civil_infrastructure", "parent": "Oil Facility", "hierarchy": "Architecture|Industrial|Refinery", "min_cos": 0.245, "prompts": [
+        "industrial petrochemical oil refinery distillation towers, pipes, and storage tanks",
+    ]},
+    {"tag": "Solar Farm", "domain": "civil_infrastructure", "parent": "Industrial", "hierarchy": "Architecture|Industrial|Solar_Farm", "min_cos": 0.250, "prompts": [
+        "arrays of photovoltaic solar panels in a desert solar energy farm",
+    ]},
+    {"tag": "Wind Turbine", "domain": "civil_infrastructure", "parent": "Industrial", "hierarchy": "Architecture|Industrial|Wind_Turbine", "min_cos": 0.250, "prompts": [
+        "tall white wind turbines with three blades on ridge or wind farm",
+    ]},
+
+    # 6. Science, Macro, Optical, Product & Interior Decor
+    {"tag": "Ferrofluid", "domain": "science_macro_optical", "parent": "Macro Photography", "hierarchy": "Subjects|Science_And_Macro|Ferrofluid", "min_cos": 0.250, "prompts": [
+        "glossy black magnetic ferrofluid liquid forming sharp conical spikes in a magnetic field",
+    ]},
+    {"tag": "Magnetic Spikes / Magnetism", "domain": "science_macro_optical", "parent": "Macro Photography", "hierarchy": "Subjects|Science_And_Macro|Magnetic_Spikes", "min_cos": 0.250, "prompts": [
+        "macro close-up of magnetic field spikes, iron filings, or ferrofluid rosettes under colored studio lighting",
+    ]},
+    {"tag": "Macro Photography", "domain": "science_macro_optical", "parent": "Macro Photography", "hierarchy": "Subjects|Science_And_Macro|Macro_Photography", "min_cos": 0.245, "prompts": [
+        "extreme close-up macro photography showing fine microscopic surface texture and shallow depth of field",
+    ]},
+    {"tag": "Photomicrography / Microscopic", "domain": "science_macro_optical", "parent": "Macro Photography", "hierarchy": "Subjects|Science_And_Macro|Photomicrography", "min_cos": 0.255, "prompts": [
+        "scientific photomicrography through a microscope showing crystals, cells, or polarized light structures",
+    ]},
+    {"tag": "Light Refraction", "domain": "science_macro_optical", "parent": "Macro Photography", "hierarchy": "Subjects|Science_And_Macro|Light_Refraction", "min_cos": 0.245, "prompts": [
+        "optical light refraction bending beams through glass, lens, water, or crystal",
+    ]},
+    {"tag": "Optical Prism / Dispersion", "domain": "science_macro_optical", "parent": "Macro Photography", "hierarchy": "Subjects|Science_And_Macro|Optical_Prism", "min_cos": 0.250, "prompts": [
+        "glass optical prism splitting light into rainbow spectral dispersion",
+    ]},
+    {"tag": "Caustics", "domain": "science_macro_optical", "parent": "Macro Photography", "hierarchy": "Subjects|Science_And_Macro|Caustics", "min_cos": 0.250, "prompts": [
+        "shimmering optical caustics light patterns refracted through glass or rippling water",
+    ]},
+    {"tag": "Diffusion Filter / Halation", "domain": "science_macro_optical", "parent": "Macro Photography", "hierarchy": "Subjects|Science_And_Macro|Diffusion_Filter", "min_cos": 0.250, "prompts": [
+        "glowing halation bloom and soft optical mist diffusion around bright light sources",
+    ]},
+    {"tag": "Water Droplet / Splash", "domain": "science_macro_optical", "parent": "Macro Photography", "hierarchy": "Subjects|Science_And_Macro|Water_Droplet", "min_cos": 0.250, "prompts": [
+        "high-speed macro photograph of liquid water droplets, crown splash, or dew drops",
+    ]},
+    {"tag": "Oil and Water Abstract", "domain": "science_macro_optical", "parent": "Macro Photography", "hierarchy": "Subjects|Science_And_Macro|Oil_And_Water", "min_cos": 0.250, "prompts": [
+        "colorful macro abstract of floating oil bubbles on water surface",
+    ]},
+    {"tag": "Stop Motion Set", "domain": "studio_product", "parent": "Still Life", "hierarchy": "Subjects|Studio_And_Product|Stop_Motion_Set", "min_cos": 0.255, "prompts": [
+        "a miniature tabletop stop motion animation set with armatures, props, and studio rigs",
+    ]},
+    {"tag": "Scanography / Scanner Art", "domain": "studio_product", "parent": "Still Life", "hierarchy": "Subjects|Studio_And_Product|Scanography", "min_cos": 0.255, "prompts": [
+        "flatbed scanner scanography art of botanical objects or glass against pitch black background",
+    ]},
+    {"tag": "Whiskey / Bourbon Bottle", "domain": "studio_product", "parent": "Still Life", "hierarchy": "Subjects|Studio_And_Product|Whiskey_Bourbon_Bottle", "min_cos": 0.250, "prompts": [
+        "studio product photograph of an amber whiskey, bourbon, or scotch glass bottle with label",
+    ]},
+    {"tag": "Spirits Decanter", "domain": "studio_product", "parent": "Still Life", "hierarchy": "Subjects|Studio_And_Product|Spirits_Decanter", "min_cos": 0.250, "prompts": [
+        "a cut crystal or glass spirits liquor decanter with stopper",
+    ]},
+    {"tag": "Rocks Glass / Tumbler", "domain": "studio_product", "parent": "Still Life", "hierarchy": "Subjects|Studio_And_Product|Rocks_Glass_Tumbler", "min_cos": 0.250, "prompts": [
+        "a crystal rocks glass or whiskey tumbler with ice cube and amber cocktail",
+    ]},
+    {"tag": "Cosmetic Lotion Bottle", "domain": "studio_product", "parent": "Still Life", "hierarchy": "Subjects|Studio_And_Product|Cosmetic_Lotion_Bottle", "min_cos": 0.250, "prompts": [
+        "commercial skincare cosmetic lotion pump bottle or cream jar",
+    ]},
+    {"tag": "Dropper / Serum Bottle", "domain": "studio_product", "parent": "Still Life", "hierarchy": "Subjects|Studio_And_Product|Dropper_Serum_Bottle", "min_cos": 0.250, "prompts": [
+        "a small glass cosmetic serum bottle with pipette dropper",
+    ]},
+    {"tag": "Perfume Flacon", "domain": "studio_product", "parent": "Still Life", "hierarchy": "Subjects|Studio_And_Product|Perfume_Flacon", "min_cos": 0.250, "prompts": [
+        "an elegant glass perfume bottle flacon with atomizer spray",
+    ]},
+    {"tag": "Luxury Watch", "domain": "studio_product", "parent": "Still Life", "hierarchy": "Subjects|Studio_And_Product|Luxury_Watch", "min_cos": 0.255, "prompts": [
+        "macro studio shot of a mechanical luxury wristwatch dial, bezel, and chronograph hands",
+    ]},
+    {"tag": "Bohemian Tapestry / Woven Throw", "domain": "indoor_decor_textiles", "parent": "Living Room", "hierarchy": "Architecture|Interiors|Bohemian_Tapestry_Throw", "min_cos": 0.232, "prompts": [
+        "a patterned bohemian tapestry throw blanket or woven fringed textile draped over a living room couch or bed",
+        "a decorative woven geometric throw blanket on an indoor sofa",
+    ]},
+    {"tag": "Modern / Pop Wall Art", "domain": "indoor_decor_textiles", "parent": "Framed Art", "hierarchy": "Architecture|Interiors|Modern_Pop_Wall_Art", "min_cos": 0.235, "prompts": [
+        "modern graphic pop art print, colorful contemporary illustration, or poster hanging on an interior wall",
+    ]},
+    {"tag": "Framed Art", "domain": "indoor_decor_textiles", "parent": "Framed Art", "hierarchy": "Architecture|Interiors|Framed_Art", "min_cos": 0.230, "prompts": [
+        "framed artwork, picture frames, or matted photographs hanging on an indoor room wall",
+    ]},
+    {"tag": "Decorative Lamp", "domain": "indoor_decor_textiles", "parent": "Living Room", "hierarchy": "Architecture|Interiors|Decorative_Lamp", "min_cos": 0.238, "prompts": [
+        "an indoor table lamp, floor lamp, or decorative lampshade in a living room or bedroom",
+    ]},
+    {"tag": "Couch", "domain": "indoor_decor_textiles", "parent": "Living Room", "hierarchy": "Architecture|Interiors|Couch", "min_cos": 0.230, "prompts": [
+        "an upholstered living room couch, sofa, or sectional with throw pillows",
+    ]},
+    {"tag": "Area Rug / Carpet", "domain": "indoor_decor_textiles", "parent": "Living Room", "hierarchy": "Architecture|Interiors|Area_Rug_Carpet", "min_cos": 0.230, "prompts": [
+        "an indoor area rug, plush carpet floor, or woven floor covering in a home",
+    ]},
+
+    # 7. Closet, Drawer & Personal / Intimate Wellness
+    {"tag": "Sneakers", "domain": "closet_storage_wellness", "parent": "Indoor", "hierarchy": "Subjects|Personal_And_Apparel|Sneakers", "min_cos": 0.245, "prompts": [
+        "athletic sneakers, running shoes, or trainers on a floor or closet rack",
+    ]},
+    {"tag": "Boots", "domain": "closet_storage_wellness", "parent": "Indoor", "hierarchy": "Subjects|Personal_And_Apparel|Boots", "min_cos": 0.245, "prompts": [
+        "leather boots, cowboy boots, or ankle boots in a closet or room",
+    ]},
+    {"tag": "Dresser Drawer", "domain": "closet_storage_wellness", "parent": "Indoor", "hierarchy": "Architecture|Interiors|Dresser_Drawer", "min_cos": 0.245, "prompts": [
+        "an open wooden or bedroom dresser drawer storing personal items or clothing",
+    ]},
+    {"tag": "Wardrobe", "domain": "closet_storage_wellness", "parent": "Indoor", "hierarchy": "Architecture|Interiors|Wardrobe", "min_cos": 0.245, "prompts": [
+        "an indoor clothes closet, wardrobe rack, or closet shelves with hangers",
+    ]},
+    {"tag": "Adult Novelty", "domain": "closet_storage_wellness", "parent": "Indoor", "hierarchy": "Subjects|Personal_Wellness|Adult_Novelty", "min_cos": 0.255, "prompts": [
+        "personal intimate wellness adult novelty items stored in a closet or drawer",
+    ]},
+    {"tag": "Vibrator", "domain": "closet_storage_wellness", "parent": "Indoor", "hierarchy": "Subjects|Personal_Wellness|Vibrator", "min_cos": 0.255, "prompts": [
+        "a handheld personal massager vibrator device",
+    ]},
+    {"tag": "Silicone Toy", "domain": "closet_storage_wellness", "parent": "Indoor", "hierarchy": "Subjects|Personal_Wellness|Silicone_Toy", "min_cos": 0.255, "prompts": [
+        "molded silicone intimate wellness adult toy",
+    ]},
+]
 
 GLOBAL_LANDMARK_GAZETTEER: Dict[str, Dict[str, Any]] = {
     "iceland_hallgrimskirkja": {
@@ -974,15 +1735,23 @@ _GENERIC_VISUAL_NOUNS_KEEP: Set[str] = {
     "barn", "barns & ranch", "homestead", "farmhouse", "fence", "corral", "farmland",
     "grain elevator", "grain silo", "windmill",
     "horse", "horses", "horses & cattle", "cattle", "cow", "cows", "bison", "buffalo",
-    "bird", "birds", "dog", "dogs", "cat", "cats", "pet", "pets", "cat tree",
+    "bird", "birds", "dog", "dogs", "cat", "cats", "pet", "pets", "cat tree", "scratching post",
+    "scottish fold", "british shorthair", "american shorthair", "tabby cat", "orange tabby",
+    "black cat", "tuxedo cat", "calico", "tortoiseshell", "siamese", "ragdoll",
+    "maine coon / longhair", "bengal", "persian",
+    "chihuahua", "rat terrier", "jack russell terrier", "french bulldog", "english bulldog",
+    "corgi", "dachshund", "beagle", "golden retriever", "labrador retriever", "german shepherd",
+    "australian shepherd", "border collie", "poodle / doodle", "siberian husky", "boxer",
+    "pit bull terrier", "pomeranian", "spaniel",
     "wildlife", "wildlife & animals", "animal", "animals",
     "person", "people", "man", "woman", "portrait", "mirror selfie", "selfie", "fitting room",
-    "living room", "carpet", "framed art", "indoor",
+    "living room", "carpet", "area rug / carpet", "couch", "bohemian tapestry / woven throw",
+    "framed art", "modern / pop wall art", "decorative lamp", "indoor",
     "photographer", "mitch rouse (subject)",
     "classic car", "car", "cars", "sports car", "sedan", "lexus", "automobile",
     "gas station", "gas pump", "night", "artificial lighting", "train", "railroad",
     "aerial", "terrestrial", "still life", "still life & cultural details", "urban", "urban & architecture",
-}
+} | {str(item["tag"]).strip().lower() for item in SPECIALIST_DRILLDOWN_TAXONOMY}
 
 # Canonical Singular / Plural Tag Pairs — Never emit both on the same image.
 US_STATE_NAMES: Set[str] = {
@@ -1073,12 +1842,41 @@ COUNTABLE_SEARCH_CONCEPTS: Dict[str, Set[str]] = {
     "frog": {"frog", "frogs", "toad", "amphibian"},
     "frogs": {"frog", "frogs", "toad", "amphibian"},
     "toad": {"frog", "frogs", "toad", "amphibian"},
-    "dog": {"dog", "dogs", "canine", "puppy", "chihuahua"},
-    "dogs": {"dog", "dogs", "canine", "puppy", "chihuahua"},
-    "cat": {"cat", "cats", "feline", "kitten"},
-    "cats": {"cat", "cats", "feline", "kitten"},
-    "pet": {"pet", "pets", "dog", "dogs", "cat", "cats", "puppy", "kitten"},
-    "pets": {"pet", "pets", "dog", "dogs", "cat", "cats", "puppy", "kitten"},
+    "alligator": {"alligator"},
+    "alligators": {"alligator"},
+    "dog": {
+        "dog", "dogs", "canine", "puppy", "chihuahua", "rat terrier", "jack russell terrier",
+        "french bulldog", "english bulldog", "corgi", "dachshund", "beagle", "golden retriever",
+        "labrador retriever", "german shepherd", "australian shepherd", "border collie",
+        "poodle / doodle", "siberian husky", "boxer", "pit bull terrier", "pomeranian", "spaniel",
+    },
+    "dogs": {
+        "dog", "dogs", "canine", "puppy", "chihuahua", "rat terrier", "jack russell terrier",
+        "french bulldog", "english bulldog", "corgi", "dachshund", "beagle", "golden retriever",
+        "labrador retriever", "german shepherd", "australian shepherd", "border collie",
+        "poodle / doodle", "siberian husky", "boxer", "pit bull terrier", "pomeranian", "spaniel",
+    },
+    "cat": {
+        "cat", "cats", "feline", "kitten", "scottish fold", "british shorthair", "american shorthair",
+        "tabby cat", "orange tabby", "black cat", "tuxedo cat", "calico", "tortoiseshell",
+        "siamese", "ragdoll", "maine coon / longhair", "bengal", "persian",
+    },
+    "cats": {
+        "cat", "cats", "feline", "kitten", "scottish fold", "british shorthair", "american shorthair",
+        "tabby cat", "orange tabby", "black cat", "tuxedo cat", "calico", "tortoiseshell",
+        "siamese", "ragdoll", "maine coon / longhair", "bengal", "persian",
+    },
+    "scottish fold": {"scottish fold"},
+    "french bulldog": {"french bulldog"},
+    "chihuahua": {"chihuahua", "rat terrier"},
+    "pet": {
+        "pet", "pets", "dog", "dogs", "cat", "cats", "puppy", "kitten", "scottish fold",
+        "french bulldog", "chihuahua", "rat terrier",
+    },
+    "pets": {
+        "pet", "pets", "dog", "dogs", "cat", "cats", "puppy", "kitten", "scottish fold",
+        "french bulldog", "chihuahua", "rat terrier",
+    },
     "selfie": {"selfie", "mirror selfie"},
     "mirror selfie": {"mirror selfie", "selfie"},
     "horse": {"horse", "horses", "quarter horse", "quarter horses", "stallion", "mare", "foal", "mustang", "equine"},

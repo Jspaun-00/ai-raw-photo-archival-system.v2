@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any, Dict
 
 APP_NAME = "MR Darkroom"
-APP_VERSION = "3.2.0"
+APP_VERSION = "4.0.0"
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 DATA_VAULT_DIR = Path.home() / "Library" / "Application Support" / "MRDarkroom"
@@ -29,6 +29,8 @@ LEGACY_DATA_DIR = PROJECT_ROOT / "data"
 
 DEFAULT_DB_PATH = DATA_VAULT_DIR / "photo_archive.db"
 DEFAULT_VECTORS_PATH = DATA_VAULT_DIR / "vectors.npy"
+DEFAULT_CROP_VECTORS_PATH = DATA_VAULT_DIR / "crop_vectors.npy"
+DEFAULT_CROP_BOXES_PATH = DATA_VAULT_DIR / "crop_boxes.npy"
 DEFAULT_COLOR_SIGS_PATH = DATA_VAULT_DIR / "color_signatures.npy"
 DEFAULT_THUMBS_360_DIR = DATA_VAULT_DIR / "previews" / "thumbs_360"
 DEFAULT_PREVIEWS_1600_DIR = DATA_VAULT_DIR / "previews" / "previews_1600"
