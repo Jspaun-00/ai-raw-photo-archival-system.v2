@@ -141,7 +141,14 @@ Eliminates tagging flickering and inconsistent specialist recognition across ide
 ---
 
 ### 5. Speech-to-Text & Prompt-Driven Curation ("Teach AI" & "Scout AI")
-- **Teach AI Mode:** Use natural speech or text prompts to re-anchor or correct image tags (e.g. *"These are from our 2018 Iceland trip around Kirkjufell at dusk; remove any Cuba tags"*). Automatically purges contradictory tags and marks changes with human provenance (`user_taught`).
+- **Teach AI Mode:** Use natural conversational speech or text prompts to re-anchor or correct image tags (e.g. *"hey so this is a macro image of a bee up close it's not a cat it's not like a feline this is a macro stacked image of a bee and I want all the images around it to be associated with these correct tags"*).
+  - **Conversational Speech Segmentation:** Zero-width lookahead splitting extracts positive subjects (`Bee`, `Insect`, `Focus Stacked Macro`, `Macro Photography`) without swallowing trailing clauses into negative sets.
+  - **Bounded Negation Engine:** Explicit negative anchors (`"it's not a cat"`, `"not feline"`) cleanly purge contradictory tags (`Cat`, `Feline`, `Scottish Fold`) and record persistent negation filters.
+  - **Fast Scan Level 1 Sync:** Saved photographer context notes dynamically guide the local CLIP / vector scanner to inject taught concepts and strip negated noise.
+- **Shoot Session & Visual Orbit Propagation:**
+  - Automatically identifies visually similar sibling photos within the same shooting session ($\Delta t \le 45\text{ min}$, visual cosine similarity $\ge 0.60$, or burst sequences within 5 minutes).
+  - Provides an interactive candidate confirmation drawer with thumbnail previews, similarity percentages, and timestamp offsets.
+  - Allows 1-click batch application (`✓ Commit to N Photos`) across entire bursts (e.g., all 178 focus-stacked macro bee frames) with zero manual repetitive tagging.
 - **Scout AI Mode:** Zero-shot visual semantic search across the entire archive. Search natural concepts like *"solitary tree in golden morning mist"* or *"black cat sleeping on bohemian throw blanket"*.
 
 ---

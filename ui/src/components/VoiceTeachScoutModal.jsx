@@ -32,6 +32,11 @@ export default function VoiceTeachScoutModal({
   const [dismissedTags, setDismissedTags] = useState([])
   const [manualTagInput, setManualTagInput] = useState('')
 
+  // Shoot Session & Visual Orbit Propagation state
+  const [orbitCandidates, setOrbitCandidates] = useState([])
+  const [selectedOrbitIds, setSelectedOrbitIds] = useState(new Set())
+  const [isOrbitExpanded, setIsOrbitExpanded] = useState(true)
+
   // Scout state & Pre-Commit Review (Scout Mode)
   const [autoCreateCollection, setAutoCreateCollection] = useState(true)
   const [customCollectionName, setCustomCollectionName] = useState('')
@@ -108,6 +113,9 @@ export default function VoiceTeachScoutModal({
       setDismissedTags([])
       dismissedTagsRef.current = []
       setManualTagInput('')
+      setOrbitCandidates([])
+      setSelectedOrbitIds(new Set())
+      setIsOrbitExpanded(true)
       setScoutResult(null)
       setApprovedScoutTags([])
       setApprovedScoutPhotos([])
@@ -155,6 +163,8 @@ export default function VoiceTeachScoutModal({
       setApprovedSpokenTags([])
       setApprovedVisualTags([])
       setApprovedRemoveTags([])
+      setOrbitCandidates([])
+      setSelectedOrbitIds(new Set())
       return null
     }
     setIsAssessing(true)
@@ -191,6 +201,17 @@ export default function VoiceTeachScoutModal({
       setApprovedSpokenTags(spoken)
       setApprovedVisualTags(visual)
       setApprovedRemoveTags(rem)
+
+      if (Array.isArray(data.orbit_candidates)) {
+        setOrbitCandidates(data.orbit_candidates)
+        if (data.propagate_to_orbit) {
+          const allCandIds = new Set(data.orbit_candidates.map((c) => c.file_hash || c.file_path))
+          setSelectedOrbitIds(allCandIds)
+        }
+      } else {
+        setOrbitCandidates([])
+        setSelectedOrbitIds(new Set())
+      }
       return data
     } catch {
       return null
@@ -208,6 +229,8 @@ export default function VoiceTeachScoutModal({
       setApprovedSpokenTags([])
       setApprovedVisualTags([])
       setApprovedRemoveTags([])
+      setOrbitCandidates([])
+      setSelectedOrbitIds(new Set())
       return
     }
     const timer = setTimeout(() => {
@@ -333,6 +356,37 @@ export default function VoiceTeachScoutModal({
     setManualTagInput('')
   }
 
+  // Session & Visual Orbit Propagation toggles
+  const handleSelectAllOrbit = () => {
+    setSelectedOrbitIds(new Set(orbitCandidates.map((c) => c.file_hash || c.file_path)))
+  }
+
+  const handleDeselectAllOrbit = () => {
+    setSelectedOrbitIds(new Set())
+  }
+
+  const handleToggleOrbitCandidate = (candId) => {
+    setSelectedOrbitIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(candId)) {
+        next.delete(candId)
+      } else {
+        next.add(candId)
+      }
+      return next
+    })
+  }
+
+  const totalTargetCount = useMemo(() => {
+    const basePhotoIds = selectedPhotos.map((p) => p.file_hash || p.file_path).filter(Boolean)
+    return new Set([...basePhotoIds, ...Array.from(selectedOrbitIds)]).size
+  }, [selectedPhotos, selectedOrbitIds])
+
+  const siblingOrbitCount = useMemo(() => {
+    const basePhotoIds = new Set(selectedPhotos.map((p) => p.file_hash || p.file_path).filter(Boolean))
+    return Array.from(selectedOrbitIds).filter((id) => !basePhotoIds.has(id)).length
+  }, [selectedPhotos, selectedOrbitIds])
+
   // Clear existing prior notes on selected photos (from the read-only reference badge)
   const handleClearPriorNotes = async () => {
     if (selectedPhotos.length === 0 || isSubmitting) return
@@ -387,12 +441,13 @@ export default function VoiceTeachScoutModal({
     setTeachResult(null)
 
     try {
-      const photoIds = selectedPhotos.map((p) => p.file_hash || p.file_path).filter(Boolean)
+      const basePhotoIds = selectedPhotos.map((p) => p.file_hash || p.file_path).filter(Boolean)
+      const combinedPhotoIds = Array.from(new Set([...basePhotoIds, ...Array.from(selectedOrbitIds)]))
       const res = await fetch(`${API_BASE}/api/ai/teach`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          photo_ids: photoIds,
+          photo_ids: combinedPhotoIds,
           instruction: instruction.trim(),
           mode,
           wipe_existing: Boolean(wipeExisting || previewData?.wipe_mode),
@@ -1231,6 +1286,219 @@ export default function VoiceTeachScoutModal({
                 )}
               </div>
             </div>
+
+            {/* =====================================================================
+                SHOOT SESSION & VISUAL ORBIT PROPAGATION CONFIRMATION PANEL
+               ===================================================================== */}
+            {orbitCandidates.length > 0 && (
+              <div
+                style={{
+                  marginTop: '14px',
+                  background: 'rgba(15, 23, 42, 0.75)',
+                  border: selectedOrbitIds.size > 0 ? '1.5px solid rgba(16, 185, 129, 0.45)' : '1px solid rgba(255, 255, 255, 0.12)',
+                  borderRadius: '14px',
+                  padding: '12px 14px',
+                  boxShadow: '0 4px 20px rgba(0, 0, 0, 0.35)',
+                }}
+              >
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    gap: '10px',
+                    flexWrap: 'wrap',
+                    marginBottom: isOrbitExpanded ? '10px' : '0',
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                    <span style={{ fontSize: '14px', fontWeight: 800, color: '#f1f5f9', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      🔭 Shoot Session &amp; Visual Orbit Propagation
+                    </span>
+                    <span
+                      style={{
+                        background: selectedOrbitIds.size > 0 ? 'rgba(16, 185, 129, 0.25)' : 'rgba(148, 163, 184, 0.2)',
+                        border: selectedOrbitIds.size > 0 ? '1px solid rgba(52, 211, 153, 0.6)' : '1px solid rgba(148, 163, 184, 0.4)',
+                        color: selectedOrbitIds.size > 0 ? '#a7f3d0' : '#94a3b8',
+                        fontSize: '11.5px',
+                        fontWeight: 800,
+                        padding: '2px 8px',
+                        borderRadius: '999px',
+                      }}
+                    >
+                      {selectedOrbitIds.size} of {orbitCandidates.length} sibling photos selected
+                    </span>
+                    {previewData?.propagate_to_orbit && (
+                      <span
+                        style={{
+                          background: 'rgba(139, 92, 246, 0.22)',
+                          border: '1px solid rgba(167, 139, 250, 0.55)',
+                          color: '#ddd6fe',
+                          fontSize: '11px',
+                          fontWeight: 700,
+                          padding: '2px 8px',
+                          borderRadius: '999px',
+                        }}
+                        title="Your spoken instruction asked to associate tags with sibling frames"
+                      >
+                        ✨ Voice Directive: Associated Across Sibling Frames
+                      </span>
+                    )}
+                  </div>
+
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <button
+                      type="button"
+                      onClick={handleSelectAllOrbit}
+                      style={{
+                        background: 'rgba(16, 185, 129, 0.15)',
+                        border: '1px solid rgba(52, 211, 153, 0.4)',
+                        color: '#6ee7b7',
+                        fontSize: '11.5px',
+                        fontWeight: 700,
+                        padding: '4px 10px',
+                        borderRadius: '8px',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      ✓ Select All ({orbitCandidates.length})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleDeselectAllOrbit}
+                      style={{
+                        background: 'rgba(255, 255, 255, 0.06)',
+                        border: '1px solid rgba(255, 255, 255, 0.15)',
+                        color: '#cbd5e1',
+                        fontSize: '11.5px',
+                        fontWeight: 600,
+                        padding: '4px 10px',
+                        borderRadius: '8px',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      Deselect All
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setIsOrbitExpanded((prev) => !prev)}
+                      style={{
+                        background: 'transparent',
+                        border: 'none',
+                        color: '#94a3b8',
+                        fontSize: '12px',
+                        fontWeight: 700,
+                        padding: '4px 6px',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      {isOrbitExpanded ? '▴ Collapse' : '▾ Expand'}
+                    </button>
+                  </div>
+                </div>
+
+                {/* Candidate Thumbnail Strip / Grid */}
+                {isOrbitExpanded && (
+                  <div
+                    style={{
+                      maxHeight: '230px',
+                      overflowY: 'auto',
+                      display: 'grid',
+                      gridTemplateColumns: 'repeat(auto-fill, minmax(135px, 1fr))',
+                      gap: '8px',
+                      padding: '4px',
+                    }}
+                  >
+                    {orbitCandidates.map((cand) => {
+                      const candId = cand.file_hash || cand.file_path
+                      const isSelected = selectedOrbitIds.has(candId)
+                      const simPercent = Math.round((cand.similarity || 0) * 100)
+
+                      return (
+                        <div
+                          key={`orbit-${candId}`}
+                          onClick={() => handleToggleOrbitCandidate(candId)}
+                          style={{
+                            position: 'relative',
+                            background: isSelected ? 'rgba(16, 185, 129, 0.12)' : 'rgba(255, 255, 255, 0.03)',
+                            border: isSelected ? '2px solid #10b981' : '1px solid rgba(255, 255, 255, 0.12)',
+                            borderRadius: '10px',
+                            overflow: 'hidden',
+                            cursor: 'pointer',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            transition: 'all 0.12s ease-in-out',
+                          }}
+                        >
+                          <div style={{ position: 'relative', width: '100%', height: '88px', background: '#020617' }}>
+                            {cand.thumb_url || cand.preview_url ? (
+                              <img
+                                src={cand.thumb_url || cand.preview_url}
+                                alt={cand.file_name}
+                                style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                                loading="lazy"
+                              />
+                            ) : (
+                              <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#64748b', fontSize: '11px' }}>
+                                RAW
+                              </div>
+                            )}
+
+                            {/* Checkbox overlay */}
+                            <div
+                              style={{
+                                position: 'absolute',
+                                top: '5px',
+                                left: '5px',
+                                width: '18px',
+                                height: '18px',
+                                borderRadius: '4px',
+                                background: isSelected ? '#10b981' : 'rgba(15, 23, 42, 0.8)',
+                                border: isSelected ? '1px solid #059669' : '1.5px solid rgba(255, 255, 255, 0.6)',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                color: '#ffffff',
+                                fontSize: '12px',
+                                fontWeight: 900,
+                              }}
+                            >
+                              {isSelected ? '✓' : ''}
+                            </div>
+
+                            {/* Similarity / Target badge */}
+                            <div
+                              style={{
+                                position: 'absolute',
+                                top: '5px',
+                                right: '5px',
+                                background: cand.is_target ? 'rgba(59, 130, 246, 0.9)' : 'rgba(15, 23, 42, 0.85)',
+                                color: cand.is_target ? '#ffffff' : '#a7f3d0',
+                                fontSize: '10px',
+                                fontWeight: 800,
+                                padding: '1px 5px',
+                                borderRadius: '4px',
+                              }}
+                            >
+                              {cand.is_target ? 'Target' : `${simPercent}% sim`}
+                            </div>
+                          </div>
+
+                          <div style={{ padding: '4px 6px', fontSize: '11px', color: '#cbd5e1', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                            <div style={{ fontWeight: 700, color: isSelected ? '#6ee7b7' : '#f8fafc', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                              {cand.file_name}
+                            </div>
+                            <div style={{ fontSize: '10px', color: '#94a3b8' }}>
+                              {cand.time_delta_seconds > 0 ? `+${cand.time_delta_seconds}s` : 'Selected Target'}
+                            </div>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         )}
 
@@ -1286,6 +1554,8 @@ export default function VoiceTeachScoutModal({
               >
                 {isSubmitting
                   ? 'Committing...'
+                  : siblingOrbitCount > 0
+                  ? `✓ Commit to ${totalTargetCount} Photos (${selectedPhotos.length} Selected + ${siblingOrbitCount} Sibling Orbit)`
                   : `✓ Commit Approved Tags (Enter ↵)${
                       totalApprovedTeachTags > 0 ? ` [${totalApprovedTeachTags}]` : ''
                     }`}

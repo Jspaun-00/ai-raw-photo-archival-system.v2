@@ -26,9 +26,10 @@ Executes:
 import json
 import logging
 import re
+import sqlite3
 import time
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
@@ -6146,6 +6147,15 @@ _SPEECH_COMMAND_INTRO_PATTERNS = [
     ),
 ]
 
+_PROPAGATE_DIRECTIVE_REGEX = re.compile(
+    r"\b(?:and\s+)?(?:i\s+(?:also\s+)?(?:want|need|would\s+like)\s+)?(?:all\s+(?:the\s+)?)?"
+    r"(?:images?|photos?|frames?|shots?|siblings?)\s+"
+    r"(?:around\s+(?:it|them|this|these)|next\s+to\s+(?:it|them|this|these)|in\s+(?:this|the)\s+(?:session|shoot|orbit|series))\s*"
+    r"(?:to\s+be\s+(?:associated|tagged|labeled|updated)(?:\s+with\s+(?:these|the|all)?\s*(?:correct\s+)?(?:tags?|metadata)?)?|"
+    r"to\s+have\s+these\s+(?:correct\s+)?tags?|associated\s+with\s+these\s+(?:correct\s+)?tags?)\b",
+    re.IGNORECASE,
+)
+
 _CUSTOM_PHRASE_STOPWORDS = {
     "a", "an", "the", "this", "these", "that", "those", "it", "them", "they",
     "i", "we", "you", "me", "my", "our", "want", "would", "like", "need",
@@ -6158,6 +6168,8 @@ _CUSTOM_PHRASE_STOPWORDS = {
     "bro", "dude", "hey", "just", "look", "looking", "closely", "what",
     "what's", "whats", "tell", "see", "seeing", "reassess", "rescan", "scan",
     "inspect", "describe", "identify", "figure", "out", "whatever", "inside",
+    "associated", "associate", "associating", "association", "correct",
+    "up", "close", "upclose", "orbit", "session",
 }
 
 _ACRONYM_UPPER_KEEP = {"usa", "us", "uk", "uae", "dc", "nyc", "la", "sf", "ii", "iii", "iv", "rv", "suv", "atv"}
@@ -6199,10 +6211,22 @@ def _extract_custom_user_phrases(pos_blob: str) -> List[str]:
             matched_command = True
             work = pat.sub(" |CMD| ", work)
 
-    # Also split on prepositional facility/location connectors inside a clause ("at an oil facility", "in a barn")
+    # Also split on prepositional facility/location connectors or carrier phrases inside a clause ("at an oil facility", "image of a bee")
     work = re.sub(
         r"\b(?:at|in|inside|near|with)\s+(?:a|an|the)\s+",
         " |CMD| ",
+        work,
+        flags=re.IGNORECASE,
+    )
+    work = re.sub(
+        r"\b(?:image|photo|picture|shot|frame|close\s+up|up\s+close)\s+of\s+(?:a|an|the)?\s*",
+        " |CMD| ",
+        work,
+        flags=re.IGNORECASE,
+    )
+    work = re.sub(
+        r"\b(?:up\s+close|close\s+up)\b",
+        " ",
         work,
         flags=re.IGNORECASE,
     )
@@ -6267,6 +6291,7 @@ def parse_natural_language_teach(
     auto_wipe_detected = bool(_WIPE_INTENT_REGEX.search(text))
     visual_inspect_requested = bool(_VISUAL_INSPECT_DIRECTIVE_REGEX.search(text))
     wipe_mode = bool(wipe_existing or auto_wipe_detected)
+    propagate_to_orbit = bool(_PROPAGATE_DIRECTIVE_REGEX.search(text))
 
     # Strip meta-command prefixes ("Wipe the tags on these images and cater them around ...", "bro just look at it and tag what's in there")
     cleaned_text = re.sub(
@@ -6276,6 +6301,7 @@ def parse_natural_language_teach(
         flags=re.IGNORECASE,
     )
     cleaned_text = _VISUAL_INSPECT_DIRECTIVE_REGEX.sub(" ", cleaned_text)
+    cleaned_text = _PROPAGATE_DIRECTIVE_REGEX.sub(" ", cleaned_text)
     cleaned_text = re.sub(
         r"\b(?:cater\s+(?:them|these|it|the\s+tags)\s+around|rebuild\s+(?:them|these|it|the\s+tags)\s+(?:around|from)|start\s+fresh\s+(?:with|around))\b",
         " ",
@@ -6291,22 +6317,39 @@ def parse_natural_language_teach(
     resolved_spec: Optional[str] = None
     force_aerial: Optional[bool] = None
 
-    # Split clauses on comma/semicolon/period/pipe to isolate negated clauses ("not X", "isn't X", "never X", "remove X")
-    clauses = [c.strip() for c in re.split(r"[,;.|]|\bbut\b|\band\s+not\b", cleaned_text or text) if c.strip() and c.strip() != "[CLEARED_SLATE]"]
+    # Conversational clause splitting: splits on punctuation, explicit contrast connectors ("but not", "and not", "however"),
+    # or zero-width lookaheads before strong declarative phrases ("this is...", "it's not...", "I want...")
+    clause_split_pattern = re.compile(
+        r"[,;.|]|\b(?:but\s+not|and\s+not|but\s+never|and\s+never|but|yet|however)\b|"
+        r"\b(?=(?:it's\s+not|it\s+is\s+not|it's\s+never|it\s+isn't|it\s+isnt|they're\s+not|they\s+aren't|they\s+arent))\b|"
+        r"\b(?=(?:this\s+is|these\s+are|that\s+is|those\s+are))\b|"
+        r"\b(?=(?:i\s+want|i\s+need|i\s+would\s+like|make\s+sure|please\s+tag|tag\s+(?:it|them|these)\s+as))\b|"
+        r"\b(?:and\s+then|and\s+also|and\s+now)\b",
+        re.IGNORECASE,
+    )
+    clauses = [c.strip() for c in clause_split_pattern.split(cleaned_text or text) if c.strip() and c.strip() != "[CLEARED_SLATE]"]
     positive_clauses: List[str] = []
 
+    # Bounded negation pattern: captures up to 4 words before trailing punctuation or conversational connectors
+    stop_words_pattern = r"(?:and|but|or|this|these|that|those|it|it's|they|i|we|there|is|are|was|were|want|need|have|has|so|to)\b"
     neg_pattern = re.compile(
-        r"\b(?:not\s+in|not\s+at|not\s+from|not\s+a|not\s+an|not|isn't|isnt|aren't|arent|wasn't|wasnt|weren't|werent|never|remove|delete|strip)\s+([a-zA-Z0-9\s\-']+)",
+        r"\b(?:(?:it's|it\s+is|they're|they\s+are)\s+)?"
+        r"(?:not\s+in|not\s+at|not\s+from|not\s+like\s+(?:a|an)?|not\s+a|not\s+an|not|isn't|isnt|aren't|arent|wasn't|wasnt|weren't|werent|never|remove|delete|strip)\s+"
+        r"((?:(?!" + stop_words_pattern + r")[a-zA-Z0-9\-']+(?:\s+|$)){1,4})",
         re.IGNORECASE,
     )
 
     for cl in clauses:
-        m = neg_pattern.search(cl)
-        if m:
-            # Everything before the negation match in the same clause is still positive!
-            prefix_pos = cl[: m.start()].strip()
-            if prefix_pos:
-                positive_clauses.append(prefix_pos)
+        last_end = 0
+        has_neg = False
+        for m in neg_pattern.finditer(cl):
+            has_neg = True
+            start, end = m.span()
+            if start > last_end:
+                pos_prefix = cl[last_end:start].strip()
+                if pos_prefix:
+                    positive_clauses.append(pos_prefix)
+            last_end = end
             neg_phrase = m.group(1).strip().lower()
             # Ignore meta-nouns like "tags" or "existing tags" if "remove existing tags" was spoken
             if neg_phrase in ("tags", "the tags", "all tags", "existing tags", "old tags", "metadata"):
@@ -6328,6 +6371,16 @@ def parse_natural_language_teach(
                     matched_known = True
                     if stags[0] not in negated_tags:
                         negated_tags.append(stags[0])
+            for ont_dict in (_ANIMAL_ONTOLOGY, _PEOPLE_ONTOLOGY, _FLORA_ONTOLOGY, _STRUCTURE_ONTOLOGY):
+                for spec_key, (spec, mids, parents, _) in ont_dict.items():
+                    all_terms = [spec_key, spec.lower()] + [m.lower() for m in mids] + [p.lower() for p in parents]
+                    if neg_phrase in all_terms or any(re.search(rf"\b{re.escape(t)}\b", neg_phrase) for t in all_terms):
+                        matched_known = True
+                        if spec not in negated_tags:
+                            negated_tags.append(spec)
+                        for m in mids:
+                            if m not in negated_tags:
+                                negated_tags.append(m)
             if "aerial" in neg_phrase:
                 force_aerial = False
                 negated_tags.append("Aerial")
@@ -6338,8 +6391,12 @@ def parse_natural_language_teach(
                 clean_neg = neg_phrase.title()
                 if clean_neg not in negated_tags:
                     negated_tags.append(clean_neg)
-        else:
+        if not has_neg:
             positive_clauses.append(cl)
+        elif last_end < len(cl):
+            trailing_pos = cl[last_end:].strip()
+            if trailing_pos:
+                positive_clauses.append(trailing_pos)
 
     pos_blob = " ".join(positive_clauses)
     pos_low = pos_blob.lower()
@@ -6447,6 +6504,7 @@ def parse_natural_language_teach(
         "visual_inspect_requested": visual_inspect_requested,
         "wipe_mode": wipe_mode,
         "wipe_detected_from_speech": auto_wipe_detected,
+        "propagate_to_orbit": propagate_to_orbit,
         "custom_user_tags": custom_user_phrases,
         "added_tags": dedup_added,
         "positive_tags": dedup_added,
@@ -6458,6 +6516,157 @@ def parse_natural_language_teach(
         "location_updates": location_updates,
         "force_aerial": force_aerial,
     }
+
+
+def _parse_session_exif_dt(val: Any) -> Optional[datetime]:
+    if not val:
+        return None
+    s = str(val).strip()
+    for fmt in ("%Y:%m:%d %H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            return datetime.strptime(s, fmt)
+        except Exception:
+            pass
+    return None
+
+
+def find_session_orbit_candidates(
+    target_ids: List[str],
+    db_path: Path = DEFAULT_DB_PATH,
+    vectors_path: Path = DEFAULT_VECTORS_PATH,
+    max_candidates: int = 300,
+) -> List[Dict[str, Any]]:
+    """
+    Identifies sibling photos belonging to the same shoot session or visual orbit.
+    Leverages shoot timestamp clustering (±45 minutes from target photos) and OpenCLIP
+    embedding cosine similarity (>= 0.60, or same shoot burst).
+    Returns scored and deduplicated candidates for user preview and selective propagation.
+    """
+    if not target_ids:
+        return []
+
+    clean_target_ids = list(dict.fromkeys(str(tid).strip() for tid in target_ids if tid))
+    conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
+
+    placeholders = ",".join("?" for _ in clean_target_ids)
+    target_rows = cur.execute(
+        f"""
+        SELECT file_path, file_hash, shoot_date, camera_model, exif_time, vector_index,
+               thumb_360_path, preview_1600_path, star_rating, sequence_id
+        FROM photo_records
+        WHERE file_hash IN ({placeholders}) OR file_path IN ({placeholders})
+        """,
+        clean_target_ids + clean_target_ids,
+    ).fetchall()
+
+    if not target_rows:
+        conn.close()
+        return []
+
+    target_hashes = {r[1] for r in target_rows}
+    target_paths = {r[0] for r in target_rows}
+    shoot_dates = {r[2] for r in target_rows if r[2] and r[2] != "Undated"}
+    target_dts = [_parse_session_exif_dt(r[4]) for r in target_rows if _parse_session_exif_dt(r[4])]
+
+    vectors = None
+    if Path(vectors_path).exists():
+        try:
+            vectors = np.load(vectors_path, mmap_mode="r")
+        except Exception:
+            vectors = None
+
+    target_v_indices = [
+        r[5] for r in target_rows
+        if r[5] is not None and vectors is not None and 0 <= r[5] < len(vectors)
+    ]
+    target_centroid = None
+    if target_v_indices and vectors is not None:
+        t_vecs = vectors[target_v_indices]
+        mean_vec = np.mean(t_vecs, axis=0)
+        norm_val = np.linalg.norm(mean_vec)
+        if norm_val > 1e-7:
+            target_centroid = mean_vec / norm_val
+
+    candidate_rows = []
+    if shoot_dates:
+        d_placeholders = ",".join("?" for _ in shoot_dates)
+        rows = cur.execute(
+            f"""
+            SELECT file_path, file_hash, shoot_date, camera_model, exif_time, vector_index,
+                   thumb_360_path, preview_1600_path, star_rating, sequence_id
+            FROM photo_records
+            WHERE shoot_date IN ({d_placeholders}) AND status != 'failed'
+            ORDER BY exif_time ASC
+            """,
+            list(shoot_dates),
+        ).fetchall()
+        candidate_rows.extend(rows)
+
+    conn.close()
+
+    seen_hashes = set()
+    unique_candidates = []
+    for r in candidate_rows:
+        fh = r[1]
+        if fh not in seen_hashes:
+            seen_hashes.add(fh)
+            unique_candidates.append(r)
+
+    min_dt = min(target_dts) if target_dts else None
+    max_dt = max(target_dts) if target_dts else None
+    window_delta = timedelta(minutes=45)
+
+    scored_candidates = []
+    for r in unique_candidates:
+        fp, fh, sdate, cam, et_str, v_idx, thumb, prev, star, seq_id = r
+        is_target = (fh in target_hashes or fp in target_paths)
+
+        cand_dt = _parse_session_exif_dt(et_str)
+        time_diff_sec = 0.0
+        in_time_window = True
+        if cand_dt and min_dt and max_dt:
+            if cand_dt < min_dt:
+                time_diff_sec = (min_dt - cand_dt).total_seconds()
+            elif cand_dt > max_dt:
+                time_diff_sec = (cand_dt - max_dt).total_seconds()
+            else:
+                time_diff_sec = 0.0
+
+            if cand_dt < (min_dt - window_delta) or cand_dt > (max_dt + window_delta):
+                in_time_window = False
+
+        sim = 1.0 if is_target else 0.0
+        if not is_target and target_centroid is not None and v_idx is not None and vectors is not None and 0 <= v_idx < len(vectors):
+            cand_v = vectors[v_idx]
+            cand_norm = np.linalg.norm(cand_v)
+            if cand_norm > 1e-7:
+                sim = float(np.dot(target_centroid, cand_v / cand_norm))
+
+        # Filter: target OR (in +-45min window AND similarity >= 0.60) OR (same shoot burst within 5 min)
+        if is_target or (in_time_window and (sim >= 0.60 or time_diff_sec <= 300)):
+            thumb_name = Path(thumb).name if thumb else ""
+            prev_name = Path(prev).name if prev else ""
+            scored_candidates.append({
+                "file_path": fp,
+                "file_hash": fh,
+                "file_name": Path(fp).name,
+                "shoot_date": sdate,
+                "camera_model": cam,
+                "exif_time": et_str,
+                "thumb_360_path": thumb,
+                "preview_1600_path": prev,
+                "thumb_url": f"/previews/thumbs_360/{thumb_name}" if thumb_name else None,
+                "preview_url": f"/previews/previews_1600/{prev_name}" if prev_name else None,
+                "star_rating": star or 0,
+                "sequence_id": seq_id,
+                "similarity": round(sim, 3),
+                "time_delta_seconds": int(time_diff_sec),
+                "is_target": is_target,
+            })
+
+    scored_candidates.sort(key=lambda x: (not x["is_target"], -x["similarity"], x["time_delta_seconds"]))
+    return scored_candidates[:max_candidates]
 
 
 def discover_visual_subjects_for_records(

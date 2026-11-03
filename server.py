@@ -81,6 +81,7 @@ from stage2_vlm import (
     cluster_and_propagate_entities,
     compute_clip_concept_probes_for_rows,
     discover_visual_subjects_for_records,
+    find_session_orbit_candidates,
     parse_natural_language_teach,
     reassess_records_deep,
     reassess_records_fast,
@@ -4513,11 +4514,24 @@ async def preview_teach_instruction(payload: TeachPreviewRequest):
             seen_comb.add(tl)
             combined_add.append(str(t).strip())
 
+    orbit_candidates: List[Dict[str, Any]] = []
+    if payload.photo_ids:
+        try:
+            orbit_candidates = find_session_orbit_candidates(
+                target_ids=payload.photo_ids,
+                db_path=DEFAULT_DB_PATH,
+                vectors_path=DEFAULT_VECTORS_PATH,
+                max_candidates=300,
+            )
+        except Exception as exc:
+            logging.warning(f"find_session_orbit_candidates in preview failed: {exc}")
+
     return {
         "status": "ok",
         "parsed": parsed,
         "wipe_mode": is_wipe_mode,
         "wipe_detected_from_speech": bool(parsed.get("wipe_detected_from_speech")),
+        "propagate_to_orbit": bool(parsed.get("propagate_to_orbit")),
         "custom_user_phrases": parsed.get("custom_user_tags", []),
         "spoken_tags": spoken_tags,
         "visual_tags": visual_tags,
@@ -4527,6 +4541,8 @@ async def preview_teach_instruction(payload: TeachPreviewRequest):
         "removed_tags": remove_tags,
         "location_updates": parsed.get("location_updates", {}),
         "portfolio_categories": parsed.get("portfolio_categories", []),
+        "orbit_candidates": orbit_candidates,
+        "total_orbit_candidates": len(orbit_candidates),
     }
 
 
