@@ -1,11 +1,12 @@
-# 📸 MR Darkroom (v3.2)
-### Local AI-Assisted RAW Photo Archival, Vector Search & Curation Studio
+# 📸 MR Darkroom (v4.0.0)
+### Local AI-Assisted RAW Photo Archival, 4-Pass Visual Cascade, Vector Search & Curation Studio
 
 [![macOS](https://img.shields.io/badge/Platform-macOS%2013%2B%20(Apple%20Silicon)-000000?style=for-the-badge&logo=apple&logoColor=white)](#)
 [![Python](https://img.shields.io/badge/Python-3.11+-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://python.org)
 [![FastAPI](https://img.shields.io/badge/Backend-FastAPI%20%2B%20Uvicorn-009688?style=for-the-badge&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
 [![React](https://img.shields.io/badge/Frontend-React%2018%20%2B%20TailwindCSS-61DAFB?style=for-the-badge&logo=react&logoColor=black)](https://react.dev)
 [![OpenCLIP](https://img.shields.io/badge/Vision%20Embedding-OpenCLIP%20ViT--L%2F14-FF6F00?style=for-the-badge)](https://github.com/mlfoundations/open_clip)
+[![PyTorch MPS](https://img.shields.io/badge/GPU%20Acceleration-Apple%20Metal%20(MPS)-EE4C2C?style=for-the-badge&logo=pytorch&logoColor=white)](https://pytorch.org)
 [![Ollama](https://img.shields.io/badge/VLM%20Reasoning-Qwen2.5--VL%207B%20(Ollama)-8A2BE2?style=for-the-badge)](https://ollama.com)
 [![SQLite](https://img.shields.io/badge/Storage-SQLite%20WAL%20Data%20Vault-003B57?style=for-the-badge&logo=sqlite&logoColor=white)](https://sqlite.org)
 [![Privacy](https://img.shields.io/badge/Privacy-100%25%20Offline%20%2F%20Zero%20Cloud-22c55e?style=for-the-badge)](#)
@@ -21,8 +22,9 @@ Tools like Adobe Lightroom Classic become painfully sluggish at this scale:
 - Preview caches swell to hundreds of gigabytes, fragmenting storage.
 - Keyword tagging requires hours of repetitive clicking through multi-level taxonomies.
 - Searching for visual concepts without pre-existing exact keyword tags is virtually impossible.
+- Standard global AI models miss small focal subjects occupying 10–20% of a frame (e.g. a pet cat resting on a living room couch) or hallucinate wild cross-biome objects (labeling an indoor tapestry blanket as an `Alligator` or `Canyon`).
 
-**MR Darkroom** is a personal project built to solve this problem directly: a fast, local-first studio that stays fluid at 150,000+ images, indexes photos with Apple Silicon-accelerated vector search, supports speech-to-text / natural language prompt tagging, and operates **100% offline** with zero cloud dependencies and zero vendor lock-in.
+**MR Darkroom** is a personal project built to solve this problem directly: a fast, local-first studio that stays fluid at 150,000+ images, indexes photos with Apple Silicon-accelerated 4-pass visual cascades, supports speech-to-text / natural language prompt tagging, groups recurring faces and domestic pets, and operates **100% offline** with zero cloud dependencies and zero vendor lock-in.
 
 ---
 
@@ -31,7 +33,7 @@ Tools like Adobe Lightroom Classic become painfully sluggish at this scale:
 <p align="center">
   <img src="docs/screenshots/01-studio-grid-workspace.png" width="100%" alt="MR Darkroom Studio Grid Workspace" />
 </p>
-<p align="center"><em>Figure 1: Main Studio Workspace — 16-inch MacBook Pro optimized 2-row Top Ribbon, Unified Catalog Selector Pill, dynamic shoot dates, Curated Portfolio Quick-Pills, and high-DPI virtualized gallery grid.</em></p>
+<p align="center"><em>Figure 1: Main Studio Workspace — 16-inch MacBook Pro optimized Top Navigation Bar, Centered Bottom Studio Dock, Portfolio Quick-Pills, dynamic shoot dates, and high-DPI virtualized gallery grid.</em></p>
 
 <p align="center">
   <img src="docs/screenshots/02-lightbox-inspector.png" width="100%" alt="MR Darkroom Lightbox Inspector Sidebar" />
@@ -50,7 +52,7 @@ Tools like Adobe Lightroom Classic become painfully sluggish at this scale:
 
 ---
 
-## 🏗️ Technical Architecture
+## 🏗️ Technical Architecture (v4.0.0)
 
 MR Darkroom operates as an asynchronous, multi-process studio decoupled into a high-performance **FastAPI backend** and an ultra-responsive **React 18 + TailwindCSS frontend**:
 
@@ -58,9 +60,11 @@ MR Darkroom operates as an asynchronous, multi-process studio decoupled into a h
 +--------------------------------------------------------------------------------------------------+
 |                                    MR DARKROOM STUDIO DESKTOP                                    |
 |                                (React 18 + TailwindCSS + Vite)                                   |
-|   - Unified 2-Row Top Ribbon                - Selection Action Dock (Bulk AI / Undo)             |
+|   - Top Navigation Ribbon (Search / Views / Catalogs / Filter Bar)                               |
+|   - Centered Bottom Studio Dock (Idle Studio Tools & Active Selection Batch Actions)             |
 |   - High-DPI Virtualized Photo Grid         - Lightbox Inspector with Provenance Telemetry       |
-|   - Interactive Leaflet Trips Map           - Voice/Text "Teach AI" & "Scout AI" Modal           |
+|   - People & Pets Face/Subject Manager      - Interactive Leaflet Trips & Regions Map            |
+|   - Collections & Print Books Modal         - Voice/Text "Teach AI" & "Scout AI" Modal           |
 +-------------------------------------------------+------------------------------------------------+
                                                   | HTTP / JSON + SSE Stream (Port 8501)
                                                   v
@@ -68,57 +72,76 @@ MR Darkroom operates as an asynchronous, multi-process studio decoupled into a h
 |                                     FASTAPI SERVER (server.py)                                   |
 |   - Asynchronous Job Manager (Cancel / Pause)   - Studio Jobs Multi-Step Atomic Undo             |
 |   - Isolated Multi-Catalog Management           - Native macOS Folder Picker & Ingest Runners    |
+|   - People & Pets Clustering Endpoints          - Full-Text Search (SQLite FTS5 + Vectors)       |
 +-------------------+-----------------------------+--------------------------+---------------------+
                     |                             |                          |
                     v                             v                          v
 +-------------------+---------+   +---------------+----------+   +-----------+---------------------+
-|        STAGE 1 ENGINE       |   |       STAGE 2 VLM        |   |         DATA VAULT              |
+|    STAGE 1 & 4-PASS ENGINE  |   |       STAGE 2 VLM        |   |         DATA VAULT              |
 |      (stage1_engine.py)     |   |     (stage2_vlm.py)      |   | (~/Library/Application Support) |
-| - ExifTool Preview Harvest  |   | - High-Tension Probes    |   |                                 |
-| - OpenCLIP ViT-L/14 (MPS)   |   | - Multi-Crop Grounding   |   | - photo_archive.db (SQLite WAL) |
-| - Offline KD-Tree Geocoder  |   | - Contrastive Habitat    |   | - stage1_embeddings.npy (768-d) |
-| - Perceptual pHash Index    |   | - Ollama Qwen2.5-VL 7B   |   | - undo_snapshots.db             |
+| - Pass 1: Macro Biome Lock  |   | - High-Tension Probes    |   |                                 |
+| - Pass 2: GPU 4-Crop Scan   |   | - Generative Reasoning   |   | - photo_archive.db (SQLite WAL) |
+| - Pass 3: Specialist Drill  |   | - Contrastive Habitat    |   | - stage1_embeddings.npy (768-d) |
+| - Pass 4: Identity Cluster  |   | - Ollama Qwen2.5-VL 7B   |   | - undo_snapshots.db             |
+| - OpenCLIP ViT-L/14 (MPS)   |   | - Neighbor Context Hint  |   | - thumbs_360 / previews_1600    |
 +-----------------------------+   +--------------------------+   +---------------------------------+
 ```
 
 ---
 
-## ⚡ Core Technical Features
+## ⚡ Core Technical Features (v4.0.0)
 
-### 1. Dual-Stage Vision Intelligence Pipeline
-- **Stage 1 (Sub-Millisecond Vector Embedding):**
-  - Extracts embedded full-resolution preview JPEGs directly from proprietary RAW formats in milliseconds via ExifTool without decoding multi-hundred-megabyte raw sensor bayer arrays.
-  - Computes normalized 768-dimensional visual semantic vectors using Apple Silicon Metal-accelerated (`mps`) OpenCLIP ViT-L/14.
-  - Generates 64-bit perceptual hashes (`pHash`) to cluster duplicate shots, bracketed exposures, and rapid burst sequences.
-  - Memory-maps persistent vector matrices (`stage1_embeddings.npy`), allowing 150,000+ photos to be cosine-ranked in under 12 milliseconds.
-- **Stage 2 (High-Tension Spatial VLM & Contrastive Habitat Gating):**
-  - Evaluates local Vision-Language Models (Ollama Qwen2.5-VL 7B / local multimodal backends) using structured visual grounding.
-  - **Contrastive Habitat Gating:** Evaluates negative spatial probes and environmental foils to eliminate "habitat bias" (e.g., stops dense forest paths from triggering false `Bird` tags, prevents wet river stones from hallucinating `Frog`, and halts distant silhouettes or statues from being labeled as live people).
-  - **Multi-Crop Subject Routing:** Analyzes central subjects, golden-ratio thirds, and foreground/background layers independently so indoor foreground subjects are never drowned out by background elements.
+### 1. The 4-Pass Top-Down Iterative Visual Cascade (< 8ms/photo on Apple Metal GPU)
+Solves why monolithic global vectors miss small focal subjects (e.g. pets, tools, rims) while guaranteeing zoomed sub-crops never hallucinate cross-biome objects:
+- **Pass 1 — Macro Scene Biome Lock & Strict Mutual Exclusion (1x Full Frame — ~0.1ms):**
+  - Locks macro environment (`Indoor / Residential`, `Indoor / Closet & Storage`, `Studio / Tabletop & Macro`, `Portrait / People`, `Urban / Architecture`, `Outdoor / Wilderness & Coastal`, `Aerial / Topographic`).
+  - **Strict Mutual-Exclusion Gate:** When `Indoor / Residential` is locked, wild fauna and geological hazards (`Alligator`, `Bison`, `Bear`, `Whale`, `Canyon`, `Highway Overpass`) are mathematically forbidden from firing on sub-crops. Indoor crops route exclusively through domestic pets, furniture, textiles, lighting, and wall art.
+- **Pass 2 — Batched Metal GPU 4-Crop Saliency Scanner (~5–6ms/photo in batches of 64):**
+  - Extracts 4 high-salience focal regions (combining rule-of-thirds quadrants + Laplacian contrast peaks).
+  - Evaluates local foil tension on the exact same sub-crop to confirm subject presence over background clutter.
+- **Pass 3 — Specialist Hierarchical Taxonomy Drill-Down:**
+  - Fast, fine-grained classification over 10,000+ domain concepts:
+    - **Domestic Pets & Wildlife:** Cat and dog breeds (`Maine Coon`, `Tabby`, `Golden Retriever`), avian species (`Bald Eagle`, `Great Blue Heron`), marine/wildlife.
+    - **Flora & Botanical:** Latin binomials and common names (`Monstera Deliciosa`, `Pothos`, `Majesty Palm`, `Sequoia / Redwood`, `Aspen`).
+    - **Automotive & Craft:** Components (`Alloy Rims`, `Disc Brakes`, `Exhaust`), workshop tools (`Orbital Sander`, `Tripod`, `Medium Format Camera`).
+    - **Intimate Wellness & Personal Care:** Discreet classification (`Adult Novelty`, `Vibrator`, `Cosmetics`, `Hand Soap`) isolated to private closet/storage biomes.
+- **Pass 4 — "People & Pets" Identity Clustering:**
+  - Regional crop embeddings are clustered via cosine distance thresholding into distinct persistent entity identities (`photo_entities`, `entity_clusters`).
+  - Automatically groups recurring family members, cats, and dogs with editable names, cover avatars, and 1-click catalog filtering.
 
-### 2. Speech-to-Text & Prompt-Driven Curation ("Teach AI" & "Scout AI")
-- **Teach AI Mode:**
-  - Instead of manual keywording, use natural speech or text prompts to re-anchor or correct image tags (e.g., *"These are from our 2018 Iceland trip around Kirkjufell at dusk; remove any Cuba tags"*).
-  - Automatically isolates positive concept anchors, purges contradictory tags, and marks them with human provenance (`user_taught`).
-  - **Pre-Commit Interactive Review:** Always opens with a clean, blank input box. Real-time parsed tags appear with individual cross-out (`×`) chips, enabling instant visual pruning before committing with a single press of the `Enter` key.
-- **Scout AI Mode:**
-  - Zero-shot visual semantic search across the entire archive. Enter natural queries like *"solitary tree in golden morning mist"* or *"winding coastal highway with breaking waves"* to instantly surface matching images even if they have never been manually tagged.
+---
 
-### 3. Strict Location Provenance ("Blank by Default")
-- Prevents models from hallucinating geographical locations based on generic scenery (e.g., a mountain scene is tagged `Mountain` and `Ridge`, but is **never** assigned `Switzerland` or `Colorado` unless verified).
-- Location is strictly assigned only via:
-  1. Valid hardware GPS coordinates in the EXIF block.
-  2. Verified IPTC Country/State/City metadata from camera or original sidecar.
-  3. Direct user instruction via Teach AI.
-- **Offline Reverse Geocoding:** Automatically resolves latitude and longitude against a local spatial KD-tree (comprising all cities over 1,000 population worldwide) in sub-millisecond time with **zero network requests and zero third-party API exposure**.
+### 2. Dual Rescan Depth Levels (`Level 1` vs. `Level 2`)
+- **`⚡ Fast Scan (Level 1 — 4-Pass Cascade)`:** Runs Pass 1 Macro Biome Lock + Pass 2 GPU 4-Crop Saliency Scan + Pass 3 Specialist Breed/Species Drill-Down + Pass 4 Pet/Person Clustering (~6ms/photo). Ideal for rapid bulk tagging of 10,000+ photo imports.
+- **`🧠 Deep VLM (Level 2 — Qwen2.5-VL + Cascade)`:** Runs full generative VLM visual inspection + 4-Pass Cascade with structured prompt directives and neighbor context hints (~5–8s/photo).
 
-### 4. Isolated Multi-Catalog Management & macOS Data Vault
-- **Catalog Isolation:** Multiple catalogs and folder imports are strictly partitioned so individual roll groupings or project imports never bleed into one another.
-- **External Data Vault:**
-  - System databases and embedding matrices are stored outside the Git repository in macOS standard application storage: `~/Library/Application Support/MRDarkroom/`.
-  - Decouples heavy binary files (`photo_archive.db`, `stage1_embeddings.npy`, `undo_snapshots.db`) from repository commits and branch switches.
+---
 
-### 5. Multi-Step Atomic Undo
+### 3. Studio Ergonomics: Top Navigation + Centered Bottom Studio Dock
+- **Top Navigation Bar (`TopRibbon.jsx`):**
+  - Row 1: Brand logo, generous flex search input, Grid / Date / Trips view switchers, Catalog selector dropdown, and Import button.
+  - Row 2: Full-width scrollable Portfolio Regions pills with Date Sort, Aesthetic ranking, and Multi-Criteria Filters on the right.
+- **Centered Bottom Studio Dock (`SelectionActionBar.jsx`):**
+  - **Idle Mode (0 Selected):** Centered workspace tools: `Showing N photos` | `☑ Select All` | `↩ Undo (N)` | `👥 People & Pets (N)` | `🔎 Scout Archive` | `📚 Collections (N)` | `🔄 Rescan ▾`.
+  - **Active Selection Mode (1+ Selected):** Rapid batch actions: `✓ N Selected` | `🧹 Clear Tags` | `⚡ Fast Scan (Level 1)` | `🧠 Deep VLM (Level 2)` | `🎙️ AI Voice Tag` | `🔎 Scout Similar` | `+📚 Add to Book` | `↩ Undo`.
+  - Upward-opening modals and auto-dismissing background job progress notifications.
+
+---
+
+### 4. Speech-to-Text & Prompt-Driven Curation ("Teach AI" & "Scout AI")
+- **Teach AI Mode:** Use natural speech or text prompts to re-anchor or correct image tags (e.g. *"These are from our 2018 Iceland trip around Kirkjufell at dusk; remove any Cuba tags"*). Automatically purges contradictory tags and marks changes with human provenance (`user_taught`).
+- **Scout AI Mode:** Zero-shot visual semantic search across the entire archive. Search natural concepts like *"solitary tree in golden morning mist"* or *"black cat sleeping on bohemian throw blanket"*.
+
+---
+
+### 5. Strict Location Provenance ("Blank by Default")
+- Prevents models from hallucinating geographical locations based on generic scenery.
+- Location is strictly assigned only via verified hardware GPS coordinates, verified IPTC camera metadata, or direct user instruction.
+- **Offline Reverse Geocoding:** Automatically resolves coordinates against a local spatial KD-tree (all cities over 1,000 population worldwide) in sub-millisecond time with **zero network requests and zero third-party API exposure**.
+
+---
+
+### 6. Multi-Step Atomic Undo
 - Every visual operation—bulk tagging, tag clearing, single-photo inspection edits, Teach AI updates, and category reassignments—records atomic rollback snapshots in `undo_snapshots.db`.
 - Hit `Cmd+Z` at any time to instantly restore previous tags, confidence scores, and provenance states.
 
@@ -144,7 +167,7 @@ MR Darkroom operates as an asynchronous, multi-process studio decoupled into a h
 ### Prerequisites
 - **Operating System:** macOS 13.0 (Ventura) or newer.
 - **Hardware:** Apple Silicon (M1, M2, M3, M4) recommended for native Metal (`mps`) acceleration.
-- **External Tools:** `exiftool` (`brew install exiftool`), `ollama` (`brew install ollama`, optional for local Stage 2 VLM).
+- **External Tools:** `exiftool` (`brew install exiftool`), `ollama` (`brew install ollama`, optional for local Level 2 Deep VLM).
 
 ---
 
@@ -196,10 +219,10 @@ Open your browser to `http://localhost:8501`.
 
 ```
 ai-raw-photo-archival-system/
-├── server.py                  # FastAPI studio server & REST endpoints
+├── server.py                  # FastAPI studio server, REST endpoints & thumbnail router
 ├── stage1_engine.py           # Stage 1 vector harvester, OpenCLIP ViT-L/14 & offline geocoder
-├── stage2_vlm.py              # Stage 2 spatial VLM & contrastive gating engine
-├── domain_gazetteer.py        # Visual ontology, spatial probes, and stopword gazetteer
+├── stage2_vlm.py              # 4-Pass Visual Cascade, Spatial VLM & contrastive gating engine
+├── domain_gazetteer.py        # Specialist taxonomy (10,000+ concepts), probes & biome gates
 ├── studio_jobs_undo.py        # Background task orchestrator and atomic multi-step undo engine
 ├── config_paths.py            # macOS Data Vault (~/Library/Application Support/MRDarkroom) config
 ├── db_schema.py               # SQLite WAL table definitions and automatic migration utilities
@@ -215,11 +238,12 @@ ai-raw-photo-archival-system/
 │   ├── src/
 │   │   ├── App.jsx            # Main studio application state and keyboard shortcut bus
 │   │   ├── components/
-│   │   │   ├── TopRibbon.jsx            # 16-inch consolidated 2-row navigation & catalog pill
+│   │   │   ├── TopRibbon.jsx            # 2-Row Top Navigation & Filter Bar
+│   │   │   ├── SelectionActionBar.jsx   # Centered Bottom Studio Dock (Idle tools & Batch actions)
 │   │   │   ├── PhotoGrid.jsx            # Virtualized high-performance photo tile gallery
-│   │   │   ├── SelectionActionBar.jsx   # Centered single-line floating action & bulk AI dock
 │   │   │   ├── LightboxModal.jsx        # Full-screen inspection canvas & metadata sidebar
 │   │   │   ├── VoiceTeachScoutModal.jsx # Blank-input Teach & Scout pre-commit review modal
+│   │   │   ├── CollectionsModal.jsx     # Curated print books & smart collections manager
 │   │   │   ├── PipelineModal.jsx        # Unified folder browser, pre-flight scanner & importer
 │   │   │   └── TripsMapView.jsx         # Interactive geospatial Leaflet mapping view
 │   ├── dist/                  # Pre-compiled static production UI bundle
