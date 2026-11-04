@@ -32,6 +32,8 @@ import threading
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+import urllib.request
+import urllib.error
 
 import numpy as np
 from PIL import Image
@@ -6354,19 +6356,14 @@ def _extract_custom_user_phrases(pos_blob: str) -> List[str]:
     return extracted
 
 
-def parse_natural_language_teach(
+def _parse_natural_language_teach_rulebased(
     instruction: str,
     explicit_add_tags: Optional[List[str]] = None,
     explicit_remove_tags: Optional[List[str]] = None,
     wipe_existing: bool = False,
 ) -> Dict[str, Any]:
     """
-    Parses a natural-language correction or teaching note from the photographer
-    (e.g., "These were taken in Houma Louisiana at an oil facility, not Venice",
-    "Wipe the tags on these images and cater them around South America / Cuba", or
-    "so these I want these to be tagged as Mitch Rouse residence I want this to have tags around pickles")
-    into structured positive locations, verbatim custom user phrases + expanded ontology tags,
-    negated/contradicted tags, and Clean-Slate Wipe & Re-Anchor mode (`wipe_mode`).
+    Rule-based legacy/fallback parser for natural-language corrections.
     """
     text = str(instruction or "").strip()
     if text in ("[CLEARED_SLATE]", "bro just look at it and tag what's in there"):
@@ -6621,6 +6618,339 @@ def parse_natural_language_teach(
         "location_updates": location_updates,
         "force_aerial": force_aerial,
     }
+
+
+def is_tag_contradicted_by_negated(tag: str, negated_tags: List[str]) -> bool:
+    """
+    Returns True if candidate `tag` is contradicted by or belongs to any negated concept in `negated_tags`.
+    Prevents false visual guess bleeding (e.g. ⚡ Urban, ⚡ Street, Person, Wine) when the photographer
+    describes an inanimate studio still-life, micro bubbles, macro crystals, or insects.
+    """
+    if not tag or not negated_tags:
+        return False
+    tag_clean = str(tag).strip()
+    tag_low = tag_clean.lower()
+    tag_words = set(re.findall(r"[a-z0-9]+", tag_low))
+
+    _PEOPLE_WORDS = {
+        "person", "people", "human", "woman", "women", "man", "men", "portrait",
+        "dress", "jewelry", "necklace", "male", "female", "girl", "boy", "child",
+        "family", "photographer"
+    }
+    _URBAN_WORDS = {
+        "urban", "street", "city", "cityscape", "architecture", "building", "downtown"
+    }
+
+    for neg in negated_tags:
+        neg_clean = str(neg).strip()
+        neg_low = neg_clean.lower()
+        if not neg_low:
+            continue
+        # Exact match
+        if tag_low == neg_low:
+            return True
+        # Singular / plural equality
+        if tag_low.rstrip("s") == neg_low.rstrip("s"):
+            return True
+        # Word boundary / component match: if negated concept is a word in the candidate tag
+        # e.g. neg='wine' matches 'wine bottle', 'wine glass', 'wine barrel', 'wine tasting / winery'
+        # neg='crystal' matches 'glass sculpture / crystal', 'crystals'
+        neg_words = set(re.findall(r"[a-z0-9]+", neg_low))
+        if neg_words and neg_words.issubset(tag_words):
+            return True
+        # If any significant single word in neg_low matches a word in tag_low
+        for nw in neg_words:
+            if len(nw) >= 3 and nw in tag_words:
+                return True
+        # People category containment
+        if any(pw in neg_words for pw in {"people", "person", "human", "woman", "man", "portrait"}):
+            if any(pw in tag_words for pw in _PEOPLE_WORDS):
+                return True
+        # Urban category containment
+        if any(uw in neg_words for uw in {"urban", "street", "city", "architecture"}):
+            if any(uw in tag_words for uw in _URBAN_WORDS):
+                return True
+
+    return False
+
+
+def parse_natural_language_teach_ollama(
+    instruction: str,
+    explicit_add_tags: Optional[List[str]] = None,
+    explicit_remove_tags: Optional[List[str]] = None,
+    wipe_existing: bool = False,
+    current_photo_tags: Optional[List[str]] = None,
+    visual_probe_tags: Optional[List[str]] = None,
+    known_collections: Optional[List[str]] = None,
+    ollama_model: str = "qwen2.5:3b",
+    timeout_sec: float = 8.0,
+) -> Optional[Dict[str, Any]]:
+    """
+    Fast local Ollama structured JSON NLU parser for photographic voice instructions.
+    Distills conversational speech into clean photographic tags, performs antonym/contradiction
+    gating against existing tags and visual probes, extracts 2-way clean slate intent,
+    sibling scope ('all', 'visual_match', etc.), and collection assignments.
+    """
+    text = str(instruction or "").strip()
+    if not text or text == "[CLEARED_SLATE]":
+        return None
+
+    auto_wipe_detected = bool(_WIPE_INTENT_REGEX.search(text))
+    visual_inspect_requested = bool(_VISUAL_INSPECT_DIRECTIVE_REGEX.search(text))
+    propagate_to_orbit = bool(_PROPAGATE_DIRECTIVE_REGEX.search(text))
+
+    target_model = resolve_ollama_model(ollama_model)
+
+    cur_tags_list = [str(t).strip() for t in (current_photo_tags or []) if str(t).strip()][:25]
+    vis_tags_list = [str(t).strip() for t in (visual_probe_tags or []) if str(t).strip()][:15]
+    col_list = [str(c).strip() for c in (known_collections or []) if str(c).strip()][:30]
+
+    system_prompt = (
+        "You are an expert photography metadata archivist and natural language understanding engine.\n"
+        "Analyze the photographer's spoken instruction/correction and produce structured photographic keywords and archive actions in JSON.\n\n"
+        "CRITICAL RULES:\n"
+        "1. Semantic Photographic Tags (added_tags):\n"
+        "   - Distill spoken natural language into concise, standard photography keywords, concepts, and synonyms.\n"
+        "   - Capitalize each tag cleanly.\n"
+        "   - NEVER output conversational filler phrases like \"There's Some Water\", \"This Was A Photo Shoot\", \"Why Can You Not Categorize\", or raw transcript chatter.\n"
+        "   - Expand subjects into photographic genres, techniques, and domain synonyms (e.g. \"bicycle pedal\" -> [\"Bicycle Pedal\", \"Cycling Equipment\", \"Still Life\", \"Product Photography\", \"Water Droplets\", \"Studio\"]).\n"
+        "   - For family events: \"Spaunhurst family reunion\" -> [\"Spaunhurst Family\", \"Family Reunion\", \"Family Gathering\", \"Portraits\", \"People\", \"Event Photography\"].\n"
+        "2. Antonym & Contradiction Gating (negated_tags):\n"
+        "   - Compare the photographer's spoken subject against Current Photo Tags AND Visual Probe Candidates.\n"
+        "   - Any tags in Current Photo Tags or Visual Probe Candidates that contradict the photographer's described subject or setting (e.g. \"Woman\", \"People\", \"Wine\", \"Winery\", \"Urban\", \"Street\", \"Architecture\" on an inanimate studio bicycle pedal shoot, or \"Glass Sculpture / Crystal\", \"Ferrofluid\" on micro soap bubbles) MUST be added to negated_tags so they are purged.\n"
+        "   - Also include any explicitly negated items (\"it's not a cat\", \"not crystals\", \"not Utah\").\n"
+        "3. Clean-Slate Wipe (clean_slate: boolean):\n"
+        "   - Output true ONLY IF the photographer explicitly requests to wipe, reset, clear, remove all old tags, or start fresh (e.g. \"wipe all tags\", \"clear existing tags\", \"start fresh\"). Otherwise false.\n"
+        "4. Sibling Scope (sibling_scope: \"all\" | \"visual_match\" | \"burst\" | \"window\" | \"single\" | null):\n"
+        "   - MUST BE null unless the photographer explicitly mentions applying to other photos or siblings.\n"
+        "   - \"all\" if user says \"all photos in this shoot\", \"the entire day\", \"all of them\".\n"
+        "   - \"visual_match\" if user says \"the similar ones\", \"visually similar\".\n"
+        "   - \"burst\" if user says \"the burst\", \"in the next few seconds\".\n"
+        "   - \"window\" if user says \"around this time\", \"next 2 hours\".\n"
+        "   - \"single\" if user says \"just this one\", \"only this photo\".\n"
+        "5. Target Collection (target_collection: string or null):\n"
+        "   - MUST BE null unless the photographer explicitly spoke words like \"add to collection...\", \"put in collection...\", \"create collection...\", \"add to book...\", or \"save to book...\".\n"
+        "   - If the photographer mentions a collection that matches a Known Collection case-insensitively, use that exact canonical collection name.\n"
+        "   - If the photographer names a new collection, return the title-cased collection name.\n"
+        "6. Location & Aerial:\n"
+        "   - Extract country, state_region, city, specific_location if mentioned.\n"
+        "   - Set is_aerial to true/false if mentioned, or null.\n\n"
+        "Respond ONLY with valid JSON conforming to this schema:\n"
+        "{\n"
+        '  "added_tags": ["string"],\n'
+        '  "negated_tags": ["string"],\n'
+        '  "clean_slate": false,\n'
+        '  "sibling_scope": null,\n'
+        '  "target_collection": null,\n'
+        '  "country": null,\n'
+        '  "state_region": null,\n'
+        '  "city": null,\n'
+        '  "specific_location": null,\n'
+        '  "is_aerial": null\n'
+        "}"
+    )
+
+    user_prompt = (
+        f"INPUTS:\n"
+        f'Photographer Spoken Instruction: "{text}"\n'
+        f"Current Photo Tags: {json.dumps(cur_tags_list)}\n"
+        f"Visual Probe Candidates: {json.dumps(vis_tags_list)}\n"
+        f"Known Collections: {json.dumps(col_list)}"
+    )
+
+    full_prompt = (
+        f"<|im_start|>system\n{system_prompt}<|im_end|>\n"
+        f"<|im_start|>user\n{user_prompt}<|im_end|>\n"
+        f"<|im_start|>assistant\n"
+    )
+
+    payload = {
+        "model": target_model,
+        "prompt": full_prompt,
+        "format": "json",
+        "stream": False,
+        "options": {"temperature": 0.0},
+        "keep_alive": "30m",
+    }
+
+    try:
+        req = urllib.request.Request(
+            "http://localhost:11434/api/generate",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
+            raw_res = json.loads(resp.read().decode("utf-8"))
+            parsed_json = json.loads(raw_res.get("response", "{}"))
+    except Exception as exc:
+        logging.warning(f"Ollama NLU call failed ({exc}); falling back to rule-based parser.")
+        return None
+
+    raw_added = parsed_json.get("added_tags") or []
+    raw_negated = parsed_json.get("negated_tags") or []
+    clean_slate_llm = bool(parsed_json.get("clean_slate"))
+    sibling_scope = parsed_json.get("sibling_scope")
+    target_collection = parsed_json.get("target_collection")
+
+    # Anti-hallucination check for target_collection: only allow if user spoke collection/book keywords
+    has_col_word = bool(re.search(r"\b(?:collection|collections|book|books|album|curated|series)\b", text, re.IGNORECASE))
+    if not has_col_word:
+        target_collection = None
+    else:
+        # Check if LLM returned a collection name that actually appeared in the user text
+        # If LLM returned something unrelated (like 'Book New' when user said 'collection for Macro Photography'), extract from text
+        if target_collection:
+            target_collection = str(target_collection).strip()
+            if target_collection.lower() not in text.lower():
+                target_collection = None
+
+        if not target_collection:
+            col_m = re.search(r"\b(?:collection|collections|book|album)\s+(?:for|called|named|of)?\s*([A-Za-z0-9\s&_\-]+?)(?:\s+and|\s+apply|\s+to|\.|$)", text, re.IGNORECASE)
+            if col_m:
+                cand_c = col_m.group(1).strip()
+                if cand_c and len(cand_c) > 2:
+                    target_collection = cand_c.title()
+
+        if target_collection:
+            for c in col_list:
+                if c.lower() == target_collection.lower():
+                    target_collection = c
+                    break
+
+    # Sibling scope validation & regex fallback
+    if sibling_scope:
+        sibling_scope = str(sibling_scope).lower().strip()
+        if sibling_scope not in ("all", "visual_match", "burst", "window", "single"):
+            sibling_scope = None
+
+    if not sibling_scope:
+        if re.search(r"\b(?:all photos|all of them|all the photos|entire shoot|entire day|all images|every photo)\b", text, re.IGNORECASE):
+            sibling_scope = "all"
+        elif re.search(r"\b(?:similar|visually similar|visually matching|matching ones|look like this)\b", text, re.IGNORECASE):
+            sibling_scope = "visual_match"
+        elif re.search(r"\b(?:burst|rapid fire|next few seconds)\b", text, re.IGNORECASE):
+            sibling_scope = "burst"
+        elif re.search(r"\b(?:window|timeframe|session|2 hours|two hours)\b", text, re.IGNORECASE):
+            sibling_scope = "window"
+        elif re.search(r"\b(?:just this|only this|single photo|this one only)\b", text, re.IGNORECASE):
+            sibling_scope = "single"
+
+    # Merge explicit add and remove tags
+    added_tags: List[str] = list(explicit_add_tags or [])
+    for t in raw_added:
+        ts = str(t or "").strip()
+        if ts and ts.lower() not in {a.lower() for a in added_tags}:
+            added_tags.append(ts)
+
+    negated_tags: List[str] = list(explicit_remove_tags or [])
+    for n in raw_negated:
+        ns = str(n or "").strip()
+        if ns and ns.lower() not in {x.lower() for x in negated_tags}:
+            negated_tags.append(ns)
+
+    # Filter out negated tags from added_tags
+    neg_low = {n.lower().strip() for n in negated_tags}
+    clean_added = [a for a in added_tags if a.lower().strip() not in neg_low]
+
+    resolved_country = parsed_json.get("country")
+    resolved_state = parsed_json.get("state_region")
+    resolved_city = parsed_json.get("city")
+    resolved_spec = parsed_json.get("specific_location")
+    force_aerial = parsed_json.get("is_aerial")
+
+    wipe_mode = bool(wipe_existing or auto_wipe_detected or clean_slate_llm)
+
+    return {
+        "instruction": text,
+        "intent": "visual_inspect" if (visual_inspect_requested and not clean_added) else "explicit_teach",
+        "visual_inspect_requested": visual_inspect_requested,
+        "wipe_mode": wipe_mode,
+        "clean_slate": bool(clean_slate_llm or auto_wipe_detected or wipe_existing),
+        "wipe_detected_from_speech": bool(auto_wipe_detected or clean_slate_llm),
+        "propagate_to_orbit": bool(propagate_to_orbit or (sibling_scope in ("all", "visual_match"))),
+        "sibling_scope": sibling_scope,
+        "target_collection": target_collection,
+        "custom_user_tags": clean_added[:5],
+        "added_tags": clean_added,
+        "positive_tags": clean_added,
+        "negated_tags": list(dict.fromkeys(negated_tags)),
+        "country": resolved_country,
+        "state_region": resolved_state,
+        "city": resolved_city,
+        "specific_location": resolved_spec,
+        "location_updates": {
+            k: v for k, v in {
+                "country": resolved_country,
+                "state_region": resolved_state,
+                "city": resolved_city,
+                "specific_location": resolved_spec,
+            }.items() if v
+        },
+        "force_aerial": force_aerial,
+        "is_aerial": force_aerial,
+        "llm_used": True,
+    }
+
+
+def parse_natural_language_teach(
+    instruction: str,
+    explicit_add_tags: Optional[List[str]] = None,
+    explicit_remove_tags: Optional[List[str]] = None,
+    wipe_existing: bool = False,
+    current_photo_tags: Optional[List[str]] = None,
+    visual_probe_tags: Optional[List[str]] = None,
+    known_collections: Optional[List[str]] = None,
+    use_llm: bool = True,
+) -> Dict[str, Any]:
+    """
+    Primary NLU entrypoint: Parses photographer spoken or typed instructions into structured
+    photographic keywords, contradiction-gated negations, clean-slate wipe directives,
+    sibling orbit scopes, and collection routing.
+
+    Uses Ollama (Qwen2.5:3b) structured JSON inference with instantaneous fallback to
+    rule-based parsing if Ollama is unreachable.
+    """
+    text = str(instruction or "").strip()
+    if text in ("[CLEARED_SLATE]", "bro just look at it and tag what's in there"):
+        if text == "[CLEARED_SLATE]":
+            text = ""
+
+    if not text:
+        return _parse_natural_language_teach_rulebased(
+            text,
+            explicit_add_tags=explicit_add_tags,
+            explicit_remove_tags=explicit_remove_tags,
+            wipe_existing=wipe_existing,
+        )
+
+    if use_llm:
+        try:
+            ollama_res = parse_natural_language_teach_ollama(
+                instruction=text,
+                explicit_add_tags=explicit_add_tags,
+                explicit_remove_tags=explicit_remove_tags,
+                wipe_existing=wipe_existing,
+                current_photo_tags=current_photo_tags,
+                visual_probe_tags=visual_probe_tags,
+                known_collections=known_collections,
+            )
+            if ollama_res and (
+                ollama_res.get("added_tags")
+                or ollama_res.get("negated_tags")
+                or ollama_res.get("clean_slate")
+                or ollama_res.get("target_collection")
+                or ollama_res.get("sibling_scope")
+            ):
+                return ollama_res
+        except Exception as exc:
+            logging.warning(f"Ollama NLU teach parsing exception: {exc}")
+
+    return _parse_natural_language_teach_rulebased(
+        text,
+        explicit_add_tags=explicit_add_tags,
+        explicit_remove_tags=explicit_remove_tags,
+        wipe_existing=wipe_existing,
+    )
 
 
 def _parse_session_exif_dt(val: Any) -> Optional[datetime]:
@@ -6919,7 +7249,7 @@ def apply_clean_slate_wipe_to_record(
         if v and str(v).strip().lower() != "unknown":
             new_positive_low.add(str(v).strip().lower())
 
-    # Gather old location fields & old tags to determine what gets quarantined vs. preserved
+    # Gather old location fields & old tags to determine what gets quarantined
     old_locs = [
         str(rec.get(fld) or "").strip()
         for fld in ("country", "state_region", "city", "specific_location", "sub_location")
@@ -6933,7 +7263,7 @@ def apply_clean_slate_wipe_to_record(
         if not loc_val or loc_val.lower() in ("unknown", "none", "general", "not specified"):
             continue
         loc_low = loc_val.lower().strip()
-        if loc_low not in new_positive_low and loc_low not in _GENERIC_VISUAL_NOUNS_KEEP:
+        if loc_low not in new_positive_low:
             if loc_val not in quarantined_tags:
                 quarantined_tags.append(loc_val)
 
@@ -6942,20 +7272,11 @@ def apply_clean_slate_wipe_to_record(
         if not t_clean:
             continue
         t_low = t_clean.lower()
-        if t_low in explicit_neg_low:
-            if t_clean not in quarantined_tags:
-                quarantined_tags.append(t_clean)
-            continue
         if t_low in new_positive_low:
             continue
-        # If it is a safelisted generic visual noun (Door, Doors & Windows, Building, Boat, etc.), preserve it!
-        if t_low in _GENERIC_VISUAL_NOUNS_KEEP:
-            if t_clean not in preserved_visual_nouns:
-                preserved_visual_nouns.append(t_clean)
-        else:
-            # Otherwise it was an old regional/location/style guess — quarantine it in negated_tags
-            if t_clean not in quarantined_tags:
-                quarantined_tags.append(t_clean)
+        # Strict Clean-Slate Wipe: Any old keyword not explicitly in the new positive tags is quarantined
+        if t_clean not in quarantined_tags:
+            quarantined_tags.append(t_clean)
 
     # Merge existing negated_tags that don't conflict with the new positive tags
     for prev_neg in _safe_json_list(rec.get("negated_tags")):
@@ -6963,8 +7284,8 @@ def apply_clean_slate_wipe_to_record(
         if pn_clean and pn_clean.lower() not in new_positive_low and pn_clean not in quarantined_tags:
             quarantined_tags.append(pn_clean)
 
-    # Build the clean re-anchored flat keywords: user's new tags first, then preserved generic visual nouns
-    combined_seed_flat = list(dict.fromkeys(added_tags + preserved_visual_nouns))
+    # Build the clean re-anchored flat keywords: strictly user's new tags
+    combined_seed_flat = list(dict.fromkeys(added_tags))
     seed_hier: List[str] = []
     if new_country:
         reg_part = new_state or new_country
@@ -6997,10 +7318,10 @@ def apply_clean_slate_wipe_to_record(
         specific_location=new_spec,
     )
 
-    # Ensure every user-taught positive tag is present at the front and no quarantined tag remains
+    # Clean-slate flat tags: strictly user's approved/added tags (deduplicated)
     quarantined_low = {q.lower().strip() for q in quarantined_tags}
     final_flat: List[str] = []
-    for t in added_tags + rebuilt_flat:
+    for t in added_tags:
         t_str = str(t or "").strip()
         if t_str and t_str.lower() not in quarantined_low and t_str not in final_flat:
             final_flat.append(t_str)
@@ -7034,11 +7355,11 @@ def apply_clean_slate_wipe_to_record(
         "is_aerial": 1 if is_aer else 0,
         "user_context_notes": clean_note,
         "key_subjects": json.dumps(final_flat),
-        "existing_keywords": json.dumps(preserved_visual_nouns),
+        "existing_keywords": json.dumps(final_flat),
         "hierarchical_keywords": json.dumps(final_hier),
         "user_taught_tags": json.dumps(list(dict.fromkeys(added_tags))),
         "negated_tags": json.dumps(list(dict.fromkeys(quarantined_tags))),
-        "preserved_visual_nouns": preserved_visual_nouns,
+        "preserved_visual_nouns": [],
         "quarantined_tags": [q for q in quarantined_tags if q not in explicit_negated],
         "wiped_and_quarantined": [q for q in quarantined_tags if q not in explicit_negated],
     }

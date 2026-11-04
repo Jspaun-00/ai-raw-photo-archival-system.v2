@@ -31,6 +31,7 @@ export default function LightboxModal({
   const [similarityMode, setSimilarityMode] = useState('visual'); // 'visual' | 'orbit' | 'sameday'
   const [similarPhotos, setSimilarPhotos] = useState([]);
   const [sameDayPhotos, setSameDayPhotos] = useState([]);
+  const [similarExpanded, setSimilarExpanded] = useState(false);
   const [loadingSimilar, setLoadingSimilar] = useState(false);
   const [neighbors, setNeighbors] = useState([]);
   const [loadingNeighbors, setLoadingNeighbors] = useState(false);
@@ -1082,7 +1083,7 @@ export default function LightboxModal({
         {/* Right: Studio Metadata Sidebar & Similarity Tabs */}
         <div className="w-96 bg-studio-panel border-l border-studio-border flex flex-col overflow-y-auto text-xs font-sans">
           {/* Quick Rating Bar */}
-          <div className="p-3 border-b border-studio-border bg-studio-bg flex items-center justify-between">
+          <div className="p-3 border-b border-studio-border bg-studio-bg flex items-center justify-between shrink-0">
             <span className="font-mono text-studio-textDim text-[11px] uppercase tracking-wider">
               Rating (1–5 keys)
             </span>
@@ -1107,7 +1108,7 @@ export default function LightboxModal({
           </div>
 
           {/* Technical Quality Metrics */}
-          <div className="p-3 border-b border-studio-border grid grid-cols-2 gap-2 font-mono text-[11px]">
+          <div className="p-3 border-b border-studio-border grid grid-cols-2 gap-2 font-mono text-[11px] shrink-0">
             <div className="p-2 bg-studio-bg border border-studio-border rounded-sm">
               <span className="text-studio-textDim block text-[10px]">Aesthetic Score</span>
               <span className="text-white font-medium text-xs">
@@ -1127,7 +1128,7 @@ export default function LightboxModal({
           </div>
 
           {/* Prominent Keywords & Studio Tags + 3-Button AI Tag Control Group */}
-          <div className="p-3.5 border-b border-studio-border space-y-2.5 bg-studio-bg/30">
+          <div className="p-3.5 border-b border-studio-border space-y-2.5 bg-studio-bg/30 shrink-0">
             {/* 3-Button AI Tag Control Group */}
             <div className="space-y-1.5">
               <div className="grid grid-cols-3 gap-1.5">
@@ -1418,7 +1419,7 @@ export default function LightboxModal({
           </div>
 
           {/* Camera & Exposure Specs */}
-          <div className="p-3 border-b border-studio-border space-y-1.5">
+          <div className="p-3 border-b border-studio-border space-y-1.5 shrink-0">
             <div className="flex items-center gap-1.5 text-white font-medium font-mono text-xs mb-2">
               <Camera className="w-3.5 h-3.5 text-studio-accent" />
               <span>Camera & Exposure</span>
@@ -1436,7 +1437,7 @@ export default function LightboxModal({
           </div>
 
           {/* Strict Location Provenance & 1-Click Location Controls (Always Visible) */}
-          <div className="p-3 border-b border-studio-border space-y-2 bg-studio-bg/20">
+          <div className="p-3 border-b border-studio-border space-y-2 bg-studio-bg/20 shrink-0">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-1.5 text-white font-medium font-mono text-xs">
                 <MapPin className="w-3.5 h-3.5 text-studio-gold" />
@@ -1515,9 +1516,9 @@ export default function LightboxModal({
           </div>
 
           {/* Triple Similarity & "On This Day" Section */}
-          <div className="p-3 border-b border-studio-border flex flex-col flex-1">
-            <div className="flex items-center justify-between mb-2">
-              <div className="flex items-center bg-studio-bg border border-studio-border p-0.5 rounded-sm w-full justify-between">
+          <div className="p-3 border-b border-studio-border flex flex-col shrink-0">
+            <div className="flex items-center justify-between mb-2 gap-1.5">
+              <div className="flex items-center bg-studio-bg border border-studio-border p-0.5 rounded-sm flex-1 justify-between">
                 <button
                   onClick={() => setSimilarityMode('visual')}
                   className={`text-[10px] font-mono px-2 py-1 rounded-sm transition-colors flex-1 text-center ${
@@ -1552,9 +1553,21 @@ export default function LightboxModal({
                   📅 Same Day ({sameDayPhotos.length})
                 </button>
               </div>
-              {loadingSimilar && (
-                <div className="w-3 h-3 ml-1.5 border border-studio-accent border-t-transparent rounded-full animate-spin shrink-0"></div>
-              )}
+              <div className="flex items-center gap-1 shrink-0">
+                {similarPhotos.length > 8 && (
+                  <button
+                    type="button"
+                    onClick={() => setSimilarExpanded(!similarExpanded)}
+                    className="text-[10px] font-mono px-1.5 py-1 rounded-sm bg-studio-bg hover:bg-studio-border border border-studio-border text-studio-textMuted hover:text-amber-300 transition-colors cursor-pointer select-none"
+                    title={similarExpanded ? "Compact similarity grid view" : "Expand similarity grid view to see more rows"}
+                  >
+                    {similarExpanded ? '▴ Compact' : '▾ Expand'}
+                  </button>
+                )}
+                {loadingSimilar && (
+                  <div className="w-3 h-3 border border-studio-accent border-t-transparent rounded-full animate-spin shrink-0"></div>
+                )}
+              </div>
             </div>
 
             {/* 1-Click "Open Full Day in Main Grid" Button when in Same Day tab */}
@@ -1578,7 +1591,12 @@ export default function LightboxModal({
               )}
 
             {/* Similarity / Same Day Thumbnails Grid */}
-            <div className="grid grid-cols-4 gap-1.5 overflow-y-auto max-h-48 pr-1">
+            <div
+              className={`grid grid-cols-4 gap-1.5 overflow-y-auto pr-1 overscroll-contain transition-all duration-200 ${
+                similarExpanded ? 'max-h-[440px]' : 'max-h-72'
+              }`}
+              style={{ minHeight: similarPhotos.length > 0 ? '160px' : 'auto' }}
+            >
               {similarPhotos.length > 0 ? (
                 similarPhotos.map((sim) => {
                   const sThumb = sim.thumb_url || (sim.thumb_360_path ? `/previews/thumbs_360/${sim.thumb_360_path.split('/').pop()}` : null);
@@ -1587,11 +1605,12 @@ export default function LightboxModal({
                     <div
                       key={sim.file_path || sim.file_hash}
                       onClick={() => onSelectPhoto(sim, similarPhotos)}
-                      className={`group relative aspect-square bg-studio-bg border cursor-pointer overflow-hidden rounded-sm ${
+                      className={`group relative aspect-square w-full min-h-[72px] bg-studio-bg border cursor-pointer overflow-hidden rounded-sm shrink-0 select-none ${
                         isCurrent
                           ? 'border-2 border-amber-400 ring-1 ring-amber-400/50'
                           : 'border-studio-border hover:border-studio-accent'
                       }`}
+                      style={{ aspectRatio: '1 / 1', minHeight: '72px', flexShrink: 0 }}
                       title={`${sim.file_path.split('/').pop()} ${
                         sim.similarity !== undefined
                           ? `(Cos Sim: ${(sim.similarity * 100).toFixed(0)}%)`
@@ -1600,15 +1619,20 @@ export default function LightboxModal({
                           : sim.exif_time || ''
                       }`}
                     >
-                      {sThumb && (
+                      {sThumb ? (
                         <img
                           src={sThumb}
                           alt="similar"
-                          className="w-full h-full object-cover group-hover:scale-105 transition-transform"
+                          className="absolute inset-0 w-full h-full object-cover group-hover:scale-105 transition-transform"
+                          loading="lazy"
                         />
+                      ) : (
+                        <div className="absolute inset-0 flex items-center justify-center font-mono text-[9px] text-studio-textDim bg-studio-card">
+                          RAW
+                        </div>
                       )}
                       {isCurrent && (
-                        <div className="absolute top-0.5 left-0.5 px-1 bg-amber-500 text-zinc-950 font-mono text-[8px] font-bold rounded-sm">
+                        <div className="absolute top-0.5 left-0.5 px-1 bg-amber-500 text-zinc-950 font-mono text-[8px] font-bold rounded-sm shadow z-10">
                           NOW
                         </div>
                       )}
@@ -1624,7 +1648,7 @@ export default function LightboxModal({
           </div>
 
           {/* Master File Paths */}
-          <div className="p-3 border-t border-studio-border bg-studio-bg/60 font-mono text-[10px] text-studio-textDim space-y-1">
+          <div className="p-3 border-t border-studio-border bg-studio-bg/60 font-mono text-[10px] text-studio-textDim space-y-1 shrink-0">
             <div className="flex items-center justify-between">
               <span className="truncate max-w-[280px]" title={details.file_path}>
                 RAW: {details.file_path}

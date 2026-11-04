@@ -31,6 +31,7 @@ export default function VoiceTeachScoutModal({
   const [approvedRemoveTags, setApprovedRemoveTags] = useState([])
   const [dismissedTags, setDismissedTags] = useState([])
   const [manualTagInput, setManualTagInput] = useState('')
+  const [targetCollection, setTargetCollection] = useState(null)
 
   // Shoot Session & Visual Orbit Propagation state
   const [orbitCandidates, setOrbitCandidates] = useState([])
@@ -106,7 +107,11 @@ export default function VoiceTeachScoutModal({
       // Guarantee 100% blank input box every time modal opens or target photos change
       setInstruction('')
       baseTextBeforeSpeechRef.current = ''
-      setWipeExisting(false)
+      // Auto-detect if user had cleared tags on selected photo(s) prior to opening Voice Tag
+      const hasClearedSeed = selectedPhotos.some(
+        (p) => p.user_context_notes === '[CLEARED_SLATE]' || p.location_provenance === 'user_cleared'
+      )
+      setWipeExisting(hasClearedSeed)
       setPreviewData(null)
       setApprovedSpokenTags([])
       setApprovedVisualTags([])
@@ -114,6 +119,7 @@ export default function VoiceTeachScoutModal({
       setDismissedTags([])
       dismissedTagsRef.current = []
       setManualTagInput('')
+      setTargetCollection(null)
       setOrbitCandidates([])
       setSelectedOrbitIds(new Set())
       setIsOrbitExpanded(true)
@@ -184,6 +190,16 @@ export default function VoiceTeachScoutModal({
       const data = await res.json()
       setPreviewData(data)
 
+      // Two-Way Clean-Slate Wipe Sync (Voice -> UI Checkbox)
+      if (data.clean_slate) {
+        setWipeExisting(true)
+      }
+
+      // Voice-Driven Collection Routing
+      if (data.target_collection) {
+        setTargetCollection(data.target_collection)
+      }
+
       const dismissedLow = new Set((dismissedTagsRef.current || []).map((t) => String(t).toLowerCase()))
       const spoken = (data.spoken_tags || data.add_tags || []).filter(
         (t) => t && !dismissedLow.has(String(t).toLowerCase())
@@ -205,9 +221,27 @@ export default function VoiceTeachScoutModal({
 
       if (Array.isArray(data.orbit_candidates)) {
         setOrbitCandidates(data.orbit_candidates)
-        if (data.propagate_to_orbit) {
-          const allCandIds = new Set(data.orbit_candidates.map((c) => c.file_hash || c.file_path))
-          setSelectedOrbitIds(allCandIds)
+        const candList = data.orbit_candidates
+        const scope = data.sibling_scope
+
+        // Smart Sibling / Orbit Selection Control
+        if (scope === 'all' || (!scope && data.propagate_to_orbit)) {
+          setOrbitFilterScope('all')
+          setSelectedOrbitIds(new Set(candList.map((c) => c.file_hash || c.file_path)))
+        } else if (scope === 'visual_match') {
+          setOrbitFilterScope('visual')
+          const vis = candList.filter((c) => c.is_visual || ((c.similarity || 0) >= 0.58))
+          setSelectedOrbitIds(new Set(vis.map((c) => c.file_hash || c.file_path)))
+        } else if (scope === 'burst') {
+          setOrbitFilterScope('burst')
+          const bst = candList.filter((c) => c.is_burst || (c.time_delta_seconds <= 300))
+          setSelectedOrbitIds(new Set(bst.map((c) => c.file_hash || c.file_path)))
+        } else if (scope === 'window') {
+          setOrbitFilterScope('window')
+          const win = candList.filter((c) => c.is_window || (c.time_delta_seconds <= 7200))
+          setSelectedOrbitIds(new Set(win.map((c) => c.file_hash || c.file_path)))
+        } else if (scope === 'single') {
+          setSelectedOrbitIds(new Set())
         }
       } else {
         setOrbitCandidates([])
@@ -498,9 +532,12 @@ export default function VoiceTeachScoutModal({
           instruction: instruction.trim(),
           mode,
           wipe_existing: Boolean(wipeExisting || previewData?.wipe_mode),
+          wipe_mode: Boolean(wipeExisting || previewData?.wipe_mode),
+          clean_slate: Boolean(wipeExisting || previewData?.wipe_mode || previewData?.clean_slate),
           approved_tags: combinedApproved,
           removed_tags: approvedRemoveTags,
           dismissed_tags: dismissedTags,
+          target_collection: targetCollection,
         }),
       })
       const rawText = await res.text()
@@ -733,7 +770,8 @@ export default function VoiceTeachScoutModal({
     totalApprovedTeachTags > 0 ||
     approvedRemoveTags.length > 0 ||
     wipeExisting ||
-    Boolean(previewData?.wipe_mode)
+    Boolean(previewData?.wipe_mode) ||
+    Boolean(targetCollection)
 
   return (
     <div
@@ -977,8 +1015,11 @@ export default function VoiceTeachScoutModal({
                       src={p.thumb_url || p.preview_url}
                       alt={p.filename || 'thumb'}
                       style={{
-                        width: '30px',
-                        height: '30px',
+                        width: '32px',
+                        height: '32px',
+                        minWidth: '32px',
+                        minHeight: '32px',
+                        flexShrink: 0,
                         borderRadius: '6px',
                         objectFit: 'cover',
                         border: '1px solid rgba(255,255,255,0.3)',
@@ -1026,15 +1067,13 @@ export default function VoiceTeachScoutModal({
                     display: 'flex',
                     alignItems: 'center',
                     gap: '6px',
-                    background:
-                      wipeExisting || previewData?.wipe_mode
-                        ? 'rgba(245, 158, 11, 0.22)'
-                        : 'rgba(255,255,255,0.06)',
-                    border:
-                      wipeExisting || previewData?.wipe_mode
-                        ? '1px solid rgba(251, 191, 36, 0.65)'
-                        : '1px solid rgba(255,255,255,0.16)',
-                    color: wipeExisting || previewData?.wipe_mode ? '#fde68a' : '#cbd5e1',
+                    background: wipeExisting
+                      ? 'rgba(245, 158, 11, 0.22)'
+                      : 'rgba(255,255,255,0.06)',
+                    border: wipeExisting
+                      ? '1px solid rgba(251, 191, 36, 0.65)'
+                      : '1px solid rgba(255,255,255,0.16)',
+                    color: wipeExisting ? '#fde68a' : '#cbd5e1',
                     padding: '7px 11px',
                     borderRadius: '9px',
                     fontSize: '12.5px',
@@ -1045,7 +1084,7 @@ export default function VoiceTeachScoutModal({
                 >
                   <input
                     type="checkbox"
-                    checked={Boolean(wipeExisting || previewData?.wipe_mode)}
+                    checked={wipeExisting}
                     onChange={(e) => setWipeExisting(e.target.checked)}
                     style={{ accentColor: '#f59e0b', cursor: 'pointer' }}
                   />
@@ -1059,6 +1098,8 @@ export default function VoiceTeachScoutModal({
                   onClick={() => {
                     setInstruction('')
                     baseTextBeforeSpeechRef.current = ''
+                    setWipeExisting(false)
+                    setTargetCollection(null)
                     setPreviewData(null)
                     setApprovedSpokenTags([])
                     setApprovedVisualTags([])
@@ -1172,6 +1213,44 @@ export default function VoiceTeachScoutModal({
                 padding: '6px 0',
               }}
             >
+              {/* Voice-Routed Collection Assignment Badge */}
+              {targetCollection && (
+                <div
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '7px',
+                    background: 'rgba(168, 85, 247, 0.22)',
+                    border: '1.5px solid rgba(192, 132, 252, 0.65)',
+                    color: '#f3e8ff',
+                    fontSize: '13.5px',
+                    fontWeight: 700,
+                    padding: '6px 12px',
+                    borderRadius: '999px',
+                  }}
+                  title="Photos will be added to this collection on commit. Click × to cancel collection assignment."
+                >
+                  <span>📚 Add to Collection: <strong>{targetCollection}</strong></span>
+                  <button
+                    type="button"
+                    onClick={() => setTargetCollection(null)}
+                    style={{
+                      background: 'none',
+                      border: 'none',
+                      color: '#fca5a5',
+                      fontWeight: 900,
+                      fontSize: '15px',
+                      cursor: 'pointer',
+                      padding: 0,
+                      lineHeight: 1,
+                      marginLeft: '2px',
+                    }}
+                  >
+                    ×
+                  </button>
+                </div>
+              )}
+
               {/* 1. Spoken / Custom Tags & Locations (`🎙️`) */}
               {approvedSpokenTags.map((tag) => (
                 <button
@@ -1512,8 +1591,9 @@ export default function VoiceTeachScoutModal({
                 {isOrbitExpanded && (
                   <div
                     style={{
-                      maxHeight: '230px',
+                      maxHeight: 'min(380px, 45vh)',
                       overflowY: 'auto',
+                      overscrollBehavior: 'contain',
                       display: 'grid',
                       gridTemplateColumns: 'repeat(auto-fill, minmax(135px, 1fr))',
                       gap: '8px',
@@ -1541,7 +1621,7 @@ export default function VoiceTeachScoutModal({
                             transition: 'all 0.12s ease-in-out',
                           }}
                         >
-                          <div style={{ position: 'relative', width: '100%', height: '88px', background: '#020617' }}>
+                          <div style={{ position: 'relative', width: '100%', height: '88px', minHeight: '88px', flexShrink: 0, background: '#020617' }}>
                             {cand.thumb_url || cand.preview_url ? (
                               <img
                                 src={cand.thumb_url || cand.preview_url}

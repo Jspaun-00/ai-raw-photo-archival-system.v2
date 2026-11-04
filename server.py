@@ -82,6 +82,7 @@ from stage2_vlm import (
     compute_clip_concept_probes_for_rows,
     discover_visual_subjects_for_records,
     find_session_orbit_candidates,
+    is_tag_contradicted_by_negated,
     parse_natural_language_teach,
     reassess_records_deep,
     reassess_records_fast,
@@ -3389,6 +3390,69 @@ async def create_collection(payload: CreateCollectionPayload):
     return serialized
 
 
+def add_photos_to_collection_by_name(
+    collection_name: str,
+    photo_ids: List[str],
+    db_path: Path = DEFAULT_DB_PATH,
+) -> Optional[Dict[str, Any]]:
+    """
+    Finds or creates a collection by name (case-insensitive) and adds photo_ids to it.
+    Used for voice-driven collection routing.
+    """
+    clean_name = str(collection_name or "").strip()
+    if not clean_name:
+        return None
+    conn = get_db_connection(db_path)
+    cursor = conn.cursor()
+    existing = cursor.execute(
+        "SELECT * FROM collections WHERE LOWER(name) = LOWER(?)", (clean_name,)
+    ).fetchone()
+    if existing:
+        cid = existing["id"]
+        canonical_name = existing["name"]
+    else:
+        cursor.execute(
+            """
+            INSERT INTO collections (name, description, cover_photo_id, created_at, updated_at)
+            VALUES (?, ?, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            """,
+            (clean_name, "Created via AI Voice Teach & Scout"),
+        )
+        cid = cursor.lastrowid
+        canonical_name = clean_name
+
+    added_count = 0
+    for pid in photo_ids:
+        if not pid:
+            continue
+        rec = resolve_photo_record(pid)
+        canonical_pid = rec["file_hash"] if rec and rec.get("file_hash") else str(pid)
+        max_order = cursor.execute(
+            "SELECT COALESCE(MAX(sort_order), -1) FROM collection_items WHERE collection_id = ?",
+            (cid,),
+        ).fetchone()[0]
+        cursor.execute(
+            """
+            INSERT OR IGNORE INTO collection_items (collection_id, photo_id, sort_order, added_at)
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+            """,
+            (cid, canonical_pid, int(max_order) + 1),
+        )
+        cursor.execute(
+            "UPDATE collections SET cover_photo_id = COALESCE(cover_photo_id, ?), updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (canonical_pid, cid),
+        )
+        added_count += 1
+
+    conn.commit()
+    col_row = dict(cursor.execute("SELECT * FROM collections WHERE id = ?", (cid,)).fetchone())
+    serialized = _serialize_collection_row(conn, col_row)
+    conn.close()
+    serialized["canonical_name"] = canonical_name
+    serialized["added_count"] = added_count
+    return serialized
+
+
 @app.get("/api/collections/{collection_id}")
 async def get_collection_details(collection_id: int):
     conn = get_db_connection(DEFAULT_DB_PATH)
@@ -4301,6 +4365,7 @@ class TeachPreviewRequest(BaseModel):
     wipe_existing: Optional[bool] = False
     wipe_mode: Optional[bool] = False
     clean_slate: Optional[bool] = False
+    target_collection: Optional[str] = None
 
 
 class TeachApplyRequest(BaseModel):
@@ -4316,6 +4381,7 @@ class TeachApplyRequest(BaseModel):
     dismissed_tags: Optional[List[str]] = None
     location_updates: Optional[Dict[str, Optional[str]]] = None
     clear_existing_notes: Optional[bool] = False
+    target_collection: Optional[str] = None
 
 
 def _extract_visual_vector_candidates_for_rows(
@@ -4344,7 +4410,7 @@ def _extract_visual_vector_candidates_for_rows(
     def _add_vis(label: str) -> None:
         clean_l = str(label or "").strip()
         ll = clean_l.lower()
-        if not clean_l or ll in spoken_low or ll in neg_low or ll in seen_vis:
+        if not clean_l or ll in spoken_low or is_tag_contradicted_by_negated(clean_l, list(neg_low)) or ll in seen_vis:
             return
         seen_vis.add(ll)
         visual_candidates.append(clean_l)
@@ -4419,17 +4485,18 @@ def _extract_visual_vector_candidates_for_rows(
     except Exception as exc:
         logging.warning(f"Visual vector candidate probe in teach preview skipped: {exc}")
 
-    # Also surface verified generic visual nouns already present on the photo(s)
-    for r in rows:
-        existing_flat = (
-            _parse_json_list(r.get("key_subjects"))
-            + _parse_json_list(r.get("existing_keywords"))
-            + _parse_json_list(r.get("lrcat_keywords"))
-        )
-        for tok in existing_flat:
-            ts = str(tok or "").strip()
-            if ts and ts.lower() in _GENERIC_VISUAL_NOUNS_KEEP:
-                _add_vis(ts)
+    # Also surface verified generic visual nouns already present on the photo(s) (unless clean slate wipe)
+    if not wipe_mode:
+        for r in rows:
+            existing_flat = (
+                _parse_json_list(r.get("key_subjects"))
+                + _parse_json_list(r.get("existing_keywords"))
+                + _parse_json_list(r.get("lrcat_keywords"))
+            )
+            for tok in existing_flat:
+                ts = str(tok or "").strip()
+                if ts and ts.lower() in _GENERIC_VISUAL_NOUNS_KEEP:
+                    _add_vis(ts)
 
     return visual_candidates[:10]
 
@@ -4439,17 +4506,12 @@ def _extract_visual_vector_candidates_for_rows(
 async def preview_teach_instruction(payload: TeachPreviewRequest):
     text = (payload.instruction or payload.prompt or "").strip()
     force_wipe = bool(payload.wipe_existing or payload.wipe_mode or payload.clean_slate)
-    parsed = parse_natural_language_teach(text, wipe_existing=force_wipe)
-    is_wipe_mode = bool(parsed.get("wipe_mode"))
 
-    spoken_tags: List[str] = list(parsed.get("positive_tags") or [])
-    remove_tags: List[str] = list(parsed.get("negated_tags") or [])
-    visual_tags: List[str] = []
-
+    target_rows: List[Dict[str, Any]] = []
+    known_collections: List[str] = []
+    conn = get_db_connection(DEFAULT_DB_PATH)
+    cursor = conn.cursor()
     if payload.photo_ids:
-        conn = get_db_connection(DEFAULT_DB_PATH)
-        cursor = conn.cursor()
-        target_rows: List[Dict[str, Any]] = []
         for pid in payload.photo_ids[:24]:
             pid_str = str(pid)
             rowid_val = int(pid) if str(pid).isdigit() else -1
@@ -4467,50 +4529,94 @@ async def preview_teach_instruction(payload: TeachPreviewRequest):
             ).fetchone()
             if row:
                 target_rows.append(dict(row))
-        conn.close()
+    known_collections = [r[0] for r in cursor.execute("SELECT name FROM collections ORDER BY name ASC").fetchall() if r[0]]
+    conn.close()
 
-        if target_rows:
-            visual_tags = _extract_visual_vector_candidates_for_rows(
-                rows=target_rows,
-                spoken_tags=spoken_tags,
-                negated_tags=remove_tags,
-                wipe_mode=is_wipe_mode,
-            )
-            if parsed.get("visual_inspect_requested"):
-                try:
-                    inspected = discover_visual_subjects_for_records(
-                        records=target_rows,
-                        db_path=DEFAULT_DB_PATH,
-                        vectors_path=DEFAULT_VECTORS_PATH,
-                        encode_text_batch_fn=encode_text_batch,
-                    )
-                    seen_vt = {v.lower() for v in visual_tags} | {s.lower() for s in spoken_tags}
-                    for dt in inspected.get("discovered_tags", []):
-                        dt_s = str(dt or "").strip()
-                        if dt_s and dt_s.lower() not in seen_vt:
-                            seen_vt.add(dt_s.lower())
-                            visual_tags.append(dt_s)
-                except Exception as exc:
-                    logging.warning(f"Visual inspect discovery in teach preview failed: {exc}")
-            if is_wipe_mode:
-                seen_rem = {r.lower() for r in remove_tags}
-                for rdict in target_rows:
-                    cleaned_preview = apply_clean_slate_wipe_to_record(
-                        rdict=rdict,
-                        parsed_teach=parsed,
-                        instruction_text=text,
-                    )
-                    for q_tag in cleaned_preview.get("quarantined_tags", []):
-                        ql = str(q_tag or "").strip().lower()
-                        if ql and ql not in seen_rem:
-                            seen_rem.add(ql)
-                            remove_tags.append(str(q_tag).strip())
+    # If ANY target photo has [CLEARED_SLATE] or user_cleared provenance, auto-enable clean_slate wipe
+    if any(
+        str(r.get("user_context_notes") or "").strip() == "[CLEARED_SLATE]"
+        or str(r.get("location_provenance") or "").strip() == "user_cleared"
+        for r in target_rows
+    ):
+        force_wipe = True
+
+    # Extract all tags currently on the target photo(s)
+    current_photo_tags: List[str] = []
+    seen_cpt: set = set()
+    for r in target_rows:
+        for fld in ("key_subjects", "existing_keywords", "lrcat_keywords", "user_taught_tags"):
+            for tok in _parse_json_list(r.get(fld)):
+                ts = str(tok or "").strip()
+                if ts and ts.lower() not in seen_cpt:
+                    seen_cpt.add(ts.lower())
+                    current_photo_tags.append(ts)
+
+    # Calculate preliminary visual vector probe tags for the target rows
+    initial_visual_tags = _extract_visual_vector_candidates_for_rows(
+        rows=target_rows,
+        spoken_tags=[],
+        negated_tags=[],
+        wipe_mode=force_wipe,
+    ) if target_rows else []
+
+    parsed = parse_natural_language_teach(
+        text,
+        wipe_existing=force_wipe,
+        current_photo_tags=current_photo_tags,
+        visual_probe_tags=initial_visual_tags,
+        known_collections=known_collections,
+    )
+    is_wipe_mode = bool(parsed.get("wipe_mode") or parsed.get("clean_slate") or force_wipe)
+
+    spoken_tags: List[str] = list(parsed.get("positive_tags") or [])
+    remove_tags: List[str] = list(parsed.get("negated_tags") or [])
+    visual_tags: List[str] = []
+
+    if target_rows:
+        visual_tags = _extract_visual_vector_candidates_for_rows(
+            rows=target_rows,
+            spoken_tags=spoken_tags,
+            negated_tags=remove_tags,
+            wipe_mode=is_wipe_mode,
+        )
+        if parsed.get("visual_inspect_requested"):
+            try:
+                inspected = discover_visual_subjects_for_records(
+                    records=target_rows,
+                    db_path=DEFAULT_DB_PATH,
+                    vectors_path=DEFAULT_VECTORS_PATH,
+                    encode_text_batch_fn=encode_text_batch,
+                )
+                seen_vt = {v.lower() for v in visual_tags} | {s.lower() for s in spoken_tags}
+                for dt in inspected.get("discovered_tags", []):
+                    dt_s = str(dt or "").strip()
+                    if dt_s and dt_s.lower() not in seen_vt:
+                        seen_vt.add(dt_s.lower())
+                        visual_tags.append(dt_s)
+            except Exception as exc:
+                logging.warning(f"Visual inspect discovery in teach preview failed: {exc}")
+        if is_wipe_mode:
+            seen_rem = {r.lower() for r in remove_tags}
+            for rdict in target_rows:
+                cleaned_preview = apply_clean_slate_wipe_to_record(
+                    rdict=rdict,
+                    parsed_teach=parsed,
+                    instruction_text=text,
+                )
+                for q_tag in cleaned_preview.get("quarantined_tags", []):
+                    ql = str(q_tag or "").strip().lower()
+                    if ql and ql not in seen_rem:
+                        seen_rem.add(ql)
+                        remove_tags.append(str(q_tag).strip())
+
+    # Antonym gating: strip any visual candidate that is contradicted / in remove_tags
+    visual_tags = [v for v in visual_tags if not is_tag_contradicted_by_negated(v, remove_tags)]
 
     combined_add: List[str] = []
     seen_comb: set = set()
     for t in spoken_tags + visual_tags:
         tl = str(t or "").strip().lower()
-        if tl and tl not in seen_comb:
+        if tl and tl not in seen_comb and not is_tag_contradicted_by_negated(t, remove_tags):
             seen_comb.add(tl)
             combined_add.append(str(t).strip())
 
@@ -4529,9 +4635,12 @@ async def preview_teach_instruction(payload: TeachPreviewRequest):
     return {
         "status": "ok",
         "parsed": parsed,
+        "clean_slate": bool(parsed.get("clean_slate") or is_wipe_mode),
         "wipe_mode": is_wipe_mode,
         "wipe_detected_from_speech": bool(parsed.get("wipe_detected_from_speech")),
         "propagate_to_orbit": bool(parsed.get("propagate_to_orbit")),
+        "sibling_scope": parsed.get("sibling_scope"),
+        "target_collection": parsed.get("target_collection"),
         "custom_user_phrases": parsed.get("custom_user_tags", []),
         "spoken_tags": spoken_tags,
         "visual_tags": visual_tags,
@@ -4774,6 +4883,17 @@ async def apply_teach_instruction(payload: TeachApplyRequest):
                 seen_match_fp.add(rd["file_path"])
                 matched_rows.append(rd)
 
+    # Detect if ANY seed/target photo was in [CLEARED_SLATE] state or has user_cleared provenance.
+    # If the photographer cleared tags on a photo, spoke new tags, and selected orbit siblings to propagate to,
+    # the intended behavior is to propagate the clean-slate wipe & re-anchor across ALL selected photos!
+    seed_had_cleared_slate = any(
+        str(r.get("user_context_notes") or "").strip() == "[CLEARED_SLATE]"
+        or str(r.get("location_provenance") or "").strip() == "user_cleared"
+        for r in matched_rows
+    )
+    if seed_had_cleared_slate or force_wipe:
+        is_wipe_mode = True
+
     for rdict in matched_rows:
         fp = rdict["file_path"]
         canonical_ids.append(rdict.get("file_hash") or fp)
@@ -4784,23 +4904,25 @@ async def apply_teach_instruction(payload: TeachApplyRequest):
                 parsed_teach=parsed,
                 instruction_text=instruction_text,
             )
-            # If user explicitly approved a pruned tag list, ensure dismissed tags are stripped from cleaned output
-            if payload.approved_tags is not None:
-                cleaned_ks = [
+            # Strict Clean-Slate Wipe: All prior tags are wiped!
+            # Key subjects, existing keywords, and user taught tags are set strictly to the approved positive tags.
+            final_approved = [
+                t for t in positive_new
+                if str(t).strip().lower() not in dismissed_low_set
+            ]
+            if not final_approved and instruction_text:
+                final_approved = [
                     t for t in _parse_json_list(cleaned.get("key_subjects"))
                     if str(t).strip().lower() not in dismissed_low_set
                 ]
-                cleaned_ek = [
-                    t for t in _parse_json_list(cleaned.get("existing_keywords"))
-                    if str(t).strip().lower() not in dismissed_low_set
-                ]
-                cleaned["user_taught_tags"] = json.dumps(positive_new)
-                cleaned["key_subjects"] = json.dumps(list(dict.fromkeys(positive_new + cleaned_ks)))
-                cleaned["existing_keywords"] = json.dumps(list(dict.fromkeys(positive_new + cleaned_ek)))
+
+            cleaned["user_taught_tags"] = json.dumps(final_approved)
+            cleaned["key_subjects"] = json.dumps(final_approved)
+            cleaned["existing_keywords"] = json.dumps(final_approved)
 
             wipe_summaries.append({
                 "file_hash": rdict.get("file_hash"),
-                "preserved_visual_nouns": cleaned.get("preserved_visual_nouns", []),
+                "preserved_visual_nouns": [],
                 "quarantined_tags": cleaned.get("quarantined_tags", []),
             })
             cursor.execute(
@@ -4822,8 +4944,8 @@ async def apply_teach_instruction(payload: TeachApplyRequest):
                     key_subjects = ?,
                     existing_keywords = ?,
                     hierarchical_keywords = ?,
-                    tag_authority_weight = 0.85,
-                    assessment_tier = 'level1',
+                    tag_authority_weight = ?,
+                    assessment_tier = ?,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE file_path = ?
                 """,
@@ -4844,6 +4966,8 @@ async def apply_teach_instruction(payload: TeachApplyRequest):
                     cleaned["key_subjects"],
                     cleaned["existing_keywords"],
                     cleaned["hierarchical_keywords"],
+                    2.0 if final_approved else 0.85,
+                    'level3_user' if final_approved else 'level1',
                     fp,
                 ),
             )
@@ -4947,7 +5071,7 @@ async def apply_teach_instruction(payload: TeachApplyRequest):
         if canonical_ids:
             conn2 = get_db_connection(DEFAULT_DB_PATH)
             seen_fp = set()
-            for i in range(0, min(len(canonical_ids), 500), 400):
+            for i in range(0, min(len(canonical_ids), 1500), 400):
                 chunk_c = canonical_ids[i : i + 400]
                 placeholders = ",".join("?" for _ in chunk_c)
                 sql = f"""
@@ -5027,6 +5151,14 @@ async def apply_teach_instruction(payload: TeachApplyRequest):
                 content={"status": "error", "detail": f"Teach AI reassess error: {exc}"},
             )
 
+    col_assigned = None
+    target_col = payload.target_collection or parsed.get("target_collection")
+    if target_col and canonical_ids:
+        try:
+            col_assigned = add_photos_to_collection_by_name(target_col, canonical_ids, DEFAULT_DB_PATH)
+        except Exception as col_err:
+            logging.warning(f"Voice collection assignment failed for '{target_col}': {col_err}")
+
     return {
         "status": "ok",
         "mode": reassess_mode,
@@ -5036,6 +5168,8 @@ async def apply_teach_instruction(payload: TeachApplyRequest):
         "parsed": parsed,
         "approved_tags": positive_new,
         "removed_tags": negated_new,
+        "target_collection": target_col,
+        "collection_assigned": col_assigned,
         "undo_available": True,
         "undo_id": undo_entry if isinstance(undo_entry, int) else (undo_entry.get("undo_id") if isinstance(undo_entry, dict) else None),
         "undo_status": get_undo_status(DEFAULT_DB_PATH),

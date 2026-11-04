@@ -999,11 +999,18 @@ export default function App() {
       } else {
         fetchUndoStatus();
       }
-      showGlobalToast(
-        `Applied permanent AI Teach overrides to ${data?.updated_count || updatedPhotos.length} photo(s)`
-      );
+      if (data?.collection_assigned) {
+        loadCollections();
+        showGlobalToast(
+          `Applied AI Teach overrides & added ${data?.updated_count || updatedPhotos.length} photo(s) to collection '${data.collection_assigned.name || data.target_collection}'`
+        );
+      } else {
+        showGlobalToast(
+          `Applied permanent AI Teach overrides to ${data?.updated_count || updatedPhotos.length} photo(s)`
+        );
+      }
     },
-    [viewMode, fetchTrips, fetchUndoStatus, applyUndoStatusPayload]
+    [viewMode, fetchTrips, fetchUndoStatus, applyUndoStatusPayload, loadCollections]
   );
 
   // Callback when AI Archive Scout builds a story collection

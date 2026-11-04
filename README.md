@@ -1,4 +1,4 @@
-# 📸 MR Darkroom (v4.3.0)
+# 📸 MR Darkroom (v4.4.0)
 ### Local AI-Assisted RAW Photo Archival, 4-Pass Visual Cascade, Multi-Scale Spatio-Temporal Consensus & Curation Studio
 
 [![macOS](https://img.shields.io/badge/Platform-macOS%2013%2B%20(Apple%20Silicon)-000000?style=for-the-badge&logo=apple&logoColor=white)](#)
@@ -52,7 +52,7 @@ Tools like Adobe Lightroom Classic become painfully sluggish at this scale:
 
 ---
 
-## 🏗️ Technical Architecture (v4.3.0)
+## 🏗️ Technical Architecture (v4.4.0)
 
 MR Darkroom operates as an asynchronous, multi-process studio decoupled into a high-performance **FastAPI backend** and an ultra-responsive **React 18 + TailwindCSS frontend**:
 
@@ -84,12 +84,13 @@ MR Darkroom operates as an asynchronous, multi-process studio decoupled into a h
 | - Pass 3: Specialist Drill  |   | - Gravitational Momentum |   | - stage1_embeddings.npy (768-d) |
 | - Pass 4: Identity Cluster  |   | - Contrastive Habitat    |   | - undo_snapshots.db             |
 | - OpenCLIP ViT-L/14 (MPS)   |   | - Ollama Qwen2.5-VL 7B   |   | - thumbs_360 / previews_1600    |
+|                             |   | - Ollama Structured NLU  |   |                                 |
 +-----------------------------+   +--------------------------+   +---------------------------------+
 ```
 
 ---
 
-## ⚡ Core Technical Features (v4.3.0)
+## ⚡ Core Technical Features (v4.4.0)
 
 ### 1. The 4-Pass Top-Down Iterative Visual Cascade (< 8ms/photo on Apple Metal GPU)
 Solves why monolithic global vectors miss small focal subjects (e.g. pets, tools, rims) while guaranteeing zoomed sub-crops never hallucinate cross-biome objects:
@@ -141,11 +142,20 @@ Eliminates tagging flickering and inconsistent specialist recognition across ide
 ---
 
 ### 5. Speech-to-Text & Conversational AI Curation ("Teach AI" & "Scout AI")
-- **Conversational Speech NLP Engine (`parse_natural_language_teach`):** Handles natural, freeform spoken English and complex multi-clause instructions without brittle command syntax:
-  - **Conversational Rhetorical Normalization:** Filters spoken frustration or conversational queries (e.g. *"why can you not categorize it as mushrooms mushrooms"*) into clean affirmative directives without leaking profanity, filler, or verbs into metadata.
-  - **Replacement & Negation Semantics:** Accurately interprets *"I want you to remove winter snow, Utah and replace it with Paul River rolling hills"*—negating `Winter`, `Snow`, and `Utah` (suppressing location leakage), while extracting `Paul River Rolling Hills`, `Rolling Hills`, `Hills`, and `Landscape`.
-  - **Primary Location Resolution:** Disambiguates travel narratives (e.g. *"trip out to Wyoming and we flew over pivots in Montana, and this was primarily in Montana"*) by prioritizing explicit primacy phrases (`primarily in`, `mostly in`) to set `state_region: Montana` and activating aerial modes (`force_aerial: True`).
-  - **Bounded Negation Engine:** Strips leading determiners and filters negative anchors (`"not a cat"`, `"isn't a mountain"`, `"not desert"`) to purge contradictory tags while preventing positive terms from being suppressed.
+- **Local On-Device Ollama Structured JSON NLU Engine (v4.4):**
+  - Replaces brittle regex matching with a local, zero-cloud Ollama NLU inference engine (`qwen2.5:3b`, `llama3.2:3b`, or `qwen2.5vl` text-layer) operating at sub-100ms response times.
+  - Structured output (`format="json"`, `temperature=0.0`, `keep_alive="30m"`) distills conversational spoken English into clean photographic metadata.
+  - Seamless fallback to heuristic multi-clause NLP parsing if Ollama is temporarily stopped or unavailable.
+- **Semantic Inference, Synonyms & Contextual Expansion:**
+  - Naturally expands high-level spoken descriptions into professional studio tags without literal filler:
+    * *"this was a photo shoot for a bicycle pedal it's still life and there's some water"* $\rightarrow$ `["Bicycle Pedal", "Cycling Equipment", "Still Life", "Product Photography", "Water Droplets", "Studio"]`.
+    * *"Spaunhurst family reunion photographs"* $\rightarrow$ `["Spaunhurst Family", "Family Reunion", "Portraits", "People", "Gathering / Event"]`.
+- **Antonym Reasoning & Visual Candidate Gating (Fixes `⚡ Urban` / `⚡ Street` Bleed):**
+  - Compares spoken context against both target tags and visual probe candidates.
+  - Automatically identifies contradictions and purges conflicting guesses: describing indoor macro crystals or tabletop still lifes suppresses out-of-context probe candidate tags like `Urban`, `Street`, or `Cat` without requiring manual negation.
+  - Full support for explicit spoken negations (*"remove Utah"*, *"this isn't a mountain"*).
+- **Clean-Slate Wipe & Propagated Tag Replacement:**
+  - When "Clean-Slate Wipe" is checked or tags are wiped, propagating to siblings (Burst, 2h Window, or Full Shoot Day) honors replacement semantics across all selected targets rather than appending spoken tags onto contradictory legacy tags.
 - **Multi-Scope Shoot Orbit & Visual Propagation:**
   - Identifies sibling frames across multiple adjustable temporal and visual scopes:
     1. `⚡ Burst (±5m)`: continuous bursts, brackets, and focus-stack runs ($\Delta t \le 300\text{s}$)
@@ -153,6 +163,9 @@ Eliminates tagging flickering and inconsistent specialist recognition across ide
     3. `📅 Full Shoot Day`: all photos captured on the shoot date
     4. `✨ Visual Similarity`: OpenCLIP embedding cosine similarity ($\ge 0.58$)
   - Features 1-click batch selection (`Select All Visible`, `Select All Day`, `Deselect All`) and interactive multi-scope tabs.
+- **Rigid 1:1 Aspect Ratio Decoupling & Expandable Similarity Grid:**
+  - Decoupled preview images via absolute inset containers (`aspect-square min-h-[72px]`) prevent thumbnail smushing or vertical collapse in large sibling sets.
+  - Features smooth vertical scrolling and an on-demand **`▾ Expand` / `▴ Compact`** view toggle for rapid session reviews.
 - **Persistent Grid Scroll Retention:**
   - Virtualized gallery grid (`PhotoGrid.jsx`) anchors and retains exact scroll position across tag commitments and in-place metadata updates without unwanted jumping to the top of the collection.
 - **Scout AI Mode:** Zero-shot visual semantic search across the entire archive. Search natural concepts like *"solitary tree in golden morning mist"* or *"black cat sleeping on bohemian throw blanket"*.
