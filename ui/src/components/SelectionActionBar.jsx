@@ -27,6 +27,7 @@ export default function SelectionActionBar({
   collectionsCount = 0,
   onBatchAddToCollection,
   onCreateCollectionWithSelected,
+  onBatchExport,
 }) {
   const [showBookMenu, setShowBookMenu] = useState(false);
   const [newBookName, setNewBookName] = useState('');
@@ -39,6 +40,10 @@ export default function SelectionActionBar({
   const [editingEntityId, setEditingEntityId] = useState(null);
   const [editingNameVal, setEditingNameVal] = useState('');
   const [savingEntityId, setSavingEntityId] = useState(null);
+
+  // Export menu state
+  const [exportMenuOpen, setExportMenuOpen] = useState(false);
+  const exportRef = useRef(null);
 
   // Idle Rescan menu state
   const [rescanMenuOpen, setRescanMenuOpen] = useState(false);
@@ -99,6 +104,9 @@ export default function SelectionActionBar({
       }
       if (bookRef.current && !bookRef.current.contains(e.target)) {
         setShowBookMenu(false);
+      }
+      if (exportRef.current && !exportRef.current.contains(e.target)) {
+        setExportMenuOpen(false);
       }
     };
     document.addEventListener('mousedown', handleClickOutside);
@@ -1378,6 +1386,162 @@ export default function SelectionActionBar({
                     Create
                   </button>
                 </form>
+              </div>
+            )}
+          </div>
+
+          <div style={{ width: '1px', height: '22px', background: 'rgba(255,255,255,0.14)' }} />
+
+          {/* 📤 Export Dropdown Menu (UPWARD OPENING) */}
+          <div ref={exportRef} style={{ position: 'relative' }}>
+            <button
+              type="button"
+              onClick={() => setExportMenuOpen((prev) => !prev)}
+              disabled={isBatchBusy}
+              title="Export or copy selected photos (High-Res JPEGs, Original Masters, or 65-inch TV Showcase 16:9 crop)"
+              style={{
+                background: exportMenuOpen
+                  ? 'rgba(16, 185, 129, 0.28)'
+                  : 'rgba(16, 185, 129, 0.18)',
+                border: exportMenuOpen
+                  ? '1px solid #10b981'
+                  : '1px solid rgba(52, 211, 153, 0.55)',
+                color: '#6ee7b7',
+                fontSize: '13px',
+                fontWeight: 700,
+                padding: '7px 12px',
+                borderRadius: '9px',
+                cursor: isBatchBusy ? 'wait' : 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '5px',
+                transition: 'all 0.15s ease',
+              }}
+            >
+              <span>📤 Export</span>
+              <span style={{ fontSize: '11px', opacity: 0.85 }}>▾</span>
+            </button>
+
+            {exportMenuOpen && (
+              <div
+                style={{
+                  position: 'absolute',
+                  bottom: 'calc(100% + 10px)',
+                  right: 0,
+                  width: '360px',
+                  background: '#0f172a',
+                  border: '1px solid rgba(52, 211, 153, 0.4)',
+                  borderRadius: '12px',
+                  padding: '10px',
+                  boxShadow: '0 20px 48px rgba(0, 0, 0, 0.85)',
+                  zIndex: 9600,
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '6px',
+                }}
+              >
+                <div
+                  style={{
+                    fontSize: '11px',
+                    fontWeight: 800,
+                    color: '#94a3b8',
+                    padding: '4px 8px',
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.05em',
+                    borderBottom: '1px solid rgba(255,255,255,0.08)',
+                    marginBottom: '2px',
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                  }}
+                >
+                  <span>Export {selectedCount.toLocaleString()} Selected</span>
+                  <span style={{ color: '#34d399' }}>Desktop</span>
+                </div>
+
+                {/* Option 1: Full-Res JPEG Export */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setExportMenuOpen(false);
+                    if (onBatchExport) onBatchExport('jpeg');
+                  }}
+                  style={{
+                    textAlign: 'left',
+                    padding: '9px 12px',
+                    borderRadius: '8px',
+                    border: '1px solid rgba(255, 255, 255, 0.1)',
+                    background: 'rgba(255, 255, 255, 0.04)',
+                    color: '#f1f5f9',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '3px',
+                  }}
+                >
+                  <div style={{ fontSize: '13px', fontWeight: 700, color: '#f8fafc', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <span>🖼️ High-Res JPEGs</span>
+                    <span style={{ fontSize: '10.5px', color: '#94a3b8', fontWeight: 500 }}>(Full Master Res)</span>
+                  </div>
+                  <div style={{ fontSize: '11px', color: '#cbd5e1', lineHeight: '1.35' }}>
+                    Exports full-resolution print JPEGs in sRGB (Quality 96, 4:4:4 chroma, 300 DPI).
+                  </div>
+                </button>
+
+                {/* Option 2: Copy Originals to Desktop */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setExportMenuOpen(false);
+                    if (onBatchExport) onBatchExport('original');
+                  }}
+                  style={{
+                    textAlign: 'left',
+                    padding: '9px 12px',
+                    borderRadius: '8px',
+                    border: '1px solid rgba(255, 255, 255, 0.1)',
+                    background: 'rgba(255, 255, 255, 0.04)',
+                    color: '#f1f5f9',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '3px',
+                  }}
+                >
+                  <div style={{ fontSize: '13px', fontWeight: 700, color: '#f8fafc', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <span>📁 Copy Originals (RAW / TIF)</span>
+                  </div>
+                  <div style={{ fontSize: '11px', color: '#cbd5e1', lineHeight: '1.35' }}>
+                    Direct byte-for-byte copy of master files (.TIF, .DNG, .IIQ, .NEF) + sidecar .xmp files to Desktop.
+                  </div>
+                </button>
+
+                {/* Option 3: 65" TV Showcase 16:9 Crop JPEGs */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setExportMenuOpen(false);
+                    if (onBatchExport) onBatchExport('tv_showcase');
+                  }}
+                  style={{
+                    textAlign: 'left',
+                    padding: '10px 12px',
+                    borderRadius: '8px',
+                    border: '1px solid rgba(52, 211, 153, 0.45)',
+                    background: 'linear-gradient(135deg, rgba(16, 185, 129, 0.14) 0%, rgba(56, 189, 248, 0.14) 100%)',
+                    color: '#e0f2fe',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '3px',
+                  }}
+                >
+                  <div style={{ fontSize: '13px', fontWeight: 800, color: '#34d399', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <span>📺 65" TV Showcase JPEGs (16:9 Crop)</span>
+                  </div>
+                  <div style={{ fontSize: '11px', color: '#f1f5f9', lineHeight: '1.35' }}>
+                    Center-crops to 16:9 aspect ratio to fit 65" screens. 180 DPI density, max 12,500px on long edge (Quality 96 sRGB).
+                  </div>
+                </button>
               </div>
             )}
           </div>

@@ -904,6 +904,53 @@ export default function App() {
     [selectedPhotosArray, refreshJobStatus, fetchUndoStatus, applyUndoStatusPayload]
   );
 
+  // Batch Export selected (or visible) photos: High-Res JPEG, Copy Original, or 65" TV Showcase 16:9 crop
+  const handleBatchExport = useCallback(
+    async (mode = 'jpeg') => {
+      const targetList = selectedPhotosArray.length > 0 ? selectedPhotosArray : photos;
+      if (!targetList || targetList.length === 0) {
+        showGlobalToast('No photos to export. Select photos or load a catalog first.');
+        return;
+      }
+      const photoIds = targetList.map((p) => p.file_hash || p.file_path).filter(Boolean);
+      if (photoIds.length === 0) return;
+
+      const modeLabels = {
+        jpeg: 'High-Res JPEGs',
+        original: 'Original Masters',
+        tv_showcase: '65" TV Showcase 16:9 JPEGs',
+      };
+      const label = modeLabels[mode] || 'photos';
+
+      showGlobalToast(`Exporting ${photoIds.length.toLocaleString()} ${label} to Desktop...`);
+      setIsBatchBusy(true);
+
+      try {
+        const res = await fetch('/api/photos/export', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            photo_ids: photoIds,
+            mode,
+            async_job: true,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(data.detail || 'Export failed to start');
+        }
+        showGlobalToast(`Started export to ~/Desktop/MRDarkroom_Exports/`);
+        refreshJobStatus();
+      } catch (err) {
+        console.error('Batch export error:', err);
+        showGlobalToast(`Export error: ${err.message}`);
+      } finally {
+        setIsBatchBusy(false);
+      }
+    },
+    [selectedPhotosArray, photos, refreshJobStatus]
+  );
+
   // Rescan active catalog or current archive view (Idle Bottom Dock Rescan)
   const handleReassessCatalog = useCallback(
     async (mode = 'fast_vectors') => {
@@ -1399,6 +1446,7 @@ export default function App() {
         onBatchAddToCollection={handleBatchAddToCollection}
         onCreateCollectionWithSelected={handleBatchCreateCollectionWithSelected}
         onBatchCreateCollection={handleBatchCreateCollectionWithSelected}
+        onBatchExport={handleBatchExport}
       />
 
       {/* Voice / Text AI Teach & Archive Scout Modal */}

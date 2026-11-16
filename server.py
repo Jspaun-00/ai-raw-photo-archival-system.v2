@@ -3831,6 +3831,387 @@ async def reveal_exported_collection_folder(collection_id: int):
     return {"status": "ok", "export_dir": str(export_dir)}
 
 
+class BatchExportRequest(BaseModel):
+    photo_ids: List[str]
+    mode: str = "jpeg"  # "jpeg", "original", "tv_showcase"
+    folder_name: Optional[str] = None
+    async_job: bool = True
+
+
+class RevealFolderRequest(BaseModel):
+    folder_path: str
+
+
+def _resolve_photo_records_by_ids(photo_ids: List[str]) -> List[Dict[str, Any]]:
+    if not photo_ids:
+        return []
+    conn = get_db_connection(DEFAULT_DB_PATH)
+    cursor = conn.cursor()
+    unique_ids = list(dict.fromkeys(str(pid).strip() for pid in photo_ids if pid))
+    rows_by_key: Dict[str, Dict[str, Any]] = {}
+    for i in range(0, len(unique_ids), 400):
+        chunk = unique_ids[i : i + 400]
+        ph = ",".join("?" for _ in chunk)
+        sql = f"""
+            SELECT file_path, file_hash, sibling_path, thumb_360_path, preview_1600_path, title
+            FROM photo_records
+            WHERE file_hash IN ({ph}) OR file_path IN ({ph})
+        """
+        for r in cursor.execute(sql, chunk + chunk).fetchall():
+            d = dict(r)
+            if d.get("file_hash"):
+                rows_by_key[d["file_hash"]] = d
+            if d.get("file_path"):
+                rows_by_key[d["file_path"]] = d
+    conn.close()
+
+    resolved = []
+    seen = set()
+    for pid in unique_ids:
+        r = rows_by_key.get(pid)
+        if r:
+            k = r.get("file_hash") or r.get("file_path")
+            if k not in seen:
+                seen.add(k)
+                resolved.append(r)
+        else:
+            fp = Path(pid)
+            if fp.exists() and fp.is_file():
+                if pid not in seen:
+                    seen.add(pid)
+                    resolved.append({
+                        "file_path": str(fp),
+                        "file_hash": "",
+                        "sibling_path": None,
+                        "thumb_360_path": None,
+                        "preview_1600_path": None,
+                        "title": fp.stem,
+                    })
+    return resolved
+
+
+def _run_batch_export_worker(
+    photos_list: List[Dict[str, Any]],
+    mode: str = "jpeg",
+    folder_name: Optional[str] = None,
+) -> Dict[str, Any]:
+    import shutil
+    import tempfile
+    from PIL import Image, ImageOps
+
+    total_photos = len(photos_list)
+    timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+    if not folder_name or not folder_name.strip():
+        if mode == "tv_showcase":
+            folder_name = f"TV_Showcase_16x9_{timestamp_str}"
+        elif mode == "original":
+            folder_name = f"Originals_{timestamp_str}"
+        else:
+            folder_name = f"JPEGs_{timestamp_str}"
+
+    folder_name = _sanitize_folder_name(folder_name)
+    desktop_root = Path.home() / "Desktop" / "MRDarkroom_Exports"
+    export_dir = desktop_root / folder_name
+    export_dir.mkdir(parents=True, exist_ok=True)
+
+    mode_label = (
+        "TV Showcase 16:9 JPEGs (180 DPI, 12.5k px)"
+        if mode == "tv_showcase"
+        else "Original Masters"
+        if mode == "original"
+        else "High-Res JPEGs"
+    )
+
+    JOB_MANAGER.start_job(
+        task_type="batch_export",
+        title=f"Exporting {total_photos} {mode_label} to Desktop",
+        total=total_photos,
+        phase=f"Exporting {total_photos} photos to ~/Desktop/MRDarkroom_Exports/{folder_name}",
+        extra={"export_dir": str(export_dir), "mode": mode},
+    )
+
+    exported_files: List[Dict[str, Any]] = []
+    cancelled_early = False
+
+    try:
+        for idx, p in enumerate(photos_list, start=1):
+            if not JOB_MANAGER.check_pause_or_cancel():
+                cancelled_early = True
+                break
+
+            orig_fp = Path(p.get("sibling_path") or p.get("file_path") or "")
+            if not orig_fp.exists() and p.get("file_path"):
+                orig_fp = Path(p["file_path"])
+
+            orig_stem = orig_fp.stem if orig_fp.name else f"photo_{idx}"
+
+            if mode == "original":
+                out_name = f"{idx:02d}_{orig_fp.name}"
+                out_path = export_dir / out_name
+            else:
+                out_name = f"{idx:02d}_{orig_stem}.jpg"
+                out_path = export_dir / out_name
+
+            JOB_MANAGER.update_progress(
+                processed=idx - 1,
+                total=total_photos,
+                current_file=out_name,
+                phase=f"Exporting {idx} of {total_photos}: {out_name}",
+            )
+
+            src_to_load: Optional[Path] = None
+            used_source = "master"
+            if orig_fp.exists() and orig_fp.is_file():
+                src_to_load = orig_fp
+                used_source = "master"
+            elif p.get("preview_1600_path") and Path(p["preview_1600_path"]).exists():
+                src_to_load = Path(p["preview_1600_path"])
+                used_source = "preview_1600"
+            elif p.get("thumb_360_path") and Path(p["thumb_360_path"]).exists():
+                src_to_load = Path(p["thumb_360_path"])
+                used_source = "thumb_360"
+
+            if src_to_load is None:
+                continue
+
+            success = False
+            width, height = 0, 0
+
+            if mode == "original":
+                try:
+                    shutil.copy2(src_to_load, out_path)
+                    success = True
+                    for ext_try in [".xmp", ".XMP"]:
+                        xmp_src = src_to_load.with_suffix(ext_try)
+                        if not xmp_src.exists():
+                            xmp_src = Path(str(src_to_load) + ext_try)
+                        if xmp_src.exists() and xmp_src.is_file():
+                            xmp_out = out_path.with_suffix(ext_try)
+                            shutil.copy2(xmp_src, xmp_out)
+                            break
+                    try:
+                        with Image.open(out_path) as im_chk:
+                            width, height = im_chk.size
+                    except Exception:
+                        pass
+                except Exception as e_orig:
+                    logging.warning(f"Failed copying original {src_to_load} to {out_path}: {e_orig}")
+
+            elif mode == "tv_showcase":
+                im = None
+                temp_dir = None
+                try:
+                    ext = src_to_load.suffix.lower()
+                    if ext in (".dng", ".cr2", ".nef", ".arw", ".rw2", ".orf"):
+                        temp_dir = tempfile.TemporaryDirectory()
+                        temp_jpg = Path(temp_dir.name) / "temp_raw.jpg"
+                        sips_cmd = [
+                            "sips", "-s", "format", "jpeg", "-s", "formatOptions", "98",
+                            "--matchTo", "/System/Library/ColorSync/Profiles/sRGB Profile.icc",
+                            str(src_to_load), "--out", str(temp_jpg)
+                        ]
+                        res = subprocess.run(sips_cmd, capture_output=True, text=True, timeout=60, check=False)
+                        if res.returncode == 0 and temp_jpg.exists():
+                            im = Image.open(temp_jpg)
+
+                    if im is None:
+                        try:
+                            im = Image.open(src_to_load)
+                        except Exception:
+                            temp_dir = tempfile.TemporaryDirectory()
+                            temp_jpg = Path(temp_dir.name) / "temp_sips.jpg"
+                            sips_cmd = [
+                                "sips", "-s", "format", "jpeg", "-s", "formatOptions", "98",
+                                "--matchTo", "/System/Library/ColorSync/Profiles/sRGB Profile.icc",
+                                str(src_to_load), "--out", str(temp_jpg)
+                            ]
+                            res = subprocess.run(sips_cmd, capture_output=True, text=True, timeout=60, check=False)
+                            if res.returncode == 0 and temp_jpg.exists():
+                                im = Image.open(temp_jpg)
+
+                    if im is not None:
+                        im = ImageOps.exif_transpose(im)
+                        if im.mode in ("I;16", "I;16L", "I;16B", "I"):
+                            arr = np.array(im, dtype=np.float32)
+                            max_v = float(np.max(arr)) if arr.size > 0 else 65535.0
+                            if max_v > 255.0:
+                                arr = np.clip((arr / 65535.0) * 255.0, 0, 255).astype(np.uint8)
+                            else:
+                                arr = np.clip(arr, 0, 255).astype(np.uint8)
+                            im = Image.fromarray(arr)
+                        elif im.mode != "RGB":
+                            im = im.convert("RGB")
+
+                        w, h = im.size
+                        target_ratio = 16.0 / 9.0
+                        cur_ratio = w / float(h)
+                        if cur_ratio > target_ratio:
+                            new_w = int(round(h * target_ratio))
+                            left = max(0, (w - new_w) // 2)
+                            im = im.crop((left, 0, left + new_w, h))
+                        elif cur_ratio < target_ratio:
+                            new_h = int(round(w / target_ratio))
+                            top = max(0, (h - new_h) // 2)
+                            im = im.crop((0, top, w, top + new_h))
+
+                        long_edge = max(im.width, im.height)
+                        if long_edge > 12500:
+                            scale = 12500.0 / float(long_edge)
+                            new_w = int(round(im.width * scale))
+                            new_h = int(round(im.height * scale))
+                            im = im.resize((new_w, new_h), resample=Image.Resampling.LANCZOS)
+
+                        im.save(str(out_path), format="JPEG", quality=96, subsampling=0, optimize=True, dpi=(180, 180))
+                        width, height = im.size
+                        success = True
+                except Exception as e_tv:
+                    logging.warning(f"Failed TV showcase export {src_to_load} to {out_path}: {e_tv}")
+                finally:
+                    if im is not None:
+                        im.close()
+                    if temp_dir is not None:
+                        temp_dir.cleanup()
+
+            else:  # mode == "jpeg"
+                try:
+                    with Image.open(src_to_load) as im:
+                        im = ImageOps.exif_transpose(im)
+                        if im.mode in ("I;16", "I;16L", "I;16B", "I"):
+                            arr = np.array(im, dtype=np.float32)
+                            max_v = float(np.max(arr)) if arr.size > 0 else 65535.0
+                            if max_v > 255.0:
+                                arr = np.clip((arr / 65535.0) * 255.0, 0, 255).astype(np.uint8)
+                            else:
+                                arr = np.clip(arr, 0, 255).astype(np.uint8)
+                            im = Image.fromarray(arr)
+                        elif im.mode != "RGB":
+                            im = im.convert("RGB")
+
+                        im.save(str(out_path), format="JPEG", quality=96, subsampling=0, optimize=True, dpi=(300, 300))
+                        width, height = im.size
+                        success = True
+                except Exception:
+                    try:
+                        sips_cmd = [
+                            "sips",
+                            "-s", "format", "jpeg",
+                            "-s", "formatOptions", "96",
+                            "--matchTo", "/System/Library/ColorSync/Profiles/sRGB Profile.icc",
+                            str(src_to_load),
+                            "--out", str(out_path),
+                        ]
+                        res = subprocess.run(sips_cmd, capture_output=True, text=True, timeout=60, check=False)
+                        if res.returncode == 0 and out_path.exists():
+                            with Image.open(out_path) as check_im:
+                                width, height = check_im.size
+                            success = True
+                    except Exception as e_jpg:
+                        logging.warning(f"Failed exporting JPEG {src_to_load} to {out_path}: {e_jpg}")
+
+            if success and out_path.exists():
+                exported_files.append({
+                    "filename": out_name,
+                    "path": str(out_path),
+                    "source": used_source,
+                    "width": width,
+                    "height": height,
+                    "size_mb": round(out_path.stat().st_size / (1024 * 1024), 2),
+                })
+
+            JOB_MANAGER.update_progress(
+                processed=idx,
+                total=total_photos,
+                current_file=out_name,
+                phase=f"Exported {len(exported_files)} of {total_photos} to ~/Desktop/MRDarkroom_Exports/{folder_name}",
+            )
+
+        result_payload = {
+            "status": "cancelled" if cancelled_early else "ok",
+            "cancelled": cancelled_early,
+            "mode": mode,
+            "export_dir": str(export_dir),
+            "exported_count": len(exported_files),
+            "total_requested": total_photos,
+            "files": exported_files,
+        }
+
+        JOB_MANAGER.finish_job(
+            result=result_payload,
+            phase=(
+                f"Cancelled early — kept {len(exported_files)} files in ~/Desktop/MRDarkroom_Exports/{folder_name}"
+                if cancelled_early
+                else f"Exported {len(exported_files)} files to ~/Desktop/MRDarkroom_Exports/{folder_name}"
+            ),
+        )
+
+        if exported_files and not cancelled_early:
+            try:
+                subprocess.run(["open", str(export_dir)], check=False)
+            except Exception:
+                pass
+
+        return result_payload
+    except Exception as exc:
+        JOB_MANAGER.finish_job(error=str(exc), phase="Export Error")
+        raise
+
+
+@app.post("/api/photos/export")
+async def export_photos_batch(payload: BatchExportRequest):
+    """
+    Exports selected photos or arbitrary photo IDs to ~/Desktop/MRDarkroom_Exports/{folder_name}/
+    Modes:
+      - 'jpeg': Full-res print JPEG (quality=96, subsampling=0, 300 DPI, sRGB)
+      - 'original': Byte-for-byte copy of master RAW/TIFF + sidecar .xmp
+      - 'tv_showcase': 65" TV Showcase (16:9 center crop, 180 DPI, max 12,500px long edge, sRGB)
+    Supports live progress reporting, Pause/Resume, and Cancel via JOB_MANAGER.
+    """
+    resolved_photos = _resolve_photo_records_by_ids(payload.photo_ids)
+    if not resolved_photos:
+        raise HTTPException(status_code=400, detail="No matching photos found for export")
+
+    mode = (payload.mode or "jpeg").lower().strip()
+    if mode not in ("jpeg", "original", "tv_showcase"):
+        mode = "jpeg"
+
+    if payload.async_job:
+        threading.Thread(
+            target=_run_batch_export_worker,
+            args=(resolved_photos, mode, payload.folder_name),
+            daemon=True,
+        ).start()
+        timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+        f_name = payload.folder_name or (
+            f"TV_Showcase_16x9_{timestamp_str}"
+            if mode == "tv_showcase"
+            else f"Originals_{timestamp_str}"
+            if mode == "original"
+            else f"JPEGs_{timestamp_str}"
+        )
+        f_name = _sanitize_folder_name(f_name)
+        return {
+            "status": "started",
+            "mode": mode,
+            "export_dir": str(Path.home() / "Desktop" / "MRDarkroom_Exports" / f_name),
+            "total": len(resolved_photos),
+        }
+
+    loop = asyncio.get_running_loop()
+    result = await loop.run_in_executor(
+        None, _run_batch_export_worker, resolved_photos, mode, payload.folder_name
+    )
+    return result
+
+
+@app.post("/api/system/reveal-folder")
+async def reveal_folder_in_finder(payload: RevealFolderRequest):
+    p = Path(payload.folder_path).expanduser().resolve()
+    if not p.exists():
+        raise HTTPException(status_code=404, detail=f"Folder does not exist: {p}")
+    subprocess.run(["open", str(p)], check=False)
+    return {"status": "ok", "opened": str(p)}
+
+
 # ==============================================================================
 # 9. PIPELINE EXECUTION, UNIFIED BACKGROUND JOB CONTROL & AI TEACH / SCOUT
 # ==============================================================================
