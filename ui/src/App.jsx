@@ -9,6 +9,7 @@ import CollectionsModal from './components/CollectionsModal.jsx';
 import SelectionActionBar from './components/SelectionActionBar.jsx';
 import VoiceTeachScoutModal from './components/VoiceTeachScoutModal.jsx';
 import LiveProgressDock from './components/LiveProgressDock.jsx';
+import TvShowcaseCropModal from './components/TvShowcaseCropModal.jsx';
 
 export const getPhotoKey = (p) =>
   String(p?.file_hash || p?.file_path || p?.id || p?.photo_id || '');
@@ -112,6 +113,7 @@ export default function App() {
   const [isCollectionsModalOpen, setIsCollectionsModalOpen] = useState(false);
   const [collectionsInitialId, setCollectionsInitialId] = useState(null);
   const [collectionsInitialMode, setCollectionsInitialMode] = useState('sequence');
+  const [isTvCropModalOpen, setIsTvCropModalOpen] = useState(false);
 
   // Multi-Photo Selection & Voice Teach / Scout state
   const [selectedPhotoMap, setSelectedPhotoMap] = useState(() => new Map());
@@ -912,13 +914,16 @@ export default function App() {
         showGlobalToast('No photos to export. Select photos or load a catalog first.');
         return;
       }
+      if (mode === 'tv_showcase') {
+        setIsTvCropModalOpen(true);
+        return;
+      }
       const photoIds = targetList.map((p) => p.file_hash || p.file_path).filter(Boolean);
       if (photoIds.length === 0) return;
 
       const modeLabels = {
         jpeg: 'High-Res JPEGs',
         original: 'Original Masters',
-        tv_showcase: '65" TV Showcase 16:9 JPEGs',
       };
       const label = modeLabels[mode] || 'photos';
 
@@ -943,6 +948,50 @@ export default function App() {
         refreshJobStatus();
       } catch (err) {
         console.error('Batch export error:', err);
+        showGlobalToast(`Export error: ${err.message}`);
+      } finally {
+        setIsBatchBusy(false);
+      }
+    },
+    [selectedPhotosArray, photos, refreshJobStatus]
+  );
+
+  // Confirm and run 65" TV Showcase Export with interactive 16:9 crop framing & exact 12.5k px sizing
+  const handleConfirmTvShowcaseExport = useCallback(
+    async (cropsMap) => {
+      setIsTvCropModalOpen(false);
+      const targetList = selectedPhotosArray.length > 0 ? selectedPhotosArray : photos;
+      if (!targetList || targetList.length === 0) {
+        showGlobalToast('No photos to export.');
+        return;
+      }
+      const photoIds = targetList.map((p) => p.file_hash || p.file_path).filter(Boolean);
+      if (photoIds.length === 0) return;
+
+      showGlobalToast(
+        `Exporting ${photoIds.length.toLocaleString()} 65" TV Showcase JPEGs (12,500px, 180 DPI) to Desktop...`
+      );
+      setIsBatchBusy(true);
+
+      try {
+        const res = await fetch('/api/photos/export', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            photo_ids: photoIds,
+            mode: 'tv_showcase',
+            crops: cropsMap,
+            async_job: true,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(data.detail || 'Export failed to start');
+        }
+        showGlobalToast(`Started 12.5k TV Showcase export to ~/Desktop/MRDarkroom_Exports/`);
+        refreshJobStatus();
+      } catch (err) {
+        console.error('TV Showcase export error:', err);
         showGlobalToast(`Export error: ${err.message}`);
       } finally {
         setIsBatchBusy(false);
@@ -1447,6 +1496,7 @@ export default function App() {
         onCreateCollectionWithSelected={handleBatchCreateCollectionWithSelected}
         onBatchCreateCollection={handleBatchCreateCollectionWithSelected}
         onBatchExport={handleBatchExport}
+        onOpenTvCropModal={() => setIsTvCropModalOpen(true)}
       />
 
       {/* Voice / Text AI Teach & Archive Scout Modal */}
@@ -1603,6 +1653,17 @@ export default function App() {
             if (viewMode === 'trips') fetchTrips();
             refreshJobStatus();
           }}
+        />
+      </ModalErrorBoundary>
+
+      {/* 65" TV Showcase 16:9 Crop Placement Modal */}
+      <ModalErrorBoundary onClose={() => setIsTvCropModalOpen(false)}>
+        <TvShowcaseCropModal
+          isOpen={isTvCropModalOpen}
+          onClose={() => setIsTvCropModalOpen(false)}
+          photos={selectedPhotosArray.length > 0 ? selectedPhotosArray : photos}
+          onConfirmExport={handleConfirmTvShowcaseExport}
+          isBusy={isBatchBusy}
         />
       </ModalErrorBoundary>
 

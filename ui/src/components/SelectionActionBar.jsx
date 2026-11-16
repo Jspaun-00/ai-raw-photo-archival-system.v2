@@ -28,6 +28,7 @@ export default function SelectionActionBar({
   onBatchAddToCollection,
   onCreateCollectionWithSelected,
   onBatchExport,
+  onOpenTvCropModal,
 }) {
   const [showBookMenu, setShowBookMenu] = useState(false);
   const [newBookName, setNewBookName] = useState('');
@@ -1429,6 +1430,7 @@ export default function SelectionActionBar({
                   bottom: 'calc(100% + 10px)',
                   right: 0,
                   width: '360px',
+                  maxWidth: 'min(360px, calc(100vw - 32px))',
                   background: '#0f172a',
                   border: '1px solid rgba(52, 211, 153, 0.4)',
                   borderRadius: '12px',
@@ -1438,6 +1440,8 @@ export default function SelectionActionBar({
                   display: 'flex',
                   flexDirection: 'column',
                   gap: '6px',
+                  whiteSpace: 'normal',
+                  boxSizing: 'border-box',
                 }}
               >
                 <div
@@ -1452,6 +1456,8 @@ export default function SelectionActionBar({
                     marginBottom: '2px',
                     display: 'flex',
                     justifyContent: 'space-between',
+                    whiteSpace: 'normal',
+                    boxSizing: 'border-box',
                   }}
                 >
                   <span>Export {selectedCount.toLocaleString()} Selected</span>
@@ -1466,6 +1472,7 @@ export default function SelectionActionBar({
                     if (onBatchExport) onBatchExport('jpeg');
                   }}
                   style={{
+                    width: '100%',
                     textAlign: 'left',
                     padding: '9px 12px',
                     borderRadius: '8px',
@@ -1476,14 +1483,16 @@ export default function SelectionActionBar({
                     display: 'flex',
                     flexDirection: 'column',
                     gap: '3px',
+                    whiteSpace: 'normal',
+                    boxSizing: 'border-box',
                   }}
                 >
                   <div style={{ fontSize: '13px', fontWeight: 700, color: '#f8fafc', display: 'flex', alignItems: 'center', gap: '6px' }}>
                     <span>🖼️ High-Res JPEGs</span>
                     <span style={{ fontSize: '10.5px', color: '#94a3b8', fontWeight: 500 }}>(Full Master Res)</span>
                   </div>
-                  <div style={{ fontSize: '11px', color: '#cbd5e1', lineHeight: '1.35' }}>
-                    Exports full-resolution print JPEGs in sRGB (Quality 96, 4:4:4 chroma, 300 DPI).
+                  <div style={{ fontSize: '11px', color: '#cbd5e1', lineHeight: '1.35', whiteSpace: 'normal' }}>
+                    Exports full-resolution print JPEGs in sRGB with embedded IPTC/XMP tags (Quality 96, 300 DPI).
                   </div>
                 </button>
 
@@ -1495,6 +1504,7 @@ export default function SelectionActionBar({
                     if (onBatchExport) onBatchExport('original');
                   }}
                   style={{
+                    width: '100%',
                     textAlign: 'left',
                     padding: '9px 12px',
                     borderRadius: '8px',
@@ -1505,12 +1515,14 @@ export default function SelectionActionBar({
                     display: 'flex',
                     flexDirection: 'column',
                     gap: '3px',
+                    whiteSpace: 'normal',
+                    boxSizing: 'border-box',
                   }}
                 >
                   <div style={{ fontSize: '13px', fontWeight: 700, color: '#f8fafc', display: 'flex', alignItems: 'center', gap: '6px' }}>
                     <span>📁 Copy Originals (RAW / TIF)</span>
                   </div>
-                  <div style={{ fontSize: '11px', color: '#cbd5e1', lineHeight: '1.35' }}>
+                  <div style={{ fontSize: '11px', color: '#cbd5e1', lineHeight: '1.35', whiteSpace: 'normal' }}>
                     Direct byte-for-byte copy of master files (.TIF, .DNG, .IIQ, .NEF) + sidecar .xmp files to Desktop.
                   </div>
                 </button>
@@ -1520,9 +1532,14 @@ export default function SelectionActionBar({
                   type="button"
                   onClick={() => {
                     setExportMenuOpen(false);
-                    if (onBatchExport) onBatchExport('tv_showcase');
+                    if (onOpenTvCropModal) {
+                      onOpenTvCropModal();
+                    } else if (onBatchExport) {
+                      onBatchExport('tv_showcase');
+                    }
                   }}
                   style={{
+                    width: '100%',
                     textAlign: 'left',
                     padding: '10px 12px',
                     borderRadius: '8px',
@@ -1533,13 +1550,15 @@ export default function SelectionActionBar({
                     display: 'flex',
                     flexDirection: 'column',
                     gap: '3px',
+                    whiteSpace: 'normal',
+                    boxSizing: 'border-box',
                   }}
                 >
                   <div style={{ fontSize: '13px', fontWeight: 800, color: '#34d399', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                    <span>📺 65" TV Showcase JPEGs (16:9 Crop)</span>
+                    <span>📺 65" TV Showcase JPEGs (16:9 Crop Modal)</span>
                   </div>
-                  <div style={{ fontSize: '11px', color: '#f1f5f9', lineHeight: '1.35' }}>
-                    Center-crops to 16:9 aspect ratio to fit 65" screens. 180 DPI density, max 12,500px on long edge (Quality 96 sRGB).
+                  <div style={{ fontSize: '11px', color: '#f1f5f9', lineHeight: '1.35', whiteSpace: 'normal' }}>
+                    Interactive modal to choose crop placement (Sky, Horizon, Center, Ground). Exact 12,500px long edge at 180 DPI with full embedded tags.
                   </div>
                 </button>
               </div>

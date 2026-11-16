@@ -3834,12 +3834,107 @@ async def reveal_exported_collection_folder(collection_id: int):
 class BatchExportRequest(BaseModel):
     photo_ids: List[str]
     mode: str = "jpeg"  # "jpeg", "original", "tv_showcase"
+    crops: Optional[Dict[str, Dict[str, float]]] = None
     folder_name: Optional[str] = None
     async_job: bool = True
 
 
 class RevealFolderRequest(BaseModel):
     folder_path: str
+
+
+def _extract_all_keywords(record: Dict[str, Any]) -> List[str]:
+    keywords: List[str] = []
+    seen = set()
+
+    def add_k(val):
+        if not val:
+            return
+        if isinstance(val, (list, tuple)):
+            for item in val:
+                add_k(item)
+            return
+        if isinstance(val, str):
+            val = val.strip()
+            if not val:
+                return
+            if val.startswith("[") and val.endswith("]"):
+                try:
+                    parsed = json.loads(val)
+                    if isinstance(parsed, list):
+                        for item in parsed:
+                            add_k(item)
+                        return
+                except Exception:
+                    pass
+            parts = [p.strip() for p in val.replace(";", ",").split(",") if p.strip()]
+            for p in parts:
+                k_clean = p.strip()
+                k_lower = k_clean.lower()
+                if k_clean and k_lower not in seen:
+                    seen.add(k_lower)
+                    keywords.append(k_clean)
+
+    for col in [
+        "user_taught_tags",
+        "verified_subjects",
+        "key_subjects",
+        "existing_keywords",
+        "hierarchical_keywords",
+        "lrcat_keywords",
+    ]:
+        add_k(record.get(col))
+    return keywords
+
+
+def _embed_metadata_to_jpeg(jpeg_path: Path, record: Dict[str, Any], dpi: int = 180):
+    exiftool_bin = Path("/Users/mitch/MRDarkroom/bin/exiftool")
+    if not exiftool_bin.exists():
+        exiftool_bin = Path("exiftool")
+
+    cmd = [
+        str(exiftool_bin),
+        "-overwrite_original",
+        "-codedcharacterset=utf8",
+        "-P",
+        "-ResolutionUnit=inches",
+        f"-XResolution={dpi}",
+        f"-YResolution={dpi}",
+    ]
+
+    keywords = _extract_all_keywords(record)
+    for kw in keywords:
+        cmd.extend([f"-IPTC:Keywords={kw}", f"-XMP:Subject={kw}"])
+
+    title = (record.get("title") or "").strip()
+    if title:
+        cmd.extend([f"-IPTC:ObjectName={title}", f"-XMP:Title={title}"])
+
+    caption = (record.get("caption") or "").strip()
+    if caption:
+        cmd.extend([f"-IPTC:Caption-Abstract={caption}", f"-XMP:Description={caption}"])
+
+    city = (record.get("city") or record.get("specific_location") or "").strip()
+    if city:
+        cmd.extend([f"-IPTC:City={city}", f"-XMP:City={city}"])
+
+    state = (record.get("state_region") or "").strip()
+    if state:
+        cmd.extend([f"-IPTC:Province-State={state}", f"-XMP:State={state}"])
+
+    country = (record.get("country") or "").strip()
+    if country:
+        cmd.extend([f"-IPTC:Country-PrimaryLocationName={country}", f"-XMP:Country={country}"])
+
+    rating = record.get("star_rating")
+    if rating is not None and isinstance(rating, (int, float)) and rating > 0:
+        cmd.append(f"-XMP:Rating={int(rating)}")
+
+    cmd.append(str(jpeg_path))
+    try:
+        subprocess.run(cmd, capture_output=True, text=True, timeout=15, check=False)
+    except Exception as e:
+        logging.warning(f"ExifTool metadata embedding failed for {jpeg_path}: {e}")
 
 
 def _resolve_photo_records_by_ids(photo_ids: List[str]) -> List[Dict[str, Any]]:
@@ -3853,7 +3948,11 @@ def _resolve_photo_records_by_ids(photo_ids: List[str]) -> List[Dict[str, Any]]:
         chunk = unique_ids[i : i + 400]
         ph = ",".join("?" for _ in chunk)
         sql = f"""
-            SELECT file_path, file_hash, sibling_path, thumb_360_path, preview_1600_path, title
+            SELECT file_path, file_hash, sibling_path, thumb_360_path, preview_1600_path, title,
+                   caption, specific_location, sub_location, city, state_region, country,
+                   camera_make, camera_model, lens_model, star_rating, exif_time,
+                   key_subjects, existing_keywords, hierarchical_keywords, user_taught_tags,
+                   lrcat_keywords, verified_subjects
             FROM photo_records
             WHERE file_hash IN ({ph}) OR file_path IN ({ph})
         """
@@ -3894,6 +3993,7 @@ def _run_batch_export_worker(
     photos_list: List[Dict[str, Any]],
     mode: str = "jpeg",
     folder_name: Optional[str] = None,
+    crops: Optional[Dict[str, Dict[str, float]]] = None,
 ) -> Dict[str, Any]:
     import shutil
     import tempfile
@@ -3952,18 +4052,12 @@ def _run_batch_export_worker(
                 out_name = f"{idx:02d}_{orig_stem}.jpg"
                 out_path = export_dir / out_name
 
-            JOB_MANAGER.update_progress(
-                processed=idx - 1,
-                total=total_photos,
-                current_file=out_name,
-                phase=f"Exporting {idx} of {total_photos}: {out_name}",
-            )
-
-            src_to_load: Optional[Path] = None
+            src_to_load = None
             used_source = "master"
-            if orig_fp.exists() and orig_fp.is_file():
+            if orig_fp.exists():
                 src_to_load = orig_fp
-                used_source = "master"
+            elif p.get("file_path") and Path(p["file_path"]).exists():
+                src_to_load = Path(p["file_path"])
             elif p.get("preview_1600_path") and Path(p["preview_1600_path"]).exists():
                 src_to_load = Path(p["preview_1600_path"])
                 used_source = "preview_1600"
@@ -3971,7 +4065,8 @@ def _run_batch_export_worker(
                 src_to_load = Path(p["thumb_360_path"])
                 used_source = "thumb_360"
 
-            if src_to_load is None:
+            if not src_to_load or not src_to_load.exists():
+                logging.warning(f"Batch export could not locate source file for {p.get('file_path')}")
                 continue
 
             success = False
@@ -4045,22 +4140,46 @@ def _run_batch_export_worker(
                         w, h = im.size
                         target_ratio = 16.0 / 9.0
                         cur_ratio = w / float(h)
+
+                        # Lookup crop placement norm_y (0.0=top/sky, 0.5=center, 1.0=bottom/ground)
+                        # and norm_x (0.0=left, 0.5=center, 1.0=right)
+                        crop_cfg = (
+                            (crops or {}).get(p.get("file_hash"))
+                            or (crops or {}).get(p.get("file_path"))
+                            or (crops or {}).get(str(orig_fp))
+                            or {}
+                        )
+                        norm_y = float(crop_cfg.get("norm_y", 0.5))
+                        norm_x = float(crop_cfg.get("norm_x", 0.5))
+                        norm_y = max(0.0, min(1.0, norm_y))
+                        norm_x = max(0.0, min(1.0, norm_x))
+
                         if cur_ratio > target_ratio:
+                            # Wider than 16:9
                             new_w = int(round(h * target_ratio))
-                            left = max(0, (w - new_w) // 2)
+                            slack_w = max(0, w - new_w)
+                            left = int(round(slack_w * norm_x))
+                            left = max(0, min(slack_w, left))
                             im = im.crop((left, 0, left + new_w, h))
                         elif cur_ratio < target_ratio:
+                            # Taller than 16:9 (common for 3:2, 4:3, Phase One, and portraits)
                             new_h = int(round(w / target_ratio))
-                            top = max(0, (h - new_h) // 2)
+                            slack_h = max(0, h - new_h)
+                            top = int(round(slack_h * norm_y))
+                            top = max(0, min(slack_h, top))
                             im = im.crop((0, top, w, top + new_h))
 
-                        long_edge = max(im.width, im.height)
-                        if long_edge > 12500:
-                            scale = 12500.0 / float(long_edge)
-                            new_w = int(round(im.width * scale))
-                            new_h = int(round(im.height * scale))
-                            im = im.resize((new_w, new_h), resample=Image.Resampling.LANCZOS)
+                        # Target sizing: exactly 12,500 px on the long edge
+                        # Landscape 16:9 -> 12,500 × 7,031 px
+                        # Portrait 9:16 -> 7,031 × 12,500 px
+                        if im.width >= im.height:
+                            target_w = 12500
+                            target_h = int(round(12500 * (9.0 / 16.0)))
+                        else:
+                            target_w = int(round(12500 * (9.0 / 16.0)))
+                            target_h = 12500
 
+                        im = im.resize((target_w, target_h), resample=Image.Resampling.LANCZOS)
                         im.save(str(out_path), format="JPEG", quality=96, subsampling=0, optimize=True, dpi=(180, 180))
                         width, height = im.size
                         success = True
@@ -4071,6 +4190,9 @@ def _run_batch_export_worker(
                         im.close()
                     if temp_dir is not None:
                         temp_dir.cleanup()
+
+                if success and out_path.exists():
+                    _embed_metadata_to_jpeg(out_path, p, dpi=180)
 
             else:  # mode == "jpeg"
                 try:
@@ -4107,6 +4229,9 @@ def _run_batch_export_worker(
                             success = True
                     except Exception as e_jpg:
                         logging.warning(f"Failed exporting JPEG {src_to_load} to {out_path}: {e_jpg}")
+
+                if success and out_path.exists():
+                    _embed_metadata_to_jpeg(out_path, p, dpi=300)
 
             if success and out_path.exists():
                 exported_files.append({
@@ -4161,9 +4286,9 @@ async def export_photos_batch(payload: BatchExportRequest):
     """
     Exports selected photos or arbitrary photo IDs to ~/Desktop/MRDarkroom_Exports/{folder_name}/
     Modes:
-      - 'jpeg': Full-res print JPEG (quality=96, subsampling=0, 300 DPI, sRGB)
+      - 'jpeg': Full-res print JPEG (quality=96, subsampling=0, 300 DPI, sRGB, embedded IPTC/XMP tags)
       - 'original': Byte-for-byte copy of master RAW/TIFF + sidecar .xmp
-      - 'tv_showcase': 65" TV Showcase (16:9 center crop, 180 DPI, max 12,500px long edge, sRGB)
+      - 'tv_showcase': 65" TV Showcase (16:9 custom placement crop, 180 DPI, exact 12,500px long edge, sRGB, embedded IPTC/XMP tags)
     Supports live progress reporting, Pause/Resume, and Cancel via JOB_MANAGER.
     """
     resolved_photos = _resolve_photo_records_by_ids(payload.photo_ids)
@@ -4177,7 +4302,7 @@ async def export_photos_batch(payload: BatchExportRequest):
     if payload.async_job:
         threading.Thread(
             target=_run_batch_export_worker,
-            args=(resolved_photos, mode, payload.folder_name),
+            args=(resolved_photos, mode, payload.folder_name, payload.crops),
             daemon=True,
         ).start()
         timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -4198,7 +4323,7 @@ async def export_photos_batch(payload: BatchExportRequest):
 
     loop = asyncio.get_running_loop()
     result = await loop.run_in_executor(
-        None, _run_batch_export_worker, resolved_photos, mode, payload.folder_name
+        None, _run_batch_export_worker, resolved_photos, mode, payload.folder_name, payload.crops
     )
     return result
 
