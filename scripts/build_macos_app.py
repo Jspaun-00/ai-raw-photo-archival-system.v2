@@ -284,8 +284,8 @@ def create_app_bundle(target_app_path: Path, project_root: Path, icns_source: Pa
             "CFBundleInfoDictionaryVersion": "6.0",
             "CFBundleName": "MR Darkroom",
             "CFBundlePackageType": "APPL",
-            "CFBundleShortVersionString": "4.4.0",
-            "CFBundleVersion": "440",
+            "CFBundleShortVersionString": "4.5.0",
+            "CFBundleVersion": "450",
             "LSMinimumSystemVersion": "12.0",
             "NSHighResolutionCapable": True,
         }
@@ -453,8 +453,8 @@ def create_installer_app_bundle(target_app_path: Path, icns_source: Path) -> Pat
             "CFBundleInfoDictionaryVersion": "6.0",
             "CFBundleName": "Install MR Darkroom to Mac",
             "CFBundlePackageType": "APPL",
-            "CFBundleShortVersionString": "4.4.0",
-            "CFBundleVersion": "440",
+            "CFBundleShortVersionString": "4.5.0",
+            "CFBundleVersion": "450",
             "LSMinimumSystemVersion": "12.0",
             "NSHighResolutionCapable": True,
         }
@@ -475,7 +475,7 @@ TARGET_VAULT="$HOME/Library/Application Support/MRDarkroom"
 TARGET_ENGINE="$TARGET_VAULT/Engine"
 LOG_FILE="/tmp/mrdarkroom_installer.log"
 
-RESPONSE=$(osascript -e 'display dialog "Install MR Darkroom Studio (v4.4.0) onto this Mac?\\n\\nThis will automatically install:\\n• MR Darkroom.app into /Applications & Desktop\\n• Self-Contained Python 3.9, ExifTool & Ollama\\n• Full Photo Archive Database & WebP Previews\\n• Offline OpenCLIP + Ollama Vision AI Models\\n\\nOnce complete, you can run MR Darkroom anytime without the external SSD." buttons {"Cancel", "Install Now"} default button "Install Now" with title "MR Darkroom Studio Installer" with icon note' 2>/dev/null)
+RESPONSE=$(osascript -e 'display dialog "Install MR Darkroom Studio (v4.5.0) onto this Mac?\\n\\nThis will automatically install:\\n• MR Darkroom.app into /Applications & Desktop\\n• Self-Contained Python 3.9, ExifTool & Ollama\\n• Full Photo Archive Database & WebP Previews\\n• Offline OpenCLIP + Ollama Vision AI Models\\n\\nOnce complete, you can run MR Darkroom anytime without the external SSD." buttons {"Cancel", "Install Now"} default button "Install Now" with title "MR Darkroom Studio Installer" with icon note' 2>/dev/null)
 
 if [[ "$RESPONSE" != *"Install Now"* ]]; then
     exit 0
@@ -520,7 +520,7 @@ osascript -e 'display notification "Installing MR Darkroom Engine, AI Models & P
     echo "=== Installation Finished Successfully ==="
 } >"$LOG_FILE" 2>&1
 
-osascript -e 'display dialog "✅ MR Darkroom Studio (v4.4.0) is now installed on this Mac!\\n\\n• Application: /Applications/MR Darkroom.app\\n• Shortcut: Desktop/MR Darkroom.app\\n• Offline AI Models & Photo Archive: Ready\\n\\nYou can now safely eject the 2TB SSD at any time." buttons {"Launch MR Darkroom"} default button "Launch MR Darkroom" with title "Installation Complete" with icon note' 2>/dev/null || true
+osascript -e 'display dialog "✅ MR Darkroom Studio (v4.5.0) is now installed on this Mac!\\n\\n• Application: /Applications/MR Darkroom.app\\n• Shortcut: Desktop/MR Darkroom.app\\n• Offline AI Models & Photo Archive: Ready\\n\\nYou can now safely eject the 2TB SSD at any time." buttons {"Launch MR Darkroom"} default button "Launch MR Darkroom" with title "Installation Complete" with icon note' 2>/dev/null || true
 
 open -a "/Applications/MR Darkroom.app"
 """

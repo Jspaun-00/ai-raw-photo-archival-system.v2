@@ -1,6 +1,6 @@
 #!/bin/bash
 # ==============================================================================
-# MR DARKROOM STUDIO (v4.4.0) — PERMANENT MAC INSTALLER (Install_MR_Darkroom_To_Mac.command)
+# MR DARKROOM STUDIO (v4.5.0) — PERMANENT MAC INSTALLER (Install_MR_Darkroom_To_Mac.command)
 # "Toss-the-SSD" Safeguard Installer:
 # Copies the complete Studio Engine, Standalone Python 3.9, .venv, ExifTool,
 # Ollama, Offline AI Models, and Data Vault to ~/Library/Application Support/MRDarkroom,
@@ -34,7 +34,7 @@ TARGET_ENGINE="$TARGET_VAULT/Engine"
 
 clear
 echo "=================================================================="
-echo "  📥 MR DARKROOM STUDIO (v4.4.0) — PERMANENT MAC INSTALLER"
+echo "  📥 MR DARKROOM STUDIO (v4.5.0) — PERMANENT MAC INSTALLER"
 echo "=================================================================="
 echo "  Source Engine     : $SRC_ENGINE"
 echo "  Source Data Vault : $SRC_VAULT"

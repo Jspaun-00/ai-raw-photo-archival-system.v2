@@ -1,6 +1,6 @@
 #!/bin/bash
 # ==============================================================================
-# MR DARKROOM STUDIO (v4.4.0) — PORTABLE LAUNCHER (Run_MR_Darkroom_Portable.command)
+# MR DARKROOM STUDIO (v4.5.0) — PORTABLE LAUNCHER (Run_MR_Darkroom_Portable.command)
 # Runs the FastAPI Studio Engine directly off the current folder / external SSD
 # with zero permanent host modifications.
 # ==============================================================================
@@ -35,7 +35,7 @@ export PYTHONWARNINGS="ignore"
 
 clear
 echo "=================================================================="
-echo "  ⚡ MR DARKROOM STUDIO (v4.4.0) — PORTABLE MODE"
+echo "  ⚡ MR DARKROOM STUDIO (v4.5.0) — PORTABLE MODE"
 echo "=================================================================="
 echo "  Engine Dir : $ENGINE_DIR"
 echo "  Data Vault : $VAULT_DIR"
