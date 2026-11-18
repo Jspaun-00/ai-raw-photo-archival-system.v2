@@ -1687,6 +1687,7 @@ def run_stage1_pipeline(
 
     embeddings_f16 = np.zeros((0, 768), dtype=np.float16)
     laion_scores = np.zeros((0,), dtype=np.float32)
+    vec_engine: Optional[VectorAestheticEngine] = None
     if preview_paths_for_clip:
         if progress_callback:
             if progress_callback(
@@ -2203,6 +2204,7 @@ def sync_external_edits(
     watched_files: Optional[List[str]] = None,
     target_file_paths: Optional[List[str]] = None,
     watched_dirs: Optional[List[str]] = None,
+    catalog_name: Optional[str] = None,
     scan_parent_dirs: bool = False,
     force_regenerate: bool = False,
     db_path: Path = DEFAULT_DB_PATH,
@@ -2245,6 +2247,11 @@ def sync_external_edits(
         where_clauses.append(f"(file_hash IN ({placeholders}) OR file_path IN ({placeholders}))")
         params.extend(target_tokens)
         params.extend(target_tokens)
+
+    effective_cat = catalog_name or kwargs.get("catalog_name")
+    if effective_cat and str(effective_cat).strip() not in ("All Catalogs", "ALL", "All Photos", ""):
+        where_clauses.append("catalog_name = ?")
+        params.append(str(effective_cat).strip())
 
     rows = [
         dict(r)

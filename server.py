@@ -3417,6 +3417,7 @@ def find_lightroom_preview_for_photo(file_path: str, catalog_name: Optional[str]
 def sync_recent_lightroom_edits(
     db_path: Path = DEFAULT_DB_PATH,
     limit: int = 100,
+    target_catalog_name: Optional[str] = None,
 ) -> List[str]:
     """
     Scans registered Lightroom Classic catalogs for recently touched or developed photos.
@@ -3427,6 +3428,8 @@ def sync_recent_lightroom_edits(
     try:
         conn_main = get_db_connection(db_path)
         cat_rows = conn_main.execute("SELECT catalog_name, lrcat_path FROM catalogs WHERE lrcat_path IS NOT NULL").fetchall()
+        if target_catalog_name and str(target_catalog_name).strip() not in ("All Catalogs", "ALL", "All Photos", ""):
+            cat_rows = [c for c in cat_rows if c["catalog_name"] == str(target_catalog_name).strip()]
         for cat in cat_rows:
             lrcat_p = Path(cat["lrcat_path"])
             if not lrcat_p.exists():
@@ -3959,6 +3962,209 @@ async def get_sync_edits_status():
             "watched_dirs_count": len(WATCHED_EDIT_TARGETS["dirs"]),
             "last_sync_event": WATCHED_EDIT_TARGETS["last_sync_event"],
         }
+
+
+# ==============================================================================
+# 8A. UNIFIED SYNC CATALOG (EDITS + NEW IMAGE DISCOVERY)
+# ==============================================================================
+class SyncCatalogPayload(BaseModel):
+    catalog_name: Optional[str] = None
+    force_rescan: bool = False
+
+
+def sync_catalog_core(
+    catalog_name: Optional[str] = None,
+    force_rescan: bool = False,
+    db_path: Path = DEFAULT_DB_PATH,
+) -> Dict[str, Any]:
+    """
+    Unified Sync Catalog Engine:
+    1. Checks for external updates on existing photos (Lightroom develop edits, .xmp sidecars,
+       Photoshop saves, mtime/size changes), regenerating WebP previews and AI embeddings.
+    2. Scans the catalog's root folder for newly added photos and derivative versions not yet
+       in MR Darkroom, processing them through Stage 1 so they appear in the catalog grid.
+    3. Re-indexes vectors, refreshes catalog counts, and invalidates search caches.
+    """
+    if PIPELINE_STATUS.get("running"):
+        raise HTTPException(
+            status_code=409,
+            detail="An import pipeline job is currently running. Please wait for it to complete.",
+        )
+
+    t0 = time.time()
+    conn = get_db_connection(db_path)
+
+    # Determine target catalog names
+    norm_cat = (catalog_name or "").strip()
+    is_all = not norm_cat or norm_cat in ("All Catalogs", "ALL", "All Photos")
+
+    if not is_all:
+        target_cats = [norm_cat]
+    else:
+        cat_rows = conn.execute("SELECT DISTINCT catalog_name FROM catalogs WHERE catalog_name IS NOT NULL").fetchall()
+        target_cats = [r["catalog_name"] for r in cat_rows if r["catalog_name"]]
+        if not target_cats:
+            rec_rows = conn.execute("SELECT DISTINCT catalog_name FROM photo_records WHERE catalog_name IS NOT NULL").fetchall()
+            target_cats = [r["catalog_name"] for r in rec_rows if r["catalog_name"]]
+
+    if not target_cats:
+        target_cats = ["Default"]
+
+    _trigger_lightroom_save_metadata_async()
+
+    total_checked = 0
+    total_updated = 0
+    total_new_photos = 0
+    total_new_derivatives = 0
+    all_synced_paths: Set[str] = set()
+    processed_summaries: List[Dict[str, Any]] = []
+
+    for cname in target_cats:
+        c_summary: Dict[str, Any] = {"catalog_name": cname, "checked": 0, "updated": 0, "new_photos": 0, "new_derivatives": 0}
+
+        # 1. Sync recent Lightroom edits for this catalog
+        lr_updated = sync_recent_lightroom_edits(db_path=db_path, limit=100, target_catalog_name=cname)
+        if lr_updated:
+            all_synced_paths.update(lr_updated)
+            c_summary["updated"] += len(lr_updated)
+
+        # 2. Check disk modification times / sizes & sibling derivatives
+        res_edits = sync_external_edits(
+            catalog_name=cname,
+            db_path=db_path,
+            vectors_path=DEFAULT_VECTORS_PATH,
+            color_sigs_path=DEFAULT_COLOR_SIGS_PATH,
+            thumbs_360_dir=DEFAULT_THUMBS_360_DIR,
+            previews_1600_dir=DEFAULT_PREVIEWS_1600_DIR,
+            scan_parent_dirs=True,
+            force_regenerate=force_rescan,
+        )
+        c_checked = res_edits.get("checked", 0)
+        c_updated = len(res_edits.get("updated_files") or [])
+        c_derivs = len(res_edits.get("ingested_derivatives") or [])
+
+        c_summary["checked"] += c_checked
+        c_summary["updated"] += c_updated
+        c_summary["new_derivatives"] += c_derivs
+        if res_edits.get("updated_files"):
+            all_synced_paths.update(res_edits["updated_files"])
+        if res_edits.get("ingested_derivatives"):
+            all_synced_paths.update(res_edits["ingested_derivatives"])
+
+        total_checked += c_checked
+        total_updated += c_updated + len(lr_updated)
+        total_new_derivatives += c_derivs
+
+        # 3. Check for newly added images in catalog root folder
+        cat_row = conn.execute("SELECT root_path FROM catalogs WHERE catalog_name = ?", (cname,)).fetchone()
+        source_dir = None
+        if cat_row and cat_row["root_path"] and Path(cat_row["root_path"]).exists():
+            source_dir = Path(cat_row["root_path"])
+        else:
+            # Fallback: check common parent dir of existing photo records
+            sample_fps = [
+                r[0] for r in conn.execute(
+                    "SELECT file_path FROM photo_records WHERE catalog_name = ? LIMIT 100", (cname,)
+                ).fetchall()
+            ]
+            valid_dirs = [str(Path(f).parent) for f in sample_fps if Path(f).exists()]
+            if valid_dirs:
+                try:
+                    cpath = Path(os.path.commonpath(valid_dirs))
+                    if cpath.exists() and cpath.is_dir():
+                        source_dir = cpath
+                except Exception:
+                    pass
+
+        if source_dir and source_dir.exists():
+            c_summary["scanned_folder"] = str(source_dir)
+            try:
+                st1_res = run_stage1_pipeline(
+                    source_dir=source_dir,
+                    catalog_name=cname,
+                    db_path=db_path,
+                    vectors_path=DEFAULT_VECTORS_PATH,
+                    thumbs_360_dir=DEFAULT_THUMBS_360_DIR,
+                    previews_1600_dir=DEFAULT_PREVIEWS_1600_DIR,
+                    fast_only=False,
+                )
+                new_p = st1_res.get("stage1_processed_ok", 0)
+                c_summary["new_photos"] = new_p
+                total_new_photos += new_p
+            except Exception as e_st1:
+                logging.warning(f"Stage 1 new-image scan warning for {cname} ({source_dir}): {e_st1}")
+                c_summary["scan_warning"] = str(e_st1)
+        else:
+            c_summary["scanned_folder"] = None
+            if cat_row and cat_row["root_path"]:
+                c_summary["folder_offline"] = cat_row["root_path"]
+
+        # 4. Refresh photo count in catalogs table
+        cnt_row = conn.execute("SELECT count(*) FROM photo_records WHERE catalog_name = ?", (cname,)).fetchone()
+        actual_count = cnt_row[0] if cnt_row else 0
+        conn.execute(
+            "UPDATE catalogs SET photo_count = ?, last_scanned_at = CURRENT_TIMESTAMP WHERE catalog_name = ?",
+            (actual_count, cname),
+        )
+        conn.commit()
+        c_summary["total_photos"] = actual_count
+        processed_summaries.append(c_summary)
+
+    conn.close()
+
+    global VECTORS_MTIME, COLOR_SIGS_MTIME, CROP_VECTORS_MTIME
+    VECTORS_MTIME = 0.0
+    COLOR_SIGS_MTIME = 0.0
+    CROP_VECTORS_MTIME = 0.0
+    invalidate_search_index_cache()
+
+    if all_synced_paths or total_new_photos > 0:
+        try:
+            reassess_records_fast(
+                db_path=DEFAULT_DB_PATH,
+                vectors_path=DEFAULT_VECTORS_PATH,
+                photo_ids=list(all_synced_paths) if all_synced_paths else None,
+                catalog_name=None if is_all else norm_cat,
+                encode_text_batch_fn=encode_text_batch,
+            )
+        except Exception as exc:
+            logging.warning(f"Fast reassessment after catalog sync warning: {exc}")
+
+    elapsed = round(time.time() - t0, 2)
+    total_changes = total_updated + total_new_photos + total_new_derivatives
+
+    display_target = norm_cat if not is_all else "All Catalogs"
+    if total_changes > 0:
+        msg = f"Synced {display_target}: {total_updated} preview(s) refreshed, {total_new_photos + total_new_derivatives} new photo(s) added."
+    else:
+        msg = f"Checked {total_checked} photo(s) in {display_target} — all previews up to date, no new photos found."
+
+    return {
+        "status": "ok",
+        "catalog_name": display_target,
+        "checked_existing": total_checked,
+        "updated_existing_count": total_updated,
+        "new_photos_count": total_new_photos,
+        "new_derivative_count": total_new_derivatives,
+        "total_changes": total_changes,
+        "catalogs_processed": processed_summaries,
+        "elapsed_seconds": elapsed,
+        "message": msg,
+    }
+
+
+@app.post("/api/catalog/sync")
+@app.post("/api/catalogs/sync")
+def sync_catalog_endpoint(payload: Optional[SyncCatalogPayload] = None, catalog: Optional[str] = Query(None)):
+    cat = (payload.catalog_name if payload else None) or catalog
+    force = payload.force_rescan if payload else False
+    return sync_catalog_core(catalog_name=cat, force_rescan=force)
+
+
+@app.post("/api/catalog/{catalog_name}/sync")
+@app.post("/api/catalogs/{catalog_name}/sync")
+def sync_specific_catalog_endpoint(catalog_name: str, force: bool = Query(False)):
+    return sync_catalog_core(catalog_name=catalog_name, force_rescan=force)
 
 
 # ==============================================================================

@@ -35,7 +35,10 @@ export default function SelectionActionBar({
   selectedPhotosArray = [],
   onOpenInLightroom,
   onSyncEdits,
+  onSyncCatalog,
+  viewMode = 'grid',
 }) {
+  const isCatalogView = !viewMode || viewMode === 'grid' || viewMode === 'date';
   const [showBookMenu, setShowBookMenu] = useState(false);
   const [newBookName, setNewBookName] = useState('');
   const [busyBook, setBusyBook] = useState(false);
@@ -593,17 +596,22 @@ export default function SelectionActionBar({
             )}
           </div>
 
-          {onSyncEdits && (
+          {/* Exclusive to Catalog Views: Unified Sync Catalog (Edits + New Photos) */}
+          {isCatalogView && (onSyncCatalog || onSyncEdits) && (
             <>
               <div style={{ width: '1px', height: '20px', background: 'rgba(255,255,255,0.12)' }} />
               <button
                 type="button"
                 onClick={() => {
                   closeAllMenus();
-                  onSyncEdits();
+                  if (onSyncCatalog) {
+                    onSyncCatalog(activeCatalog);
+                  } else if (onSyncEdits) {
+                    onSyncEdits();
+                  }
                 }}
                 disabled={isBatchBusy}
-                title="Sync Lightroom Classic develop edits (.xmp sidecars & preview caches) after pressing Cmd+S in Lightroom"
+                title={`Sync ${activeCatalog && activeCatalog !== 'All Catalogs' ? `catalog "${activeCatalog}"` : 'all catalogs'}: update existing Lightroom/XMP edits and scan for newly added photos`}
                 style={{
                   padding: '7px 14px',
                   borderRadius: '8px',
@@ -620,7 +628,7 @@ export default function SelectionActionBar({
                   whiteSpace: 'nowrap',
                 }}
               >
-                <span>🔄 Sync Edits</span>
+                <span>🔄 Sync Catalog</span>
               </button>
             </>
           )}

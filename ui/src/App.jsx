@@ -1140,6 +1140,40 @@ export default function App() {
     [selectedPhotosArray, showGlobalToast, getPhotoKey]
   );
 
+  // Unified Catalog Sync: checks external Lightroom / Photoshop edits on existing images
+  // AND scans the catalog directory for newly added images.
+  const handleSyncCatalog = useCallback(
+    async (targetCatalogName = null) => {
+      const cat = targetCatalogName || (activeCatalog !== 'All Catalogs' ? activeCatalog : null);
+      const label = cat ? `catalog "${cat}"` : 'all catalogs';
+      showGlobalToast(`🔄 Syncing ${label}: checking updates on existing images & scanning for new photos...`);
+      try {
+        const res = await fetch('/api/catalog/sync', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ catalog_name: cat }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || data.message || `HTTP ${res.status}`);
+
+        // Refresh UI state: photos, catalogs, trips, and pipeline status
+        await Promise.allSettled([
+          fetchPhotos(1, false),
+          loadCatalogs(),
+          viewMode === 'trips' ? fetchTrips() : Promise.resolve(),
+          refreshJobStatus(),
+        ]);
+
+        showGlobalToast(data.message || `Sync complete for ${label}`);
+        return data;
+      } catch (err) {
+        showGlobalToast(`Sync failed: ${err.message}`);
+        throw err;
+      }
+    },
+    [activeCatalog, viewMode, fetchPhotos, loadCatalogs, fetchTrips, refreshJobStatus, showGlobalToast]
+  );
+
   // Batch Export selected (or visible) photos: Custom Print Sizing (JPEG), 65" TV Showcase (16:9 crop), or Archival Master TIFF (.tif)
   const handleBatchExport = useCallback(
     async (mode = 'jpeg', options = {}, overrideTargetList = null) => {
@@ -1724,7 +1758,7 @@ export default function App() {
         return;
       }
 
-      // 'Shift+S' triggers Sync Lightroom Edits from Grid view
+      // 'Shift+S' triggers Sync Edits if photos are selected, or Sync Catalog when on catalog view with 0 selected
       if (
         !e.metaKey &&
         !e.ctrlKey &&
@@ -1737,7 +1771,13 @@ export default function App() {
         !isPipelineModalOpen
       ) {
         e.preventDefault();
-        handleSyncSelectedEdits();
+        if (selectedPhotosArray.length > 0) {
+          handleSyncSelectedEdits();
+        } else if (!viewMode || viewMode === 'grid' || viewMode === 'date') {
+          handleSyncCatalog(activeCatalog);
+        } else {
+          handleSyncSelectedEdits();
+        }
         return;
       }
 
@@ -1764,6 +1804,7 @@ export default function App() {
     handleTriggerUndo,
     handleSyncExternalEdits,
     handleSyncSelectedEdits,
+    handleSyncCatalog,
     handleOpenInLightroom,
     handleBatchUpdateStar,
     handleSingleSelectPhoto,
@@ -2075,6 +2116,8 @@ export default function App() {
           activeShootDate={activeShootDate}
           onOpenInLightroom={handleOpenInLightroom}
           onSyncEdits={handleSyncSelectedEdits}
+          onSyncCatalog={handleSyncCatalog}
+          viewMode={viewMode}
         />
       )}
 
@@ -2250,6 +2293,7 @@ export default function App() {
             if (viewMode === 'trips') fetchTrips();
             refreshJobStatus();
           }}
+          onSyncCatalog={handleSyncCatalog}
         />
       </ModalErrorBoundary>
 

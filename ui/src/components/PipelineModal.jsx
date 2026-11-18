@@ -33,8 +33,34 @@ export default function PipelineModal({
   onRefreshCatalogs,
   initialTab = 'pipeline',
   onShowToast,
+  onSyncCatalog,
 }) {
   const [activeTab, setActiveTab] = useState(initialTab || 'pipeline'); // 'pipeline' | 'catalogs' | 'errors' | 'backup'
+  const [syncingCatalogName, setSyncingCatalogName] = useState(null);
+
+  const handleCatalogSync = async (cname) => {
+    if (syncingCatalogName) return;
+    setSyncingCatalogName(cname);
+    try {
+      if (onSyncCatalog) {
+        await onSyncCatalog(cname);
+      } else {
+        const res = await fetch('/api/catalog/sync', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ catalog_name: cname }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+        if (onShowToast) onShowToast(data.message || `Synced catalog "${cname}"`);
+        if (onRefreshCatalogs) onRefreshCatalogs();
+      }
+    } catch (err) {
+      if (onShowToast) onShowToast(`Sync failed: ${err.message}`);
+    } finally {
+      setSyncingCatalogName(null);
+    }
+  };
 
   // Unified Destination Mode: 'new' (Create New Catalog) | 'existing' (Add to Existing Catalog)
   const [destinationMode, setDestinationMode] = useState('new');
@@ -1176,6 +1202,25 @@ export default function PipelineModal({
                             <span className="text-[11px] text-studio-accent font-semibold">
                               {cnt} photos
                             </span>
+                            <button
+                              type="button"
+                              disabled={syncingCatalogName === cname}
+                              onClick={() => handleCatalogSync(cname)}
+                              title={`Sync catalog "${cname}": check updates on existing images and scan for new images`}
+                              className="px-2.5 py-1 rounded bg-studio-panel hover:bg-studio-hover border border-studio-border text-white text-[11px] cursor-pointer flex items-center gap-1.5"
+                            >
+                              {syncingCatalogName === cname ? (
+                                <>
+                                  <span className="animate-spin text-[10px]">⏳</span>
+                                  <span>Syncing...</span>
+                                </>
+                              ) : (
+                                <>
+                                  <span>🔄</span>
+                                  <span>Sync Catalog</span>
+                                </>
+                              )}
+                            </button>
                             <button
                               type="button"
                               onClick={() => {
