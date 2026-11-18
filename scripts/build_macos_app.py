@@ -137,7 +137,7 @@ def render_master_icon(size: int = 1024, badge_text: str = "DARKROOM") -> Image.
     if sub_font:
         sb = draw.textbbox((0, 0), badge_text, font=sub_font)
         stw = sb[2] - sb[0]
-        badge_color = (245, 158, 11, 255) if badge_text == "INSTALLER" else (229, 229, 229, 215)
+        badge_color = (245, 158, 11, 255) if badge_text in ("INSTALLER", "PLUGIN") else (229, 229, 229, 215)
         draw.text(
             (cx - stw / 2 - sb[0], cy + ring_r + int(size * 0.032)),
             badge_text,
@@ -302,14 +302,23 @@ APP_PARENT_DIR="$(dirname "$APP_BUNDLE_DIR")"
 DEFAULT_PROJECT_ROOT="{project_root}"
 
 # Priority order for locating the Studio Engine:
-# 1. Sibling Engine folder (when .app is inside the Portable SSD folder)
-# 2. Installed Engine inside ~/Library/Application Support/MRDarkroom/Engine
-# 3. Configured DEFAULT_PROJECT_ROOT or ~/MRDarkroom
-if [ -d "$APP_PARENT_DIR/Engine" ] && [ -f "$APP_PARENT_DIR/Engine/server.py" ]; then
+# 1. Root-level external drive launcher: check $APP_PARENT_DIR/MR_Darkroom_Studio/Engine
+# 2. Sibling Engine folder: check $APP_PARENT_DIR/Engine (when .app is inside MR_Darkroom_Studio/)
+# 3. Installed Engine inside ~/Library/Application Support/MRDarkroom/Engine
+# 4. Configured DEFAULT_PROJECT_ROOT or ~/MRDarkroom
+RUNTIME_TAR=""
+if [ -d "$APP_PARENT_DIR/MR_Darkroom_Studio/Engine" ] && [ -f "$APP_PARENT_DIR/MR_Darkroom_Studio/Engine/server.py" ]; then
+    PROJECT_ROOT="$APP_PARENT_DIR/MR_Darkroom_Studio/Engine"
+    if [ -d "$APP_PARENT_DIR/MR_Darkroom_Studio/Data_Vault" ]; then
+        export MRDARKROOM_VAULT_DIR="$APP_PARENT_DIR/MR_Darkroom_Studio/Data_Vault"
+    fi
+    RUNTIME_TAR="$APP_PARENT_DIR/MR_Darkroom_Studio/Runtime/venv_arm64.tar.gz"
+elif [ -d "$APP_PARENT_DIR/Engine" ] && [ -f "$APP_PARENT_DIR/Engine/server.py" ]; then
     PROJECT_ROOT="$APP_PARENT_DIR/Engine"
     if [ -d "$APP_PARENT_DIR/Data_Vault" ]; then
         export MRDARKROOM_VAULT_DIR="$APP_PARENT_DIR/Data_Vault"
     fi
+    RUNTIME_TAR="$APP_PARENT_DIR/Runtime/venv_arm64.tar.gz"
 elif [ -d "$HOME/Library/Application Support/MRDarkroom/Engine" ] && [ -f "$HOME/Library/Application Support/MRDarkroom/Engine/server.py" ]; then
     PROJECT_ROOT="$HOME/Library/Application Support/MRDarkroom/Engine"
 elif [ -d "$DEFAULT_PROJECT_ROOT" ] && [ -f "$DEFAULT_PROJECT_ROOT/server.py" ]; then
@@ -341,9 +350,9 @@ fi
 # ~/Library/Caches/MRDarkroom_Runtime once so Python imports 3,500+ site-packages files
 # from fast local APFS in <1.5s instead of slow ExFAT USB reads.
 LOCAL_RUNTIME_CACHE="$HOME/Library/Caches/MRDarkroom_Runtime"
-if [ -f "$APP_PARENT_DIR/Runtime/venv_arm64.tar.gz" ] && [ ! -d "$LOCAL_RUNTIME_CACHE/.venv/lib/python3.9/site-packages" ]; then
+if [ -n "$RUNTIME_TAR" ] && [ -f "$RUNTIME_TAR" ] && [ ! -d "$LOCAL_RUNTIME_CACHE/.venv/lib/python3.9/site-packages" ]; then
     mkdir -p "$LOCAL_RUNTIME_CACHE"
-    tar -xzf "$APP_PARENT_DIR/Runtime/venv_arm64.tar.gz" -C "$LOCAL_RUNTIME_CACHE" 2>/dev/null || true
+    tar -xzf "$RUNTIME_TAR" -C "$LOCAL_RUNTIME_CACHE" 2>/dev/null || true
 fi
 
 if [ -d "$LOCAL_RUNTIME_CACHE/.venv/lib/python3.9/site-packages" ]; then
@@ -547,6 +556,109 @@ open -a "/Applications/MR Darkroom.app"
     return target_app_path
 
 
+def create_plugin_installer_app_bundle(target_app_path: Path, icns_source: Path) -> Path:
+    """
+    Builds a native macOS GUI Installer application (`Install Keepers Plugin.app`)
+    with a real signed Universal Mach-O executable that installs the Lightroom Classic
+    Keeper Transfer Plugin (`MRKeepersTransfer.lrplugin`) into:
+    ~/Library/Application Support/Adobe/Lightroom/Modules/
+    using native macOS dialogs (zero Terminal windows required).
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        staged_app = Path(tmpdir) / "Install Keepers Plugin.app"
+        contents_dir = staged_app / "Contents"
+        macos_dir = contents_dir / "MacOS"
+        resources_dir = contents_dir / "Resources"
+        macos_dir.mkdir(parents=True, exist_ok=True)
+        resources_dir.mkdir(parents=True, exist_ok=True)
+
+        shutil.copy2(str(icns_source), str(resources_dir / "AppIcon.icns"))
+
+        info_plist = {
+            "CFBundleDevelopmentRegion": "en",
+            "CFBundleDisplayName": "Install Keepers Plugin",
+            "CFBundleExecutable": "MRPluginInstaller",
+            "CFBundleIconFile": "AppIcon",
+            "CFBundleIdentifier": "com.mrdarkroom.plugininstaller",
+            "CFBundleInfoDictionaryVersion": "6.0",
+            "CFBundleName": "Install Keepers Plugin",
+            "CFBundlePackageType": "APPL",
+            "CFBundleShortVersionString": "4.5.0",
+            "CFBundleVersion": "450",
+            "LSMinimumSystemVersion": "12.0",
+            "NSHighResolutionCapable": True,
+        }
+        with open(contents_dir / "Info.plist", "wb") as f:
+            plistlib.dump(info_plist, f)
+
+        installer_script = """#!/bin/zsh
+# MR Keepers Transfer Plugin — Native macOS GUI Installer
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+
+APP_BUNDLE_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
+PARENT_DIR="$(dirname "$APP_BUNDLE_DIR")"
+
+# Search candidates for MRKeepersTransfer.lrplugin
+PLUGIN_DIR=""
+for CANDIDATE in \\
+    "$PARENT_DIR/MRKeepersTransfer.lrplugin" \\
+    "$PARENT_DIR/Guides and Plugins/MRKeepersTransfer.lrplugin" \\
+    "$PARENT_DIR/../Guides and Plugins/MRKeepersTransfer.lrplugin" \\
+    "$PARENT_DIR/MR_Darkroom_Studio/MRKeepersTransfer.lrplugin" \\
+    "/Volumes/2TB_Archive/Guides and Plugins/MRKeepersTransfer.lrplugin" \\
+    "/Volumes/2TB_Archive/MRKeepersTransfer.lrplugin"; do
+    if [ -d "$CANDIDATE" ]; then
+        PLUGIN_DIR="$CANDIDATE"
+        break
+    fi
+done
+
+if [ -z "$PLUGIN_DIR" ]; then
+    osascript -e 'display dialog "❌ Could not find MRKeepersTransfer.lrplugin!\\n\\nPlease verify that MRKeepersTransfer.lrplugin is located inside the Guides and Plugins folder on the 2TB drive." buttons {"OK"} default button "OK" with title "MR Keepers Plugin Installer" with icon stop' 2>/dev/null
+    exit 1
+fi
+
+RESPONSE=$(osascript -e 'display dialog "Install MR Keepers Transfer Plugin for Adobe Lightroom Classic?\\n\\nThis Lightroom plugin enables 1-click transfer of your 5★ Keeper photos from working trip catalogs directly into your permanent 2TB Archive catalogs (Landscape Keepers, Aerial Keepers, etc.)." buttons {"Cancel", "Install Plugin"} default button "Install Plugin" with title "MR Keepers Plugin Installer" with icon note' 2>/dev/null)
+
+if [[ "$RESPONSE" != *"Install Plugin"* ]]; then
+    exit 0
+fi
+
+TARGET_MODULES="$HOME/Library/Application Support/Adobe/Lightroom/Modules"
+TARGET_PLUGIN="$TARGET_MODULES/MRKeepersTransfer.lrplugin"
+
+mkdir -p "$TARGET_MODULES"
+rsync -a --delete --exclude='._*' "$PLUGIN_DIR/" "$TARGET_PLUGIN/"
+chmod +x "$TARGET_PLUGIN/scanner.py" "$TARGET_PLUGIN/switch_catalog.sh" 2>/dev/null || true
+xattr -cr "$TARGET_PLUGIN" 2>/dev/null || true
+
+osascript -e 'display dialog "✅ MR Keepers Transfer Plugin is installed!\\n\\nHOW TO USE IN LIGHTROOM CLASSIC:\\n1. Launch Adobe Lightroom Classic.\\n2. In your working catalog, star your best photos 5 Stars (★★★★★).\\n3. From the top menu, choose:\\n   Library > Plug-in Extras > Send 5★ Keepers to Destination Catalog...\\n4. Select your destination catalog and click Transfer Keepers (DNG).\\n5. In MR Darkroom Studio, click Sync Catalog to view updates instantly!" buttons {"Done"} default button "Done" with title "Plugin Installed Successfully" with icon note' 2>/dev/null || true
+
+exit 0
+"""
+        launch_sh = resources_dir / "launch.sh"
+        launch_sh.write_text(installer_script, encoding="utf-8")
+        launch_sh.chmod(launch_sh.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+        exec_path = macos_dir / "MRPluginInstaller"
+        _compile_universal_macho_launcher(exec_path, "../Resources/launch.sh")
+        if not exec_path.exists():
+            shutil.copy2(str(launch_sh), str(exec_path))
+
+        _codesign_bundle(staged_app)
+
+        if target_app_path.exists():
+            subprocess.run(["rm", "-rf", str(target_app_path)], check=False)
+        target_app_path.mkdir(parents=True, exist_ok=True)
+        subprocess.run(["rsync", "-r", f"{staged_app}/", f"{target_app_path}/"], check=True)
+        subprocess.run(
+            ["chmod", "+x", str(target_app_path / "Contents" / "MacOS" / "MRPluginInstaller"), str(target_app_path / "Contents" / "Resources" / "launch.sh")],
+            check=False,
+        )
+
+    return target_app_path
+
+
 def install_launch_agent(project_root: Path) -> Path:
     """Writes ~/Library/LaunchAgents/com.mrdarkroom.studio.plist for automatic startup."""
     launch_agents_dir = Path.home() / "Library" / "LaunchAgents"
@@ -593,6 +705,7 @@ def main():
     parser.add_argument("--project-root", type=str, default=str(PROJECT_ROOT))
     parser.add_argument("--output-app", type=str, default="")
     parser.add_argument("--output-installer-app", type=str, default="")
+    parser.add_argument("--output-plugin-installer-app", type=str, default="")
     parser.add_argument("--install-launchagent", action="store_true")
     args = parser.parse_args()
 
@@ -612,10 +725,19 @@ def main():
         create_installer_app_bundle(out_inst, inst_icns)
         print(f"   -> Packaged Signed Installer App: {out_inst}")
 
+    if args.output_plugin_installer_app:
+        plug_icns = dist_dir / "PluginIcon.icns"
+        build_icns(plug_icns, badge_text="PLUGIN")
+        out_plug = Path(args.output_plugin_installer_app).expanduser().resolve()
+        create_plugin_installer_app_bundle(out_plug, plug_icns)
+        print(f"   -> Packaged Signed Plugin Installer App: {out_plug}")
+
     if args.output_app:
         out_path = Path(args.output_app).expanduser().resolve()
         create_app_bundle(out_path, proj_root, icns_path)
-        print(f"2. Packaged Signed App: {out_path}")
+        print(f"   -> Packaged Signed App: {out_path}")
+
+    if args.output_app or args.output_installer_app or args.output_plugin_installer_app:
         return
 
     repo_app = dist_dir / "MR Darkroom.app"
