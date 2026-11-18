@@ -23,7 +23,7 @@ function formatReadableDate(dateStr) {
   return dateStr;
 }
 
-export default function PhotoGrid({
+function PhotoGrid({
   photos,
   viewMode = 'grid',
   activeTrip = null,
@@ -43,6 +43,8 @@ export default function PhotoGrid({
   hasMore,
   selectedPhotoIds = new Set(),
   onToggleSelectPhoto,
+  onSingleSelectPhoto,
+  lastSelectedKey = null,
 }) {
   const parentRef = useRef(null);
   const lastScrollTopRef = useRef(0);
@@ -207,6 +209,17 @@ export default function PhotoGrid({
     }
   }, [photos]);
 
+  // Auto-scroll virtualized grid when active selection changes via keyboard arrows
+  useEffect(() => {
+    if (!lastSelectedKey || flattenedVirtualItems.length === 0) return;
+    const rowIndex = flattenedVirtualItems.findIndex(
+      (item) => item.type === 'row' && item.photos.some((p) => (p.file_hash || p.file_path) === lastSelectedKey)
+    );
+    if (rowIndex !== -1) {
+      rowVirtualizer.scrollToIndex(rowIndex, { align: 'auto' });
+    }
+  }, [lastSelectedKey, flattenedVirtualItems]);
+
   // Handle infinite scroll / load more trigger near bottom
   useEffect(() => {
     const virtualItems = rowVirtualizer.getVirtualItems();
@@ -258,8 +271,7 @@ export default function PhotoGrid({
   return (
     <div
       ref={parentRef}
-      className="flex-1 overflow-y-auto px-4 py-3 bg-studio-bg"
-      style={{ height: 'calc(100vh - 82px)' }}
+      className="flex-1 h-full min-h-0 overflow-y-auto px-4 pt-4 pb-28 bg-studio-bg"
     >
       {/* Active Shoot Day Banner when jumped from Lightbox "Open Full Day in Main Grid" */}
       {activeShootDate && (
@@ -392,6 +404,7 @@ export default function PhotoGrid({
               key={virtualRow.key}
               ref={rowVirtualizer.measureElement}
               data-index={virtualRow.index}
+              data-virtual-row={virtualRow.index}
               className="absolute top-0 left-0 w-full grid gap-2.5 pb-2.5"
               style={{
                 transform: `translateY(${virtualRow.start}px)`,
@@ -404,7 +417,15 @@ export default function PhotoGrid({
                   <PhotoCard
                     key={ph.file_path || ph.file_hash}
                     photo={ph}
-                    onClick={(clickedPhoto) =>
+                    onClick={(clickedPhoto, e) => {
+                      if (e?.shiftKey || e?.metaKey || e?.ctrlKey) {
+                        if (onToggleSelectPhoto) onToggleSelectPhoto(clickedPhoto, e, orderedVisiblePhotos);
+                      } else {
+                        if (onSingleSelectPhoto) onSingleSelectPhoto(clickedPhoto);
+                        else if (onToggleSelectPhoto) onToggleSelectPhoto(clickedPhoto, e, orderedVisiblePhotos);
+                      }
+                    }}
+                    onDoubleClick={(clickedPhoto) =>
                       onSelectPhoto && onSelectPhoto(clickedPhoto, orderedVisiblePhotos)
                     }
                     onOpenSequence={onOpenSequence}
@@ -429,3 +450,5 @@ export default function PhotoGrid({
     </div>
   );
 }
+
+export default React.memo(PhotoGrid);

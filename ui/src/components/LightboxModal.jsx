@@ -1,9 +1,22 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   X, ChevronLeft, ChevronRight, Star, ExternalLink, Folder, Camera,
-  MapPin, Tag, Info, Layers, Sparkles, Copy, Check, Eye, RefreshCw, Zap, Cpu, Calendar, LayoutGrid, ChevronDown, RotateCcw, Mic, Trash2
+  MapPin, Tag, Info, Layers, Sparkles, Copy, Check, Eye, RefreshCw, Zap, Cpu, Calendar, LayoutGrid, ChevronDown, RotateCcw, Mic, Trash2, Download, Lightbulb
 } from 'lucide-react';
 import CollectionPopover from './CollectionPopover.jsx';
+import StudioGuideDrawer from './StudioGuideDrawer.jsx';
+
+// Sticky Module-Level Inspector Sidebar Width (retains width across photo navigation & modal reopens)
+let globalStickyInspectorWidth = (() => {
+  try {
+    const saved = localStorage.getItem('mrdarkroom_inspector_width');
+    if (saved) {
+      const parsed = parseInt(saved, 10);
+      if (!isNaN(parsed) && parsed >= 340 && parsed <= 1400) return parsed;
+    }
+  } catch (_) {}
+  return 460;
+})();
 
 export default function LightboxModal({
   photo,
@@ -21,6 +34,9 @@ export default function LightboxModal({
   onTogglePhotoInCollection,
   onCreateCollectionWithPhoto,
   onOpenCollectionsModal,
+  onExportPhoto,
+  onOpenTvCropModal,
+  onOpenCustomPrintModal,
   onOpenVoiceTeachForPhoto,
   undoStatus = null,
   onTriggerUndo = null,
@@ -45,11 +61,77 @@ export default function LightboxModal({
   const [openInMenuOpen, setOpenInMenuOpen] = useState(false);
   const openInMenuRef = useRef(null);
 
+  // Export Menu State
+  const [exportMenuOpen, setExportMenuOpen] = useState(false);
+  const [isGuideOpen, setIsGuideOpen] = useState(false);
+  const [bottomExportMenuOpen, setBottomExportMenuOpen] = useState(false);
+  const [showCustomPrintForm, setShowCustomPrintForm] = useState(false);
+  const [customLongEdge, setCustomLongEdge] = useState('6000');
+  const [customDpi, setCustomDpi] = useState('300');
+  const exportMenuRef = useRef(null);
+  const exportMenuBottomRef = useRef(null);
+
   // Subject Box Overlay & Active Vector Reclassification State
   const [showSubjectBoxes, setShowSubjectBoxes] = useState(false);
   const [reclassifyTarget, setReclassifyTarget] = useState(null); // { label, bbox }
   const [customReclassifyInput, setCustomReclassifyInput] = useState('');
   const [reclassifying, setReclassifying] = useState(false);
+
+  // Resizable Right Studio Inspector Sidebar (sticky in memory & localStorage)
+  const [sidebarWidth, setSidebarWidth] = useState(() => globalStickyInspectorWidth);
+  const currentWidthRef = useRef(globalStickyInspectorWidth);
+  const isResizingSidebar = useRef(false);
+  const resizeStartX = useRef(0);
+  const resizeStartWidth = useRef(globalStickyInspectorWidth);
+
+  const updateSidebarWidth = useCallback((newWidth) => {
+    globalStickyInspectorWidth = newWidth;
+    currentWidthRef.current = newWidth;
+    setSidebarWidth(newWidth);
+    try {
+      localStorage.setItem('mrdarkroom_inspector_width', String(newWidth));
+    } catch (_) {}
+  }, []);
+
+  const handleStartResize = useCallback((e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    isResizingSidebar.current = true;
+    resizeStartX.current = e.clientX;
+    resizeStartWidth.current = currentWidthRef.current;
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+
+    const handlePointerMove = (moveEvent) => {
+      if (!isResizingSidebar.current) return;
+      const deltaX = resizeStartX.current - moveEvent.clientX;
+      const maxWidth = Math.max(750, Math.round(window.innerWidth * 0.70));
+      const newWidth = Math.min(maxWidth, Math.max(340, resizeStartWidth.current + deltaX));
+      updateSidebarWidth(newWidth);
+    };
+
+    const handlePointerUp = () => {
+      if (isResizingSidebar.current) {
+        isResizingSidebar.current = false;
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+        try {
+          localStorage.setItem('mrdarkroom_inspector_width', String(currentWidthRef.current));
+        } catch (_) {}
+      }
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', handlePointerUp);
+    };
+
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', handlePointerUp);
+  }, [updateSidebarWidth]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('mrdarkroom_inspector_width', String(sidebarWidth));
+    } catch (_) {}
+  }, [sidebarWidth]);
 
   // Quick Location Controls State
   const [locationInput, setLocationInput] = useState('');
@@ -252,14 +334,16 @@ export default function LightboxModal({
           setDetails(data.photo);
           if (onPhotoUpdated) onPhotoUpdated(data.photo);
         }
-        const modCnt = (data.modified_photos || []).length;
-        const newCnt = (data.new_derivatives || []).length;
+        const modCnt = (data.updated_files || data.modified_photos || []).length;
+        const newCnt = (data.ingested_derivatives || data.new_derivatives || []).length;
         if (modCnt > 0 || newCnt > 0) {
           showToast(
             `Synced external edits! (${modCnt} updated, ${newCnt} new derivative${newCnt === 1 ? '' : 's'})`
           );
         } else {
-          showToast('Previews & OpenCLIP vector verified up-to-date');
+          showToast(
+            'No new edits rendered yet. In Lightroom Classic, press Cmd+S to save metadata, or choose Library > Previews > Build Standard Previews. Adobe can take 2–3 minutes to finish writing previews to disk.'
+          );
         }
       })
       .catch((err) => {
@@ -268,16 +352,44 @@ export default function LightboxModal({
       });
   };
 
+  // Close menus on outside click
+  useEffect(() => {
+    const handleClickOutside = (e) => {
+      if (openInMenuRef.current && !openInMenuRef.current.contains(e.target)) {
+        setOpenInMenuOpen(false);
+      }
+      if (exportMenuRef.current && !exportMenuRef.current.contains(e.target)) {
+        setExportMenuOpen(false);
+      }
+      if (exportMenuBottomRef.current && !exportMenuBottomRef.current.contains(e.target)) {
+        setBottomExportMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
   // Keyboard navigation & Shortcuts
   useEffect(() => {
     const handleKeyDown = (e) => {
-      // Don't capture keys if focused on an input
-      if (['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target?.tagName)) return;
+      // Don't capture keys if focused on an input or editable field
+      if (['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target?.tagName) || e.target?.isContentEditable) return;
 
-      if (e.key === 'Escape') {
+      // Intercept Cmd+S to prevent Safari "Save Page As" in Documents, triggering Sync Edits instead
+      if ((e.metaKey || e.ctrlKey) && (e.key === 's' || e.key === 'S')) {
+        e.preventDefault();
+        e.stopPropagation();
+        handleSyncPhotoEdits();
+        return;
+      }
+
+      // Spacebar, Escape, or 'G' key returns from Loupe view back to Grid (Lightroom standard)
+      if (e.key === 'Escape' || e.key === ' ' || e.code === 'Space' || e.key?.toLowerCase() === 'g') {
+        if (e.repeat) return;
         e.preventDefault();
         e.stopPropagation();
         onClose();
+        return;
       } else if (e.key === 'ArrowLeft') {
         e.preventDefault();
         e.stopPropagation();
@@ -301,7 +413,7 @@ export default function LightboxModal({
 
     window.addEventListener('keydown', handleKeyDown, true);
     return () => window.removeEventListener('keydown', handleKeyDown, true);
-  }, [onClose, onNavigatePrev, onNavigateNext, handleSetRating]);
+  }, [onClose, onNavigatePrev, onNavigateNext, handleSetRating, handleSyncPhotoEdits]);
 
   const copyPath = () => {
     if (details.file_path) {
@@ -312,7 +424,9 @@ export default function LightboxModal({
     }
   };
 
-  const previewSrc = details.preview_url || (details.preview_1600_path ? `/previews/previews_1600/${details.preview_1600_path.split('/').pop()}` : null) || (details.thumb_url || (details.thumb_360_path ? `/previews/thumbs_360/${details.thumb_360_path.split('/').pop()}` : null));
+  const cacheBuster = details.file_mtime ? `?v=${Math.round(Number(details.file_mtime))}` : '';
+  const rawPreviewSrc = details.preview_url || (details.preview_1600_path ? `/previews/previews_1600/${details.preview_1600_path.split('/').pop()}` : null) || (details.thumb_url || (details.thumb_360_path ? `/previews/thumbs_360/${details.thumb_360_path.split('/').pop()}` : null));
+  const previewSrc = rawPreviewSrc ? (rawPreviewSrc.includes('?') ? rawPreviewSrc : `${rawPreviewSrc}${cacheBuster}`) : null;
 
   const filename = details.file_path ? details.file_path.split('/').pop() : 'Photo';
   const currentStars = details.star_rating || 0;
@@ -826,29 +940,29 @@ export default function LightboxModal({
   return (
     <div className="fixed inset-0 z-50 bg-black/95 flex flex-col backdrop-blur-md select-none text-studio-text">
       {/* Top Header Bar */}
-      <div className="h-12 bg-studio-panel border-b border-studio-border flex items-center justify-between px-4 shrink-0">
+      <div className="h-14 bg-studio-panel border-b border-studio-border flex items-center justify-between px-4 shrink-0">
         <div className="flex items-center gap-3">
           <button
             onClick={onClose}
-            className="p-1 hover:bg-studio-hover text-studio-textMuted hover:text-white rounded-sm transition-colors"
+            className="p-1.5 hover:bg-studio-hover text-studio-textMuted hover:text-white rounded transition-colors cursor-pointer"
             title="Close Lightbox (Esc or press G for Main Grid)"
           >
             <X className="w-5 h-5" />
           </button>
           <div className="flex items-center gap-2">
-            <span className="font-mono text-sm text-white font-medium">{filename}</span>
+            <span className="font-mono text-sm text-white font-semibold">{filename}</span>
             {totalCount > 0 && (
-              <span className="px-1.5 py-0.5 bg-studio-bg text-studio-textMuted text-[10px] font-mono border border-studio-border rounded-sm">
+              <span className="px-2 py-0.5 bg-studio-bg text-studio-textMuted text-xs font-mono border border-studio-border rounded">
                 {activeIndex + 1} / {totalCount}
               </span>
             )}
             {details.sibling_path && (
-              <span className="px-1.5 py-0.5 bg-blue-500/20 text-blue-300 text-[10px] font-mono border border-blue-500/40 rounded-sm">
+              <span className="px-2 py-0.5 bg-blue-500/20 text-blue-300 text-xs font-mono border border-blue-500/40 rounded">
                 RAW + TIF Sibling
               </span>
             )}
             {details.is_sequence_hero === 1 && (
-              <span className="px-1.5 py-0.5 bg-emerald-500/20 text-emerald-300 text-[10px] font-mono border border-emerald-500/40 rounded-sm">
+              <span className="px-2 py-0.5 bg-emerald-500/20 text-emerald-300 text-xs font-mono border border-emerald-500/40 rounded">
                 ★ SEQUENCE HERO
               </span>
             )}
@@ -861,14 +975,14 @@ export default function LightboxModal({
             <button
               type="button"
               onClick={() => setShowSubjectBoxes((prev) => !prev)}
-              className={`flex items-center gap-1.5 px-2.5 py-1 text-xs font-mono rounded-sm border transition-colors cursor-pointer ${
+              className={`flex items-center gap-1.5 px-3 py-1.5 text-[13px] font-mono rounded-md border transition-colors cursor-pointer ${
                 showSubjectBoxes
                   ? 'bg-cyan-950/70 border-cyan-400 text-cyan-200 shadow-sm'
                   : 'bg-studio-bg border-studio-border hover:border-cyan-400/70 text-cyan-300/90 hover:text-white'
               }`}
               title="Toggle localized subject verification boxes & active vector boundary controls"
             >
-              <Eye className="w-3.5 h-3.5 text-cyan-400" />
+              <Eye className="w-4 h-4 text-cyan-400" />
               <span>
                 🎯 Subject Regions ({subjectBoxes.length})
               </span>
@@ -879,7 +993,7 @@ export default function LightboxModal({
             type="button"
             disabled={!undoStatus?.available}
             onClick={() => onTriggerUndo && onTriggerUndo()}
-            className={`flex items-center gap-1.5 px-2.5 py-1 text-xs font-mono rounded-sm border transition-colors ${
+            className={`flex items-center gap-1.5 px-3 py-1.5 text-[13px] font-mono rounded-md border transition-colors ${
               undoStatus?.available
                 ? 'bg-sky-950/50 border-sky-400/70 text-sky-200 hover:bg-sky-900/60 hover:text-white cursor-pointer'
                 : 'bg-studio-bg/50 border-studio-border text-studio-textDim opacity-60 cursor-not-allowed'
@@ -890,10 +1004,10 @@ export default function LightboxModal({
                 : 'No studio actions to undo yet (Cmd+Z)'
             }
           >
-            <RotateCcw className="w-3.5 h-3.5" />
+            <RotateCcw className="w-4 h-4" />
             <span>↩ Undo</span>
             {undoStatus?.count > 0 && (
-              <span className="px-1.5 py-0.2 bg-sky-500/30 text-sky-200 rounded-full text-[10px] font-bold">
+              <span className="px-1.5 py-0.5 bg-sky-500/30 text-sky-200 rounded-full text-xs font-bold">
                 {undoStatus.count}
               </span>
             )}
@@ -907,17 +1021,27 @@ export default function LightboxModal({
             onOpenCollectionsModal={onOpenCollectionsModal}
           />
 
+          {/* Quick Edit in Lightroom Button */}
+          <button
+            type="button"
+            onClick={() => handleOpenApp('lightroom')}
+            className="flex items-center gap-1.5 bg-sky-500/20 hover:bg-sky-500/35 border border-sky-400/60 hover:border-sky-400 text-sky-200 hover:text-white px-3.5 py-1.5 text-[13px] font-mono font-bold rounded-md transition-all cursor-pointer whitespace-nowrap"
+            title="Open this photo directly in Lightroom Classic (Develop mode) - Press 'L'"
+          >
+            <span>🎨 Edit in Lightroom</span>
+          </button>
+
           {/* Consolidated Open In ▾ Dropdown Menu */}
           <div ref={openInMenuRef} className="relative">
             <button
               type="button"
               onClick={() => setOpenInMenuOpen((prev) => !prev)}
-              className="flex items-center gap-1.5 bg-studio-bg border border-studio-border hover:border-cyan-400 px-3 py-1 text-xs font-mono text-studio-text hover:text-white rounded-sm transition-colors cursor-pointer"
+              className="flex items-center gap-1.5 bg-studio-bg border border-studio-border hover:border-cyan-400 px-3.5 py-1.5 text-[13px] font-mono text-studio-text hover:text-white rounded-md transition-colors cursor-pointer"
               title="Open this photo in Adobe Photoshop (P), Lightroom Classic (L), or macOS Finder (F)"
             >
-              <ExternalLink className="w-3.5 h-3.5 text-cyan-400" />
+              <ExternalLink className="w-4 h-4 text-cyan-400" />
               <span>Open In</span>
-              <ChevronDown className="w-3.5 h-3.5 text-studio-textMuted" />
+              <ChevronDown className="w-4 h-4 text-studio-textMuted" />
             </button>
 
             {openInMenuOpen && (
@@ -980,19 +1104,120 @@ export default function LightboxModal({
             type="button"
             onClick={handleSyncPhotoEdits}
             disabled={syncingEdits}
-            className="flex items-center gap-1.5 bg-studio-bg border border-studio-border hover:border-emerald-400 px-2.5 py-1 text-xs font-mono text-emerald-300 hover:text-white rounded-sm transition-colors disabled:opacity-50 cursor-pointer"
+            className="flex items-center gap-1.5 bg-studio-bg border border-studio-border hover:border-emerald-400 px-3.5 py-1.5 text-[13px] font-mono text-emerald-300 hover:text-white rounded-md transition-colors disabled:opacity-50 cursor-pointer"
             title="Re-sync modified TIFF/RAW previews & vector or ingest newly saved Photoshop derivatives"
           >
-            <RefreshCw className={`w-3.5 h-3.5 text-emerald-400 ${syncingEdits ? 'animate-spin' : ''}`} />
+            <RefreshCw className={`w-4 h-4 text-emerald-400 ${syncingEdits ? 'animate-spin' : ''}`} />
             <span>{syncingEdits ? 'Syncing...' : '🔄 Sync Edits'}</span>
           </button>
+
+          {/* 💡 Visual Studio Guide Side Drawer Trigger */}
+          <button
+            type="button"
+            onClick={() => setIsGuideOpen((prev) => !prev)}
+            className="flex items-center gap-1.5 bg-amber-500/15 hover:bg-amber-500/25 border border-amber-400/50 hover:border-amber-400 px-3.5 py-1.5 text-[13px] font-mono text-amber-300 hover:text-white rounded-md transition-colors cursor-pointer"
+            title="Open Visual Studio Guide (Importing, Lightroom Sync, Cloud Exports, Shortcuts)"
+          >
+            <Lightbulb className="w-4 h-4 text-amber-400" />
+            <span>💡 Guide</span>
+          </button>
+
+          {/* 📤 Export ▾ Dropdown Menu */}
+          <div ref={exportMenuRef} className="relative">
+            <button
+              type="button"
+              onClick={() => setExportMenuOpen((prev) => !prev)}
+              className="flex items-center gap-1.5 bg-emerald-500/20 hover:bg-emerald-500/35 border border-emerald-400/60 hover:border-emerald-400 text-emerald-200 hover:text-white px-3.5 py-1.5 text-[13px] font-mono font-bold rounded-md transition-all cursor-pointer whitespace-nowrap"
+              title="Export this photo (High-Res Master JPEG, 12,000px TV Showcase, Custom Print Sizing, or Original RAW)"
+            >
+              <Download className="w-4 h-4 text-emerald-400" />
+              <span>Export</span>
+              <ChevronDown className="w-3.5 h-3.5 opacity-80" />
+            </button>
+
+            {exportMenuOpen && (
+              <div className="absolute right-0 mt-1.5 w-80 bg-studio-panel border border-studio-borderLight rounded-md shadow-2xl z-50 p-2 font-mono text-xs space-y-2">
+                <div className="text-[10px] font-bold text-studio-textMuted uppercase tracking-wider pb-1 border-b border-studio-border flex justify-between">
+                  <span>Export Active Photo</span>
+                  <span className="text-emerald-400">~/Desktop</span>
+                </div>
+
+                {/* Option 1: Custom Print Sizing (JPEG) */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setExportMenuOpen(false);
+                    if (onOpenCustomPrintModal) {
+                      onOpenCustomPrintModal([details]);
+                    } else if (onExportPhoto) {
+                      onExportPhoto(details, 'jpeg', { long_edge: 6000, dpi: 300 });
+                    }
+                  }}
+                  className="w-full text-left border border-purple-500/30 hover:border-purple-400 bg-purple-500/10 hover:bg-purple-500/20 rounded p-2 space-y-1 transition-colors cursor-pointer"
+                >
+                  <div className="font-bold text-purple-300 flex items-center justify-between">
+                    <span>🖨️ Custom Print Sizing (JPEG)</span>
+                  </div>
+                  <div className="text-[11px] text-studio-textMuted leading-tight">
+                    Print sizing presets (3,600px up to 12,000px) and 240/300 DPI with develop edits applied.
+                  </div>
+                </button>
+
+                {/* Option 2: 65" TV Showcase (Always opens 16:9 Crop Framing Modal) */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setExportMenuOpen(false);
+                    if (onOpenTvCropModal) onOpenTvCropModal(details);
+                  }}
+                  className="w-full text-left p-2 rounded hover:bg-studio-hover flex flex-col gap-1 border border-emerald-500/40 bg-emerald-500/10 text-white transition-colors cursor-pointer"
+                >
+                  <div className="font-bold flex items-center justify-between text-emerald-300">
+                    <span>📺 65" TV Showcase (16:9 Crop)</span>
+                    <span className="text-[10px] bg-emerald-500/20 px-1.5 py-0.5 rounded text-emerald-200">12,000px · 180 DPI</span>
+                  </div>
+                  <div className="text-[11px] text-studio-textMuted leading-tight">
+                    Opens interactive framing tool to compose 16:9 crop placement before exporting at 12,000px / 180 DPI.
+                  </div>
+                </button>
+
+                {/* Option 3: Archival Master TIFF (.tif) */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setExportMenuOpen(false);
+                    if (onExportPhoto) onExportPhoto(details, 'tiff');
+                  }}
+                  className="w-full text-left p-2 rounded hover:bg-studio-hover flex flex-col gap-1 border border-studio-border/60 text-white transition-colors cursor-pointer"
+                >
+                  <div className="font-bold flex items-center justify-between text-sky-300">
+                    <span>📁 Archival Master TIFF (.tif)</span>
+                    <span className="text-[10px] text-sky-400">LZW · IPTC/XMP</span>
+                  </div>
+                  <div className="text-[11px] text-studio-textMuted leading-tight">
+                    Archival master .tif with Lightroom develop adjustments preserved and full metadata embedded.
+                  </div>
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
-      {/* Main Inspection View: Left Viewer + Right Metadata Sidebar */}
+      {/* Main Inspection View: Docked Left Guide (when open) + Center Viewer + Right Metadata Sidebar */}
       <div className="flex-1 flex overflow-hidden">
-        {/* Left: High-Res 1600px Preview with Navigation Chevrons */}
-        <div className="flex-1 relative flex items-center justify-center p-4 bg-black overflow-hidden">
+        {/* Docked Left Studio Guide Panel (pushes photo viewer over to the right) */}
+        {isGuideOpen && (
+          <StudioGuideDrawer
+            isOpen={isGuideOpen}
+            onClose={() => setIsGuideOpen(false)}
+            position="left"
+            initialTopic="lightroom"
+          />
+        )}
+
+        {/* Center: High-Res 1600px Preview with Navigation Chevrons */}
+        <div className="flex-1 relative flex items-center justify-center p-4 bg-black overflow-hidden min-w-0">
           {/* Previous Frame Button */}
           <button
             onClick={onNavigatePrev}
@@ -1080,23 +1305,35 @@ export default function LightboxModal({
           </button>
         </div>
 
+        {/* Draggable Divider Handle for Resizing Inspector Sidebar */}
+        <div
+          onPointerDown={handleStartResize}
+          className="w-2 hover:w-2.5 bg-studio-border/60 hover:bg-amber-400 active:bg-amber-500 cursor-col-resize select-none shrink-0 transition-all z-30 group relative flex items-center justify-center border-l border-studio-border"
+          title="Drag to resize inspector sidebar"
+        >
+          <div className="w-0.5 h-10 bg-zinc-600 group-hover:bg-zinc-950 group-active:bg-zinc-950 rounded-full transition-colors" />
+        </div>
+
         {/* Right: Studio Metadata Sidebar & Similarity Tabs */}
-        <div className="w-96 bg-studio-panel border-l border-studio-border flex flex-col overflow-y-auto text-xs font-sans">
+        <div
+          style={{ width: `${sidebarWidth}px`, flexShrink: 0 }}
+          className="bg-studio-panel flex flex-col overflow-y-auto text-xs font-sans select-text border-l border-studio-border/50"
+        >
           {/* Quick Rating Bar */}
-          <div className="p-3 border-b border-studio-border bg-studio-bg flex items-center justify-between shrink-0">
-            <span className="font-mono text-studio-textDim text-[11px] uppercase tracking-wider">
+          <div className="p-3.5 border-b border-studio-border bg-studio-bg flex items-center justify-between shrink-0">
+            <span className="font-mono text-studio-textDim text-xs uppercase tracking-wider font-semibold">
               Rating (1–5 keys)
             </span>
-            <div className="flex items-center gap-1">
+            <div className="flex items-center gap-1.5">
               {[1, 2, 3, 4, 5].map((s) => (
                 <button
                   key={s}
                   onClick={() => handleSetRating(s === currentStars ? 0 : s)}
-                  className="p-1 hover:scale-110 transition-transform"
+                  className="p-1 hover:scale-110 transition-transform cursor-pointer"
                   title={`Set ${s} stars (Press ${s})`}
                 >
                   <Star
-                    className={`w-4 h-4 ${
+                    className={`w-5 h-5 ${
                       currentStars >= s
                         ? 'text-studio-gold fill-studio-gold'
                         : 'text-studio-borderLight hover:text-studio-gold/60'
@@ -1108,18 +1345,18 @@ export default function LightboxModal({
           </div>
 
           {/* Technical Quality Metrics */}
-          <div className="p-3 border-b border-studio-border grid grid-cols-2 gap-2 font-mono text-[11px] shrink-0">
-            <div className="p-2 bg-studio-bg border border-studio-border rounded-sm">
-              <span className="text-studio-textDim block text-[10px]">Aesthetic Score</span>
-              <span className="text-white font-medium text-xs">
+          <div className="p-3 border-b border-studio-border grid grid-cols-2 gap-2 font-mono text-xs shrink-0">
+            <div className="p-2.5 bg-studio-bg border border-studio-border rounded-md">
+              <span className="text-studio-textDim block text-[11px]">Aesthetic Score</span>
+              <span className="text-white font-semibold text-sm">
                 {details.aesthetic_score !== null && details.aesthetic_score !== undefined
                   ? Number(details.aesthetic_score).toFixed(2)
                   : 'N/A'}
               </span>
             </div>
-            <div className="p-2 bg-studio-bg border border-studio-border rounded-sm">
-              <span className="text-studio-textDim block text-[10px]">Patch Sharpness (90%)</span>
-              <span className={`text-xs font-medium ${details.is_unsharp ? 'text-studio-crimson' : 'text-studio-emerald'}`}>
+            <div className="p-2.5 bg-studio-bg border border-studio-border rounded-md">
+              <span className="text-studio-textDim block text-[11px]">Patch Sharpness (90%)</span>
+              <span className={`text-sm font-semibold ${details.is_unsharp ? 'text-studio-crimson' : 'text-studio-emerald'}`}>
                 {details.sharpness_score !== null && details.sharpness_score !== undefined
                   ? `${Number(details.sharpness_score).toFixed(1)} ${details.is_unsharp ? '(Unsharp)' : '(Sharp)'}`
                   : 'N/A'}
@@ -1127,11 +1364,11 @@ export default function LightboxModal({
             </div>
           </div>
 
-          {/* Prominent Keywords & Studio Tags + 3-Button AI Tag Control Group */}
+          {/* Prominent Keywords & Studio Tags + 4-Button AI Tag Control Group */}
           <div className="p-3.5 border-b border-studio-border space-y-2.5 bg-studio-bg/30 shrink-0">
-            {/* 3-Button AI Tag Control Group */}
+            {/* 4-Button AI Tag Control Group (Clean 2x2 Grid for Full Readability) */}
             <div className="space-y-1.5">
-              <div className="grid grid-cols-3 gap-1.5">
+              <div className="grid grid-cols-2 gap-2">
                 <button
                   type="button"
                   onClick={handleClearPhotoTags}
@@ -1142,9 +1379,9 @@ export default function LightboxModal({
                   }
                   onMouseLeave={() => setActionHoverHint(null)}
                   disabled={clearingTags || reassessing}
-                  className="flex items-center justify-center gap-1 py-2 px-2 rounded-md bg-amber-950/40 hover:bg-amber-900/60 border border-amber-500/50 hover:border-amber-400 text-amber-200 hover:text-white font-mono text-[11px] font-semibold transition-colors disabled:opacity-50 cursor-pointer shadow-sm"
+                  className="flex items-center justify-center gap-1.5 py-2.5 px-3 rounded-lg bg-amber-950/40 hover:bg-amber-900/60 border border-amber-500/50 hover:border-amber-400 text-amber-200 hover:text-white font-mono text-xs font-bold transition-colors disabled:opacity-50 cursor-pointer shadow-sm text-center whitespace-nowrap"
                 >
-                  <span>🧹</span>
+                  <span className="shrink-0">🧹</span>
                   <span>{clearingTags ? 'Clearing...' : 'Clear Tags'}</span>
                 </button>
 
@@ -1153,15 +1390,31 @@ export default function LightboxModal({
                   onClick={() => handleReassessPhoto('fast_vectors')}
                   onMouseEnter={() =>
                     setActionHoverHint(
-                      '⚡ Fast Scan (Level 1 — 4-Pass Cascade): Re-evaluates Pass 1 Macro Biome + Pass 2 4-Crop Saliency + Pass 3 Specialist Subjects & replaces stale fallback tags (~6ms).'
+                      '⚡ Fast Scan (Level 1 — 4-Pass Cascade): Re-evaluates Pass 1 Macro Biome + Pass 2 4-Crop Saliency + Pass 3 Specialist Subjects (~6ms).'
                     )
                   }
                   onMouseLeave={() => setActionHoverHint(null)}
                   disabled={reassessing || clearingTags}
-                  className="flex items-center justify-center gap-1 py-2 px-2 rounded-md bg-blue-950/50 hover:bg-blue-900/70 border border-blue-500/50 hover:border-blue-400 text-blue-200 hover:text-white font-mono text-[11px] font-semibold transition-colors disabled:opacity-50 cursor-pointer shadow-sm"
+                  className="flex items-center justify-center gap-1.5 py-2.5 px-3 rounded-lg bg-blue-950/50 hover:bg-blue-900/70 border border-blue-500/50 hover:border-blue-400 text-blue-200 hover:text-white font-mono text-xs font-bold transition-colors disabled:opacity-50 cursor-pointer shadow-sm text-center whitespace-nowrap"
                 >
-                  <span>⚡</span>
-                  <span>{reassessing ? 'Scanning...' : 'Fast Scan (Level 1)'}</span>
+                  <span className="shrink-0">⚡</span>
+                  <span>{reassessing ? 'Scanning...' : 'Fast Scan'}</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => handleReassessPhoto('deep_vlm')}
+                  onMouseEnter={() =>
+                    setActionHoverHint(
+                      '🧠 Deep VLM (Level 2 — Qwen2.5-VL + Cascade): Runs full generative VLM visual inspection + 4-Pass Cascade (~5–8s/photo).'
+                    )
+                  }
+                  onMouseLeave={() => setActionHoverHint(null)}
+                  disabled={reassessing || clearingTags}
+                  className="flex items-center justify-center gap-1.5 py-2.5 px-3 rounded-lg bg-emerald-950/50 hover:bg-emerald-900/70 border border-emerald-500/50 hover:border-emerald-400 text-emerald-200 hover:text-white font-mono text-xs font-bold transition-colors disabled:opacity-50 cursor-pointer shadow-sm text-center whitespace-nowrap"
+                >
+                  <span className="shrink-0">🧠</span>
+                  <span>{reassessing ? 'Inspecting...' : 'Deep VLM'}</span>
                 </button>
 
                 <button
@@ -1171,14 +1424,14 @@ export default function LightboxModal({
                   }
                   onMouseEnter={() =>
                     setActionHoverHint(
-                      '🎙️ AI Voice Tag: Opens the interactive Voice & Natural-Language Tagging Studio and starts listening to your microphone.'
+                      '🎙️ AI Voice Tag: Opens interactive Voice & Natural-Language Tagging Studio and starts listening to your microphone.'
                     )
                   }
                   onMouseLeave={() => setActionHoverHint(null)}
                   disabled={clearingTags || reassessing}
-                  className="flex items-center justify-center gap-1 py-2 px-2 rounded-md bg-purple-900/60 hover:bg-purple-800/80 border border-purple-400/70 hover:border-purple-300 text-purple-100 hover:text-white font-mono text-[11px] font-bold transition-colors disabled:opacity-50 cursor-pointer shadow-sm"
+                  className="flex items-center justify-center gap-1.5 py-2.5 px-3 rounded-lg bg-purple-900/60 hover:bg-purple-800/80 border border-purple-400/70 hover:border-purple-300 text-purple-100 hover:text-white font-mono text-xs font-bold transition-colors disabled:opacity-50 cursor-pointer shadow-sm text-center whitespace-nowrap"
                 >
-                  <span>🎙️</span>
+                  <span className="shrink-0">🎙️</span>
                   <span>AI Voice Tag</span>
                 </button>
               </div>
@@ -1334,17 +1587,6 @@ export default function LightboxModal({
                   ({totalCleanTagsCount})
                 </span>
               </div>
-
-              <button
-                type="button"
-                onClick={() => handleReassessPhoto('deep_vlm')}
-                disabled={reassessing || clearingTags}
-                className="flex items-center gap-1 px-2 py-0.5 rounded-sm bg-studio-bg hover:bg-studio-hover border border-studio-borderLight text-emerald-300 hover:text-white text-[10px] font-mono transition-colors disabled:opacity-50 cursor-pointer"
-                title="🧠 Deep VLM (Level 2 — Qwen2.5-VL + Cascade): Runs full generative VLM visual inspection + 4-Pass Cascade (~5–8s/photo)"
-              >
-                <Cpu className={`w-2.5 h-2.5 ${reassessing ? 'animate-spin' : ''}`} />
-                <span>🧠 Deep VLM (Level 2)</span>
-              </button>
             </div>
 
             {totalCleanTagsCount > 0 ? (
@@ -1516,7 +1758,7 @@ export default function LightboxModal({
           </div>
 
           {/* Triple Similarity & "On This Day" Section */}
-          <div className="p-3 border-b border-studio-border flex flex-col shrink-0">
+          <div className="p-3 border-b border-studio-border flex flex-col flex-1 min-h-0 bg-studio-bg/15">
             <div className="flex items-center justify-between mb-2 gap-1.5">
               <div className="flex items-center bg-studio-bg border border-studio-border p-0.5 rounded-sm flex-1 justify-between">
                 <button
@@ -1590,12 +1832,15 @@ export default function LightboxModal({
                 </button>
               )}
 
-            {/* Similarity / Same Day Thumbnails Grid */}
+            {/* Similarity / Same Day Thumbnails Grid (smoothly fills inspector to bottom) */}
             <div
-              className={`grid grid-cols-4 gap-1.5 overflow-y-auto pr-1 overscroll-contain transition-all duration-200 ${
-                similarExpanded ? 'max-h-[440px]' : 'max-h-72'
+              className={`grid gap-1.5 overflow-y-auto pr-1 overscroll-contain transition-all duration-200 flex-1 min-h-[220px] ${
+                similarExpanded ? 'max-h-[640px]' : 'max-h-[380px]'
               }`}
-              style={{ minHeight: similarPhotos.length > 0 ? '160px' : 'auto' }}
+              style={{
+                gridTemplateColumns: sidebarWidth >= 520 ? 'repeat(5, minmax(0, 1fr))' : 'repeat(4, minmax(0, 1fr))',
+                minHeight: similarPhotos.length > 0 ? '200px' : 'auto',
+              }}
             >
               {similarPhotos.length > 0 ? (
                 similarPhotos.map((sim) => {
@@ -1670,13 +1915,13 @@ export default function LightboxModal({
         </div>
       </div>
 
-      {/* Persistent Bottom -5 / +5 Chronological Neighbor Filmstrip */}
-      <div className="h-20 bg-studio-panel border-t border-studio-border flex items-center px-4 gap-2 shrink-0 overflow-x-auto">
-        <div className="flex items-center gap-1 shrink-0 font-mono text-[10px] text-studio-textDim uppercase tracking-wider mr-2">
-          <span>Shoot Filmstrip (-5 / +5):</span>
-        </div>
+      {/* Persistent Bottom -5 / +5 Chronological Neighbor Filmstrip & Quick LR Launcher */}
+      <div className="h-20 bg-studio-panel border-t border-studio-border flex items-center px-4 gap-2 shrink-0 justify-between relative z-40 overflow-visible">
+        <div className="flex items-center gap-2 overflow-x-auto py-1 min-w-0 flex-1">
+          <div className="flex items-center gap-1 shrink-0 font-mono text-[10px] text-studio-textDim uppercase tracking-wider mr-2">
+            <span>Shoot Filmstrip (-5 / +5):</span>
+          </div>
 
-        <div className="flex items-center gap-2 overflow-x-auto py-1">
           {neighbors.map((nb) => {
             const isCurrent = nb.is_current;
             const nbThumb = nb.thumb_url || (nb.thumb_360_path ? `/previews/thumbs_360/${nb.thumb_360_path.split('/').pop()}` : null);
@@ -1708,6 +1953,108 @@ export default function LightboxModal({
               </div>
             );
           })}
+        </div>
+
+        {/* 🎨 Dedicated Bottom Edit in Lightroom Button, Collection Popover & Export Menu */}
+        <div className="shrink-0 pl-3 border-l border-studio-border ml-2 flex items-center gap-2 relative z-50 overflow-visible">
+          <button
+            type="button"
+            onClick={() => handleOpenApp('lightroom')}
+            className="flex items-center gap-2 bg-sky-500/20 hover:bg-sky-500/35 border border-sky-400/60 hover:border-sky-400 text-sky-200 hover:text-white px-3.5 py-2 rounded text-xs font-mono font-bold transition-all shadow-lg cursor-pointer whitespace-nowrap"
+            title="Open the active full-screen photo in Lightroom Classic (Develop mode) - Press 'L'"
+          >
+            <span className="text-base leading-none">🎨</span>
+            <span>Edit in Lightroom</span>
+            <span className="text-[10px] bg-sky-950/80 text-sky-300 border border-sky-500/40 px-1.5 py-0.5 rounded font-mono">
+              L
+            </span>
+          </button>
+
+          {/* 📚 Dedicated Bottom Add to Collection Button for Active Full-Screen Photo */}
+          <CollectionPopover
+            photo={details}
+            collections={collections}
+            onTogglePhotoInCollection={onTogglePhotoInCollection}
+            onCreateCollectionWithPhoto={onCreateCollectionWithPhoto}
+            onOpenCollectionsModal={onOpenCollectionsModal}
+            dropUp={true}
+          />
+
+          {/* 📤 Dedicated Bottom Export Dropdown Menu */}
+          <div ref={exportMenuBottomRef} className="relative">
+            <button
+              type="button"
+              onClick={() => setBottomExportMenuOpen((prev) => !prev)}
+              className="flex items-center gap-2 bg-emerald-500/20 hover:bg-emerald-500/35 border border-emerald-400/60 hover:border-emerald-400 text-emerald-200 hover:text-white px-3.5 py-2 rounded text-xs font-mono font-bold transition-all shadow-lg cursor-pointer whitespace-nowrap"
+              title="Export this photo (High-Res Master JPEG, 12,000px TV Showcase, Custom Print Sizing, or Original RAW)"
+            >
+              <Download className="w-3.5 h-3.5 text-emerald-400" />
+              <span>Export</span>
+              <ChevronDown className="w-3 h-3 opacity-80" />
+            </button>
+
+            {bottomExportMenuOpen && (
+              <div className="absolute right-0 bottom-full mb-2 w-80 bg-studio-panel border border-studio-borderLight rounded shadow-2xl p-2 z-[9999] text-xs font-mono flex flex-col gap-1 text-studio-text">
+                <div className="px-2 py-1 text-[11px] font-bold text-emerald-400 border-b border-studio-border flex items-center justify-between">
+                  <span>EXPORT PHOTO</span>
+                  <span className="text-[10px] text-studio-textDim">JPEG / TV / Print / RAW</span>
+                </div>
+
+                {/* Option 1: Custom Print Sizing (JPEG) */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setBottomExportMenuOpen(false);
+                    if (onOpenCustomPrintModal) {
+                      onOpenCustomPrintModal([details]);
+                    } else if (onExportPhoto) {
+                      onExportPhoto(details, 'jpeg', { long_edge: 6000, dpi: 300 });
+                    }
+                  }}
+                  className="w-full text-left border border-purple-500/30 hover:border-purple-400 bg-purple-500/10 hover:bg-purple-500/20 rounded p-2.5 space-y-1 transition-colors cursor-pointer"
+                >
+                  <div className="font-bold text-purple-300 flex items-center justify-between">
+                    <span>🖨️ Custom Print Sizing (JPEG)</span>
+                  </div>
+                  <div className="text-[11px] text-studio-textMuted leading-tight">
+                    Custom long edge pixel size (e.g. 3600, 4800, 6000, 12000px) and 240 / 300 DPI.
+                  </div>
+                </button>
+
+                {/* Option 2: 65" TV Showcase (16:9 Crop) */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setBottomExportMenuOpen(false);
+                    if (onOpenTvCropModal) onOpenTvCropModal(details);
+                  }}
+                  className="w-full text-left p-2 rounded hover:bg-studio-hover flex items-center justify-between text-studio-text hover:text-white transition-colors cursor-pointer border border-emerald-500/40 bg-emerald-500/10"
+                >
+                  <span className="flex items-center gap-1.5 text-emerald-300 font-bold">
+                    <span>📺</span>
+                    <span>65" TV Showcase (16:9 Crop)</span>
+                  </span>
+                  <span className="text-[10px] bg-emerald-500/20 px-1.5 py-0.5 rounded text-emerald-200">12,000px · 180 DPI</span>
+                </button>
+
+                {/* Option 3: Archival Master TIFF (.tif) */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setBottomExportMenuOpen(false);
+                    if (onExportPhoto) onExportPhoto(details, 'tiff');
+                  }}
+                  className="w-full text-left p-2 rounded hover:bg-studio-hover flex items-center justify-between text-studio-text hover:text-white transition-colors cursor-pointer border border-studio-border/60"
+                >
+                  <span className="flex items-center gap-1.5 text-sky-300 font-bold">
+                    <span>📁</span>
+                    <span>Archival Master TIFF (.tif)</span>
+                  </span>
+                  <span className="text-[10px] text-sky-400">LZW · Edits</span>
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </div>
 

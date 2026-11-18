@@ -17,6 +17,7 @@ export default function SelectionActionBar({
   onSelectAll,
   onSelectAllInCatalog,
   onClearSelection,
+  onBatchUpdateStar,
   onBatchClearTags,
   onBatchReassess,
   onReassessCatalog,
@@ -29,25 +30,53 @@ export default function SelectionActionBar({
   onCreateCollectionWithSelected,
   onBatchExport,
   onOpenTvCropModal,
+  onOpenCustomPrintModal,
+  activeShootDate = null,
+  selectedPhotosArray = [],
+  onOpenInLightroom,
+  onSyncEdits,
 }) {
   const [showBookMenu, setShowBookMenu] = useState(false);
   const [newBookName, setNewBookName] = useState('');
   const [busyBook, setBusyBook] = useState(false);
 
-  // People & Pets popover state
-  const [peoplePetsOpen, setPeoplePetsOpen] = useState(false);
-  const [entityClusters, setEntityClusters] = useState([]);
-  const [loadingEntities, setLoadingEntities] = useState(false);
-  const [editingEntityId, setEditingEntityId] = useState(null);
-  const [editingNameVal, setEditingNameVal] = useState('');
-  const [savingEntityId, setSavingEntityId] = useState(null);
+  // Rate menu state
+  const [rateMenuOpen, setRateMenuOpen] = useState(false);
+  const rateRef = useRef(null);
+
+  // Lightroom menu state
+  const [lrMenuOpen, setLrMenuOpen] = useState(false);
+  const lrRef = useRef(null);
 
   // Export menu state
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
   const exportRef = useRef(null);
 
+  // Fast Scan dropdown state
+  const [fastScanMenuOpen, setFastScanMenuOpen] = useState(false);
+  const fastScanRef = useRef(null);
+
+  // Consolidated AI Tools dropdown state
+  const [aiToolsMenuOpen, setAiToolsMenuOpen] = useState(false);
+  const aiToolsRef = useRef(null);
+
+  // Deep VLM dropdown state
+  const [deepVlmMenuOpen, setDeepVlmMenuOpen] = useState(false);
+  const deepVlmRef = useRef(null);
+
   // Idle Rescan menu state
   const [rescanMenuOpen, setRescanMenuOpen] = useState(false);
+
+  const closeAllMenus = () => {
+    setShowBookMenu(false);
+    setExportMenuOpen(false);
+    setFastScanMenuOpen(false);
+    setDeepVlmMenuOpen(false);
+    setAiToolsMenuOpen(false);
+    setRescanMenuOpen(false);
+    setRateMenuOpen(false);
+    setLrMenuOpen(false);
+  };
 
   // Live hover cards for AI tiers
   const [hoveredCard, setHoveredCard] = useState(null);
@@ -72,7 +101,6 @@ export default function SelectionActionBar({
     return `~${hours} hrs`;
   };
 
-  const peoplePetsRef = useRef(null);
   const rescanRef = useRef(null);
   const bookRef = useRef(null);
 
@@ -96,10 +124,6 @@ export default function SelectionActionBar({
   // Close menus on outside click
   useEffect(() => {
     const handleClickOutside = (e) => {
-      if (peoplePetsRef.current && !peoplePetsRef.current.contains(e.target)) {
-        setPeoplePetsOpen(false);
-        setEditingEntityId(null);
-      }
       if (rescanRef.current && !rescanRef.current.contains(e.target)) {
         setRescanMenuOpen(false);
       }
@@ -109,58 +133,36 @@ export default function SelectionActionBar({
       if (exportRef.current && !exportRef.current.contains(e.target)) {
         setExportMenuOpen(false);
       }
+      if (fastScanRef.current && !fastScanRef.current.contains(e.target)) {
+        setFastScanMenuOpen(false);
+      }
+      if (deepVlmRef.current && !deepVlmRef.current.contains(e.target)) {
+        setDeepVlmMenuOpen(false);
+      }
+      if (aiToolsRef.current && !aiToolsRef.current.contains(e.target)) {
+        setAiToolsMenuOpen(false);
+      }
+      if (rateRef.current && !rateRef.current.contains(e.target)) {
+        setRateMenuOpen(false);
+      }
+      if (lrRef.current && !lrRef.current.contains(e.target)) {
+        setLrMenuOpen(false);
+      }
     };
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
+  const effectiveShootDate =
+    activeShootDate ||
+    (selectedPhotosArray.length > 0 ? selectedPhotosArray[0].shoot_date : null);
+
+  const effectiveCatalog =
+    (activeCatalog && activeCatalog !== 'All Catalogs' && activeCatalog !== 'ALL'
+      ? activeCatalog
+      : (selectedPhotosArray.length > 0 ? selectedPhotosArray[0].catalog_name : null)) || 'Active Catalog';
+
   // Fetch People & Pets identity clusters
-  const fetchEntityClusters = async (catName = activeCatalog) => {
-    setLoadingEntities(true);
-    try {
-      const r = await fetch(
-        `/api/entities?catalog=${encodeURIComponent(catName || 'All Catalogs')}`
-      );
-      if (r.ok) {
-        const data = await r.json();
-        setEntityClusters(Array.isArray(data.entities) ? data.entities : []);
-      }
-    } catch (_) {
-      // ignore
-    } finally {
-      setLoadingEntities(false);
-    }
-  };
-
-  useEffect(() => {
-    fetchEntityClusters(activeCatalog);
-  }, [activeCatalog]);
-
-  const handleRenameEntity = async (entityId, newName) => {
-    const clean = (newName || '').trim();
-    if (!clean) return;
-    setSavingEntityId(entityId);
-    try {
-      const r = await fetch(
-        `/api/entities/${encodeURIComponent(entityId)}/rename`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ entity_name: clean }),
-        }
-      );
-      if (r.ok) {
-        await fetchEntityClusters(activeCatalog);
-        setEditingEntityId(null);
-        setEditingNameVal('');
-      }
-    } catch (_) {
-      // ignore
-    } finally {
-      setSavingEntityId(null);
-    }
-  };
-
   const handleAddExisting = async (colId) => {
     if (!onBatchAddToCollection) return;
     setBusyBook(true);
@@ -194,7 +196,7 @@ export default function SelectionActionBar({
         bottom: '22px',
         left: '50%',
         transform: 'translateX(-50%)',
-        zIndex: 9300,
+        zIndex: 9990,
         background: 'rgba(13, 18, 28, 0.96)',
         border: isSelectionActive
           ? '1.5px solid rgba(129, 140, 248, 0.75)'
@@ -209,7 +211,9 @@ export default function SelectionActionBar({
         alignItems: 'center',
         justifyContent: 'center',
         width: 'max-content',
-        maxWidth: '96vw',
+        maxWidth: 'min(1400px, 96vw)',
+        overflow: 'visible',
+        boxSizing: 'border-box',
         gap: '8px',
         color: '#f8fafc',
         backdropFilter: 'blur(16px)',
@@ -226,10 +230,10 @@ export default function SelectionActionBar({
           {/* Showing N Photos Pill */}
           <div
             style={{
-              fontSize: '13px',
+              fontSize: '13.5px',
               color: '#cbd5e1',
               fontVariantNumeric: 'tabular-nums',
-              padding: '6px 10px',
+              padding: '7px 12px',
               background: 'rgba(255, 255, 255, 0.05)',
               borderRadius: '9px',
               border: '1px solid rgba(255, 255, 255, 0.1)',
@@ -249,9 +253,9 @@ export default function SelectionActionBar({
               }}
               title={`Select all ${displayTotal.toLocaleString()} photos in current view (Cmd+A)`}
               style={{
-                padding: '6px 11px',
+                padding: '7px 13px',
                 borderRadius: '8px',
-                fontSize: '13px',
+                fontSize: '13.5px',
                 fontWeight: 600,
                 cursor: isSelectingAll ? 'wait' : 'pointer',
                 border: '1px solid rgba(255, 255, 255, 0.18)',
@@ -259,7 +263,7 @@ export default function SelectionActionBar({
                 color: '#e2e8f0',
                 display: 'flex',
                 alignItems: 'center',
-                gap: '5px',
+                gap: '6px',
                 transition: 'all 0.15s',
               }}
             >
@@ -278,9 +282,9 @@ export default function SelectionActionBar({
                 : 'No studio actions to undo yet (Cmd+Z)'
             }
             style={{
-              padding: '6px 11px',
+              padding: '7px 13px',
               borderRadius: '8px',
-              fontSize: '13px',
+              fontSize: '13.5px',
               fontWeight: 600,
               cursor: undoStatus?.available ? 'pointer' : 'not-allowed',
               border: undoStatus?.available ? '1px solid #38bdf8' : '1px solid #262b38',
@@ -291,7 +295,7 @@ export default function SelectionActionBar({
               opacity: undoStatus?.available ? 1 : 0.65,
               display: 'flex',
               alignItems: 'center',
-              gap: '5px',
+              gap: '6px',
               transition: 'all 0.15s',
             }}
           >
@@ -302,8 +306,8 @@ export default function SelectionActionBar({
                   background: 'rgba(56, 189, 248, 0.25)',
                   color: '#bae6fd',
                   borderRadius: '999px',
-                  padding: '1px 6px',
-                  fontSize: '11px',
+                  padding: '1px 7px',
+                  fontSize: '12px',
                   fontWeight: 800,
                 }}
               >
@@ -312,336 +316,20 @@ export default function SelectionActionBar({
             )}
           </button>
 
-          {/* 👥 People & Pets Popover (UPWARD OPENING) */}
-          <div ref={peoplePetsRef} style={{ position: 'relative' }}>
-            <button
-              type="button"
-              onClick={() => {
-                const nextOpen = !peoplePetsOpen;
-                setPeoplePetsOpen(nextOpen);
-                if (nextOpen) fetchEntityClusters(activeCatalog);
-              }}
-              title="People & Pets — Recurring Cats, Dogs & People across months with 1-click breed & custom name filtering (e.g. Masha, Scout)"
-              style={{
-                padding: '6px 12px',
-                borderRadius: '8px',
-                fontSize: '13px',
-                fontWeight: 600,
-                cursor: 'pointer',
-                border: peoplePetsOpen ? '1.5px solid #a855f7' : '1px solid #8b5cf6',
-                background: peoplePetsOpen
-                  ? 'rgba(168, 85, 247, 0.26)'
-                  : 'rgba(139, 92, 246, 0.16)',
-                color: '#ede9fe',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '6px',
-              }}
-            >
-              <span>👥 People &amp; Pets</span>
-              {entityClusters.length > 0 && (
-                <span
-                  style={{
-                    background: '#8b5cf6',
-                    color: '#ffffff',
-                    borderRadius: '999px',
-                    padding: '1px 6px',
-                    fontSize: '11px',
-                    fontWeight: 800,
-                  }}
-                >
-                  {entityClusters.length}
-                </span>
-              )}
-            </button>
-
-            {peoplePetsOpen && (
-              <div
-                style={{
-                  position: 'absolute',
-                  bottom: 'calc(100% + 12px)',
-                  left: '50%',
-                  transform: 'translateX(-50%)',
-                  width: '420px',
-                  maxHeight: '480px',
-                  overflowY: 'auto',
-                  background: '#11141d',
-                  border: '1px solid #2e364f',
-                  borderRadius: '14px',
-                  boxShadow: '0 20px 50px rgba(0, 0, 0, 0.85)',
-                  padding: '14px',
-                  zIndex: 9500,
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: '10px',
-                }}
-              >
-                <div
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    borderBottom: '1px solid #1e2536',
-                    paddingBottom: '8px',
-                  }}
-                >
-                  <div>
-                    <div style={{ fontSize: '14px', fontWeight: 800, color: '#f8fafc' }}>
-                      👥 People &amp; Pets Clusters
-                    </div>
-                    <div style={{ fontSize: '11.5px', color: '#94a3b8' }}>
-                      Click any cluster to filter photos, or name a pet/person (e.g. &quot;Masha&quot;, &quot;Scout&quot;)
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setPeoplePetsOpen(false)}
-                    style={{
-                      background: 'none',
-                      border: 'none',
-                      color: '#94a3b8',
-                      cursor: 'pointer',
-                      fontSize: '16px',
-                      fontWeight: 700,
-                      padding: '2px 6px',
-                    }}
-                  >
-                    ✕
-                  </button>
-                </div>
-
-                {loadingEntities ? (
-                  <div style={{ padding: '18px', textAlign: 'center', color: '#94a3b8', fontSize: '13px' }}>
-                    Loading identity clusters...
-                  </div>
-                ) : entityClusters.length === 0 ? (
-                  <div style={{ padding: '18px', textAlign: 'center', color: '#94a3b8', fontSize: '13px' }}>
-                    No recurring People or Pet clusters detected in this catalog view.
-                  </div>
-                ) : (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                    {entityClusters.map((ent) => {
-                      const isEditing = editingEntityId === ent.entity_id;
-                      const displayName = ent.entity_name || ent.auto_breed || ent.entity_type;
-                      const filterQueryTerm = ent.entity_name || ent.auto_breed || ent.entity_type;
-                      const isActiveFilter =
-                        currentQuery &&
-                        filterQueryTerm &&
-                        currentQuery.trim().toLowerCase() === filterQueryTerm.trim().toLowerCase();
-
-                      const thumbSrc =
-                        ent.thumb_url ||
-                        (ent.cover_photo_id ? `/api/thumbnail/${ent.cover_photo_id}` : null);
-
-                      return (
-                        <div
-                          key={ent.entity_id}
-                          style={{
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'space-between',
-                            gap: '10px',
-                            padding: '8px 10px',
-                            borderRadius: '10px',
-                            background: isActiveFilter ? 'rgba(139, 92, 246, 0.22)' : '#171b26',
-                            border: isActiveFilter ? '1px solid #a855f7' : '1px solid #252c3d',
-                          }}
-                        >
-                          <div
-                            onClick={() => {
-                              handleQueryChange(filterQueryTerm);
-                              setPeoplePetsOpen(false);
-                            }}
-                            style={{
-                              display: 'flex',
-                              alignItems: 'center',
-                              gap: '10px',
-                              flex: 1,
-                              cursor: 'pointer',
-                              minWidth: 0,
-                            }}
-                            title={`Filter by ${displayName} (${ent.photo_count} photos)`}
-                          >
-                            {thumbSrc ? (
-                              <img
-                                src={thumbSrc}
-                                alt={displayName}
-                                style={{
-                                  width: '46px',
-                                  height: '46px',
-                                  borderRadius: '50%',
-                                  objectFit: 'cover',
-                                  border: '2px solid #8b5cf6',
-                                  flexShrink: 0,
-                                }}
-                                onError={(e) => {
-                                  e.target.style.display = 'none';
-                                  if (e.target.nextSibling) {
-                                    e.target.nextSibling.style.display = 'flex';
-                                  }
-                                }}
-                              />
-                            ) : null}
-                            <div
-                              style={{
-                                width: '46px',
-                                height: '46px',
-                                borderRadius: '50%',
-                                background: '#262d40',
-                                display: thumbSrc ? 'none' : 'flex',
-                                alignItems: 'center',
-                                justifyContent: 'center',
-                                fontSize: '20px',
-                                flexShrink: 0,
-                              }}
-                            >
-                              {ent.entity_type === 'Cat' ? '🐱' : ent.entity_type === 'Dog' ? '🐶' : '🧑'}
-                            </div>
-
-                            <div style={{ minWidth: 0, flex: 1 }}>
-                              <div
-                                style={{
-                                  fontSize: '13.5px',
-                                  fontWeight: 700,
-                                  color: '#f8fafc',
-                                  whiteSpace: 'nowrap',
-                                  overflow: 'hidden',
-                                  textOverflow: 'ellipsis',
-                                }}
-                              >
-                                {ent.entity_name ? (
-                                  <>
-                                    <span style={{ color: '#c084fc' }}>{ent.entity_name}</span>{' '}
-                                    <span style={{ fontSize: '12px', color: '#94a3b8', fontWeight: 500 }}>
-                                      ({ent.auto_breed || ent.entity_type})
-                                    </span>
-                                  </>
-                                ) : (
-                                  <span>{ent.auto_breed || ent.entity_type}</span>
-                                )}
-                              </div>
-                              <div style={{ fontSize: '11.5px', color: '#94a3b8' }}>
-                                {ent.entity_type} • {ent.photo_count} photo{ent.photo_count === 1 ? '' : 's'}
-                              </div>
-                            </div>
-                          </div>
-
-                          {isEditing ? (
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
-                              <input
-                                type="text"
-                                value={editingNameVal}
-                                onChange={(e) => setEditingNameVal(e.target.value)}
-                                onKeyDown={(e) => {
-                                  e.stopPropagation();
-                                  if (e.key === 'Enter') {
-                                    handleRenameEntity(ent.entity_id, editingNameVal);
-                                  } else if (e.key === 'Escape') {
-                                    setEditingEntityId(null);
-                                  }
-                                }}
-                                placeholder="e.g. Masha, Scout"
-                                autoFocus
-                                style={{
-                                  width: '115px',
-                                  padding: '5px 8px',
-                                  borderRadius: '6px',
-                                  background: '#0d1017',
-                                  border: '1px solid #8b5cf6',
-                                  color: '#f8fafc',
-                                  fontSize: '12px',
-                                  outline: 'none',
-                                }}
-                              />
-                              <button
-                                type="button"
-                                disabled={savingEntityId === ent.entity_id}
-                                onClick={() => handleRenameEntity(ent.entity_id, editingNameVal)}
-                                style={{
-                                  padding: '5px 8px',
-                                  borderRadius: '6px',
-                                  background: '#8b5cf6',
-                                  border: 'none',
-                                  color: '#ffffff',
-                                  fontSize: '12px',
-                                  fontWeight: 700,
-                                  cursor: 'pointer',
-                                }}
-                              >
-                                Save
-                              </button>
-                            </div>
-                          ) : (
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setEditingEntityId(ent.entity_id);
-                                setEditingNameVal(ent.entity_name || '');
-                              }}
-                              style={{
-                                padding: '4px 8px',
-                                borderRadius: '6px',
-                                background: '#23293a',
-                                border: '1px solid #384159',
-                                color: '#cbd5e1',
-                                fontSize: '11.5px',
-                                fontWeight: 600,
-                                cursor: 'pointer',
-                                flexShrink: 0,
-                              }}
-                            >
-                              ✎ {ent.entity_name ? 'Rename' : 'Name'}
-                            </button>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-
-          {/* Scout Archive Button */}
-          {onOpenVoiceScout && (
-            <button
-              type="button"
-              onClick={onOpenVoiceScout}
-              title="AI Archive Scout — Describe a theme, subject, or story to hunt across the entire archive and build a curated collection"
-              style={{
-                padding: '6px 12px',
-                borderRadius: '8px',
-                fontSize: '13px',
-                fontWeight: 600,
-                cursor: 'pointer',
-                border: '1px solid #38bdf8',
-                background:
-                  'linear-gradient(135deg, rgba(16, 185, 129, 0.18) 0%, rgba(56, 189, 248, 0.22) 100%)',
-                color: '#e0f2fe',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '6px',
-              }}
-            >
-              <span>🔎 Scout Archive</span>
-            </button>
-          )}
-
           {/* Collections Button */}
           {onOpenCollectionsModal && (
             <button
               type="button"
               onClick={onOpenCollectionsModal}
-              title="Open Curated Collections, Panoramic Book Preview & Desktop JPEG Export"
+              title="Open Curated Collections, Panoramic Gallery & Desktop JPEG Export"
               style={{
-                padding: '6px 12px',
+                padding: '7px 14px',
                 borderRadius: '8px',
-                fontSize: '13px',
-                fontWeight: 600,
+                fontSize: '13.5px',
+                fontWeight: 700,
                 cursor: 'pointer',
                 border: '1px solid #f59e0b',
-                background: 'rgba(245, 158, 11, 0.16)',
+                background: 'rgba(245, 158, 11, 0.18)',
                 color: '#fbbf24',
                 display: 'flex',
                 alignItems: 'center',
@@ -655,8 +343,8 @@ export default function SelectionActionBar({
                     background: '#f59e0b',
                     color: '#090b10',
                     borderRadius: '999px',
-                    padding: '1px 6px',
-                    fontSize: '11px',
+                    padding: '1px 7px',
+                    fontSize: '12px',
                     fontWeight: 800,
                   }}
                 >
@@ -666,29 +354,30 @@ export default function SelectionActionBar({
             </button>
           )}
 
-          {/* 🔄 Rescan Dropdown (UPWARD OPENING) */}
+          {/* ⚡ Consolidated AI Catalog & Keyword Tools (UPWARD OPENING) */}
           <div ref={rescanRef} style={{ position: 'relative' }}>
             <button
               type="button"
               onClick={() => setRescanMenuOpen((prev) => !prev)}
               disabled={isBatchBusy}
-              title="Rescan catalog or current view with Fast 4-Pass Cascade or Deep VLM"
+              title="AI Catalog & Keyword Tools: Scan Visible Day, Scan Entire Catalog, or Scout Archive with AI"
               style={{
-                padding: '6px 12px',
+                padding: '7px 14px',
                 borderRadius: '8px',
-                fontSize: '13px',
-                fontWeight: 600,
+                fontSize: '13.5px',
+                fontWeight: 700,
                 cursor: isBatchBusy ? 'wait' : 'pointer',
-                border: rescanMenuOpen ? '1px solid #f59e0b' : '1px solid #2a3040',
-                background: rescanMenuOpen ? 'rgba(245, 158, 11, 0.18)' : '#141720',
-                color: rescanMenuOpen ? '#fbbf24' : '#e2e8f0',
+                border: rescanMenuOpen ? '1px solid #a78bfa' : '1px solid rgba(167, 139, 250, 0.5)',
+                background: rescanMenuOpen ? 'rgba(124, 58, 237, 0.28)' : 'rgba(124, 58, 237, 0.18)',
+                color: '#e0e7ff',
                 display: 'flex',
                 alignItems: 'center',
-                gap: '5px',
+                gap: '6px',
+                transition: 'all 0.15s ease',
               }}
             >
-              <span>🔄 Rescan</span>
-              <span style={{ fontSize: '11px', opacity: 0.8 }}>▾</span>
+              <span>⚡ AI Catalog &amp; Keyword Tools</span>
+              <span style={{ fontSize: '11px', opacity: 0.85 }}>▾</span>
             </button>
 
             {rescanMenuOpen && (
@@ -697,97 +386,244 @@ export default function SelectionActionBar({
                   position: 'absolute',
                   bottom: 'calc(100% + 10px)',
                   right: 0,
-                  width: '340px',
-                  background: '#11141d',
-                  border: '1px solid #2e3646',
+                  width: '380px',
+                  maxWidth: 'min(380px, calc(100vw - 32px))',
+                  maxHeight: 'min(500px, calc(100vh - 120px))',
+                  overflowY: 'auto',
+                  background: '#0f172a',
+                  border: '1px solid rgba(167, 139, 250, 0.45)',
                   borderRadius: '12px',
-                  boxShadow: '0 16px 40px rgba(0, 0, 0, 0.8)',
-                  padding: '8px',
-                  zIndex: 9500,
+                  boxShadow: '0 20px 48px rgba(0, 0, 0, 0.9)',
+                  padding: '10px',
+                  zIndex: 10000,
                   display: 'flex',
                   flexDirection: 'column',
-                  gap: '6px',
+                  gap: '8px',
+                  whiteSpace: 'normal',
+                  boxSizing: 'border-box',
                 }}
               >
                 <div
                   style={{
-                    fontSize: '11.5px',
-                    fontWeight: 700,
-                    color: '#94a3b8',
-                    padding: '4px 8px',
-                    textTransform: 'uppercase',
-                    letterSpacing: '0.04em',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    borderBottom: '1px solid rgba(255,255,255,0.1)',
+                    paddingBottom: '6px',
                   }}
                 >
-                  Rescan Active View / Catalog
+                  <span style={{ fontSize: '12px', fontWeight: 800, color: '#e0e7ff' }}>
+                    ⚡ AI Catalog &amp; Keyword Tools
+                  </span>
+                  <span style={{ fontSize: '11px', color: '#a78bfa', fontWeight: 600 }}>
+                    {displayTotal.toLocaleString()} in View
+                  </span>
                 </div>
 
-                {/* Level 1: Fast Scan */}
+                {/* Option 1: Fast Scan (Level 1) - Visible Day / Photos */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setRescanMenuOpen(false);
+                    if (onBatchReassess && effectiveShootDate) {
+                      onBatchReassess('fast_vectors', 'day', { shoot_date: effectiveShootDate });
+                    } else if (onBatchReassess) {
+                      onBatchReassess('fast_vectors', 'visible');
+                    } else if (onReassessCatalog) {
+                      onReassessCatalog('fast_vectors');
+                    }
+                  }}
+                  style={{
+                    textAlign: 'left',
+                    padding: '8px 10px',
+                    borderRadius: '8px',
+                    border: '1px solid rgba(245, 158, 11, 0.35)',
+                    background: 'rgba(245, 158, 11, 0.1)',
+                    color: '#fef3c7',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '2px',
+                    whiteSpace: 'normal',
+                  }}
+                >
+                  <div style={{ fontSize: '12.5px', fontWeight: 700, color: '#fde68a', display: 'flex', justifyContent: 'space-between' }}>
+                    <span>⚡ Scan This Day / Visible Photos (Fast)</span>
+                    <span style={{ fontSize: '11px', color: '#f59e0b' }}>{formatFastEta(displayTotal)}</span>
+                  </div>
+                  <div style={{ fontSize: '11px', color: '#cbd5e1', lineHeight: '1.3' }}>
+                    Pass 1 Macro Biome + Pass 2 Saliency + Pass 3 Subject Drill-Down (~6ms/photo).
+                  </div>
+                </button>
+
+                {/* Option 2: Deep VLM (Level 2) - Visible Day / Photos */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setRescanMenuOpen(false);
+                    if (onBatchReassess && effectiveShootDate) {
+                      onBatchReassess('deep_vlm', 'day', { shoot_date: effectiveShootDate });
+                    } else if (onBatchReassess) {
+                      onBatchReassess('deep_vlm', 'visible');
+                    } else if (onReassessCatalog) {
+                      onReassessCatalog('deep_vlm');
+                    }
+                  }}
+                  style={{
+                    textAlign: 'left',
+                    padding: '8px 10px',
+                    borderRadius: '8px',
+                    border: '1px solid rgba(56, 189, 248, 0.35)',
+                    background: 'rgba(56, 189, 248, 0.1)',
+                    color: '#e0f2fe',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '2px',
+                    whiteSpace: 'normal',
+                  }}
+                >
+                  <div style={{ fontSize: '12.5px', fontWeight: 700, color: '#7dd3fc', display: 'flex', justifyContent: 'space-between' }}>
+                    <span>🧠 Deep VLM This Day / Visible Photos</span>
+                    <span style={{ fontSize: '11px', color: '#38bdf8' }}>{formatDeepEta(displayTotal)}</span>
+                  </div>
+                  <div style={{ fontSize: '11px', color: '#cbd5e1', lineHeight: '1.3' }}>
+                    Generative visual reasoning + 4-Pass Cascade (~5-8s/photo).
+                  </div>
+                </button>
+
+                <div style={{ height: '1px', background: 'rgba(255,255,255,0.08)', margin: '1px 0' }} />
+
+                {/* Option 3: Fast Scan Entire Catalog */}
                 <button
                   type="button"
                   onClick={() => {
                     setRescanMenuOpen(false);
                     if (onReassessCatalog) onReassessCatalog('fast_vectors');
-                    else if (onBatchReassess) onBatchReassess('fast_vectors');
+                    else if (onBatchReassess) onBatchReassess('fast_vectors', 'catalog', { catalog_name: effectiveCatalog });
                   }}
                   style={{
                     textAlign: 'left',
-                    padding: '10px 12px',
+                    padding: '8px 10px',
                     borderRadius: '8px',
-                    border: '1px solid rgba(245, 158, 11, 0.3)',
-                    background: 'rgba(245, 158, 11, 0.08)',
-                    color: '#fef3c7',
+                    border: '1px solid rgba(255, 255, 255, 0.1)',
+                    background: 'rgba(255, 255, 255, 0.04)',
+                    color: '#f8fafc',
                     cursor: 'pointer',
                     display: 'flex',
                     flexDirection: 'column',
-                    gap: '3px',
+                    gap: '2px',
+                    whiteSpace: 'normal',
                   }}
                 >
-                  <div style={{ fontSize: '13.5px', fontWeight: 700, color: '#fde68a' }}>
-                    ⚡ Fast Scan (Level 1 — 4-Pass Cascade)
+                  <div style={{ fontSize: '12.5px', fontWeight: 700, color: '#f1f5f9', display: 'flex', justifyContent: 'space-between' }}>
+                    <span>⚡ Scan Entire Catalog ({totalCatalogCount.toLocaleString()} photos)</span>
+                    <span style={{ fontSize: '11px', color: '#94a3b8' }}>{formatFastEta(totalCatalogCount)}</span>
                   </div>
-                  <div style={{ fontSize: '11.5px', color: '#cbd5e1', lineHeight: '1.4' }}>
-                    Runs Pass 1 Macro Biome Lock + Pass 2 GPU 4-Crop Saliency Scan + Pass 3 Specialist Breed/Species Drill-Down + Pass 4 Pet/Person Clustering (~6ms/photo).
-                  </div>
-                  <div style={{ fontSize: '11px', color: '#fbbf24', marginTop: '2px', fontWeight: 600 }}>
-                    ⏱ Est. Time for {displayTotal.toLocaleString()} photos: {formatFastEta(displayTotal)}
+                  <div style={{ fontSize: '11px', color: '#94a3b8', lineHeight: '1.3' }}>
+                    Fast 4-Pass Cascade across all frames in "{effectiveCatalog}".
                   </div>
                 </button>
 
-                {/* Level 2: Deep VLM */}
+                {/* Option 4: Deep VLM Entire Catalog */}
                 <button
                   type="button"
                   onClick={() => {
                     setRescanMenuOpen(false);
                     if (onReassessCatalog) onReassessCatalog('deep_vlm');
-                    else if (onBatchReassess) onBatchReassess('deep_vlm');
+                    else if (onBatchReassess) onBatchReassess('deep_vlm', 'catalog', { catalog_name: effectiveCatalog });
                   }}
                   style={{
                     textAlign: 'left',
-                    padding: '10px 12px',
+                    padding: '8px 10px',
                     borderRadius: '8px',
-                    border: '1px solid rgba(56, 189, 248, 0.3)',
-                    background: 'rgba(56, 189, 248, 0.08)',
-                    color: '#e0f2fe',
+                    border: '1px solid rgba(255, 255, 255, 0.1)',
+                    background: 'rgba(255, 255, 255, 0.04)',
+                    color: '#f8fafc',
                     cursor: 'pointer',
                     display: 'flex',
                     flexDirection: 'column',
-                    gap: '3px',
+                    gap: '2px',
+                    whiteSpace: 'normal',
                   }}
                 >
-                  <div style={{ fontSize: '13.5px', fontWeight: 700, color: '#7dd3fc' }}>
-                    🧠 Deep VLM (Level 2 — Qwen2.5-VL + Cascade)
+                  <div style={{ fontSize: '12.5px', fontWeight: 700, color: '#f1f5f9', display: 'flex', justifyContent: 'space-between' }}>
+                    <span>🧠 Deep VLM Entire Catalog ({totalCatalogCount.toLocaleString()} photos)</span>
+                    <span style={{ fontSize: '11px', color: '#94a3b8' }}>{formatDeepEta(totalCatalogCount)}</span>
                   </div>
-                  <div style={{ fontSize: '11.5px', color: '#cbd5e1', lineHeight: '1.4' }}>
-                    Runs full generative VLM visual inspection + 4-Pass Cascade (~5–8s/photo).
-                  </div>
-                  <div style={{ fontSize: '11px', color: '#38bdf8', marginTop: '2px', fontWeight: 600 }}>
-                    ⏱ Est. Time for {displayTotal.toLocaleString()} photos: {formatDeepEta(displayTotal)}
+                  <div style={{ fontSize: '11px', color: '#94a3b8', lineHeight: '1.3' }}>
+                    Full generative VLM analysis across entire archive.
                   </div>
                 </button>
+
+                <div style={{ height: '1px', background: 'rgba(255,255,255,0.08)', margin: '1px 0' }} />
+
+                {/* Option 5: Scout Full Catalog with AI */}
+                {onOpenVoiceScout && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setRescanMenuOpen(false);
+                      onOpenVoiceScout();
+                    }}
+                    style={{
+                      textAlign: 'left',
+                      padding: '8px 10px',
+                      borderRadius: '8px',
+                      border: '1px solid rgba(52, 211, 153, 0.4)',
+                      background: 'rgba(16, 185, 129, 0.12)',
+                      color: '#a7f3d0',
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                    }}
+                  >
+                    <div>
+                      <div style={{ fontSize: '12.5px', fontWeight: 700, color: '#34d399' }}>
+                        🔎 Scout Full Catalog with AI
+                      </div>
+                      <div style={{ fontSize: '11px', color: '#cbd5e1' }}>
+                        Natural-language story &amp; subject search across entire archive
+                      </div>
+                    </div>
+                  </button>
+                )}
               </div>
             )}
           </div>
+
+          {onSyncEdits && (
+            <>
+              <div style={{ width: '1px', height: '20px', background: 'rgba(255,255,255,0.12)' }} />
+              <button
+                type="button"
+                onClick={() => {
+                  closeAllMenus();
+                  onSyncEdits();
+                }}
+                disabled={isBatchBusy}
+                title="Sync Lightroom Classic develop edits (.xmp sidecars & preview caches) after pressing Cmd+S in Lightroom"
+                style={{
+                  padding: '7px 14px',
+                  borderRadius: '8px',
+                  fontSize: '13.5px',
+                  fontWeight: 700,
+                  cursor: isBatchBusy ? 'wait' : 'pointer',
+                  border: '1px solid rgba(52, 211, 153, 0.5)',
+                  background: 'rgba(16, 185, 129, 0.16)',
+                  color: '#6ee7b7',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  transition: 'all 0.15s',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                <span>🔄 Sync Edits</span>
+              </button>
+            </>
+          )}
         </>
       )}
 
@@ -797,476 +633,523 @@ export default function SelectionActionBar({
       {/* ========================================================================= */}
       {isSelectionActive && (
         <>
-          {/* Selected Count Badge */}
+          {/* Unified Selection Capsule [ ✓ N Selected | ✕ ] */}
           <div
             style={{
               display: 'flex',
               alignItems: 'center',
-              gap: '6px',
               background: 'rgba(99, 102, 241, 0.22)',
               border: '1px solid rgba(129, 140, 248, 0.5)',
-              padding: '6px 11px',
               borderRadius: '9px',
-              fontWeight: 700,
-              fontSize: '13.5px',
-              color: '#e0e7ff',
+              overflow: 'hidden',
             }}
           >
-            <span>✓ {selectedCount.toLocaleString()} Selected</span>
-          </div>
-
-          {/* Select All / Clear Options */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
-            {totalVisibleCount > selectedCount && onSelectAll && (
-              <button
-                type="button"
-                onClick={onSelectAll}
-                disabled={isSelectingAll}
-                title="Select all currently loaded photos on the grid (Cmd+A)"
-                style={{
-                  background: 'rgba(255, 255, 255, 0.08)',
-                  border: '1px solid rgba(255, 255, 255, 0.18)',
-                  color: '#e2e8f0',
-                  fontSize: '12.5px',
-                  fontWeight: 600,
-                  padding: '6px 10px',
-                  borderRadius: '8px',
-                  cursor: 'pointer',
-                }}
-              >
-                Loaded ({totalVisibleCount.toLocaleString()})
-              </button>
-            )}
-            {onSelectAllInCatalog && totalCatalogCount > selectedCount && totalCatalogCount > totalVisibleCount && (
-              <button
-                type="button"
-                onClick={onSelectAllInCatalog}
-                disabled={isSelectingAll}
-                title={`Select all ${totalCatalogCount.toLocaleString()} matching photos across active catalog`}
-                style={{
-                  background: 'rgba(99, 102, 241, 0.18)',
-                  border: '1px solid rgba(129, 140, 248, 0.45)',
-                  color: '#c7d2fe',
-                  fontSize: '12.5px',
-                  fontWeight: 700,
-                  padding: '6px 10px',
-                  borderRadius: '8px',
-                  cursor: isSelectingAll ? 'wait' : 'pointer',
-                }}
-              >
-                {isSelectingAll ? '⏳...' : `All (${totalCatalogCount.toLocaleString()})`}
-              </button>
-            )}
+            <div
+              style={{
+                padding: '7px 11px',
+                fontWeight: 700,
+                fontSize: '13px',
+                color: '#e0e7ff',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              ✓ {selectedCount.toLocaleString()} Selected
+            </div>
             {onClearSelection && (
-              <button
-                type="button"
-                onClick={onClearSelection}
-                title="Clear current photo selection"
-                style={{
-                  background: 'rgba(255, 255, 255, 0.06)',
-                  border: '1px solid rgba(255, 255, 255, 0.16)',
-                  color: '#cbd5e1',
-                  fontSize: '12.5px',
-                  fontWeight: 600,
-                  padding: '6px 10px',
-                  borderRadius: '8px',
-                  cursor: 'pointer',
-                }}
-              >
-                ✕ Clear
-              </button>
-            )}
-          </div>
-
-          <div style={{ width: '1px', height: '22px', background: 'rgba(255,255,255,0.14)' }} />
-
-          {/* Batch Actions */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'nowrap' }}>
-            {/* Clear Tags */}
-            {onBatchClearTags && (
-              <div
-                style={{ position: 'relative' }}
-                onMouseEnter={() => setHoveredCard('clear')}
-                onMouseLeave={() => setHoveredCard(null)}
-              >
+              <>
+                <div style={{ width: '1px', height: '18px', background: 'rgba(129, 140, 248, 0.35)' }} />
                 <button
                   type="button"
-                  disabled={isBatchBusy}
-                  onClick={onBatchClearTags}
+                  onClick={onClearSelection}
+                  title="Clear selection (Esc)"
                   style={{
-                    background: 'rgba(239, 68, 68, 0.16)',
-                    border: '1px solid rgba(248, 113, 113, 0.5)',
-                    color: '#fca5a5',
-                    fontSize: '13px',
+                    background: 'transparent',
+                    border: 'none',
+                    color: '#c7d2fe',
+                    fontSize: '12px',
                     fontWeight: 700,
-                    padding: '7px 11px',
-                    borderRadius: '9px',
-                    cursor: isBatchBusy ? 'wait' : 'pointer',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '5px',
-                  }}
-                >
-                  <span>🧹 Clear Tags</span>
-                  <span
-                    style={{
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      width: '14px',
-                      height: '14px',
-                      borderRadius: '50%',
-                      background: 'rgba(239, 68, 68, 0.3)',
-                      fontSize: '10px',
-                      fontWeight: 800,
-                      color: '#fca5a5',
-                    }}
-                  >
-                    ⓘ
-                  </span>
-                </button>
-                {hoveredCard === 'clear' && (
-                  <div
-                    style={{
-                      position: 'absolute',
-                      bottom: 'calc(100% + 10px)',
-                      left: '50%',
-                      transform: 'translateX(-50%)',
-                      width: '280px',
-                      background: 'rgba(15, 23, 42, 0.96)',
-                      backdropFilter: 'blur(12px)',
-                      border: '1px solid rgba(248, 113, 113, 0.4)',
-                      borderRadius: '10px',
-                      padding: '10px 12px',
-                      boxShadow: '0 16px 36px rgba(0, 0, 0, 0.75)',
-                      zIndex: 10000,
-                      pointerEvents: 'none',
-                      textAlign: 'left',
-                      lineHeight: 1.4,
-                    }}
-                  >
-                    <div style={{ fontSize: '13px', fontWeight: 800, color: '#fca5a5', marginBottom: '4px' }}>
-                      🧹 Clean-Slate Wipe (Level 0)
-                    </div>
-                    <div style={{ fontSize: '11px', color: '#cbd5e1', marginBottom: '6px' }}>
-                      Wipes AI keywords & hierarchical tags from SQLite and creates an instant Undo snapshot. Resets tag authority to 0.85x. Raw EXIF and file paths are untouched.
-                    </div>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '10.5px', color: '#94a3b8', borderTop: '1px solid rgba(255,255,255,0.1)', paddingTop: '5px' }}>
-                      <span>Selected: <b style={{ color: '#fff' }}>{selectedCount.toLocaleString()}</b></span>
-                      <span style={{ color: '#38bdf8' }}>↩ Undoable (Cmd+Z)</span>
-                    </div>
-                    <div
-                      style={{
-                        position: 'absolute',
-                        bottom: '-5px',
-                        left: '50%',
-                        transform: 'translateX(-50%) rotate(45deg)',
-                        width: '10px',
-                        height: '10px',
-                        background: 'rgba(15, 23, 42, 0.96)',
-                        borderRight: '1px solid rgba(248, 113, 113, 0.4)',
-                        borderBottom: '1px solid rgba(248, 113, 113, 0.4)',
-                      }}
-                    />
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* Level 1: Fast Scan */}
-            {onBatchReassess && (
-              <div
-                style={{ position: 'relative' }}
-                onMouseEnter={() => setHoveredCard('fast')}
-                onMouseLeave={() => setHoveredCard(null)}
-              >
-                <button
-                  type="button"
-                  disabled={isBatchBusy}
-                  onClick={() => onBatchReassess('fast_vectors')}
-                  style={{
-                    background: 'rgba(245, 158, 11, 0.18)',
-                    border: '1px solid rgba(251, 191, 36, 0.55)',
-                    color: '#fde68a',
-                    fontSize: '13px',
-                    fontWeight: 700,
-                    padding: '7px 12px',
-                    borderRadius: '9px',
-                    cursor: isBatchBusy ? 'wait' : 'pointer',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '5px',
-                  }}
-                >
-                  <span>⚡ Fast Scan (Level 1)</span>
-                  <span
-                    style={{
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      width: '14px',
-                      height: '14px',
-                      borderRadius: '50%',
-                      background: 'rgba(245, 158, 11, 0.3)',
-                      fontSize: '10px',
-                      fontWeight: 800,
-                      color: '#fde68a',
-                    }}
-                  >
-                    ⓘ
-                  </span>
-                </button>
-                {hoveredCard === 'fast' && (
-                  <div
-                    style={{
-                      position: 'absolute',
-                      bottom: 'calc(100% + 10px)',
-                      left: '50%',
-                      transform: 'translateX(-50%)',
-                      width: '290px',
-                      background: 'rgba(15, 23, 42, 0.96)',
-                      backdropFilter: 'blur(12px)',
-                      border: '1px solid rgba(251, 191, 36, 0.45)',
-                      borderRadius: '10px',
-                      padding: '10px 12px',
-                      boxShadow: '0 16px 36px rgba(0, 0, 0, 0.75)',
-                      zIndex: 10000,
-                      pointerEvents: 'none',
-                      textAlign: 'left',
-                      lineHeight: 1.4,
-                    }}
-                  >
-                    <div style={{ fontSize: '13px', fontWeight: 800, color: '#fde68a', marginBottom: '4px', display: 'flex', justifyContent: 'space-between' }}>
-                      <span>⚡ Fast Scan (Level 1)</span>
-                      <span style={{ fontSize: '11px', color: '#94a3b8', fontWeight: 600 }}>0.85x Weight</span>
-                    </div>
-                    <div style={{ fontSize: '11px', color: '#cbd5e1', marginBottom: '6px' }}>
-                      Runs Pass 1 Macro Biome Lock + Pass 2 GPU 4-Crop Saliency Scan + Pass 3 Specialist Drill-Down + Pass 4 Pet/Person Clustering.
-                    </div>
-                    <div style={{ borderTop: '1px solid rgba(255,255,255,0.1)', paddingTop: '6px', fontSize: '11px', color: '#fde68a', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '4px' }}>
-                      <span>⏱ Live ETA ({selectedCount.toLocaleString()} photos):</span>
-                      <span style={{ color: '#fff' }}>{formatFastEta(selectedCount)}</span>
-                    </div>
-                    <div style={{ fontSize: '10px', color: '#94a3b8', marginTop: '2px' }}>
-                      ~6ms/photo on Apple Silicon Metal GPU
-                    </div>
-                    <div
-                      style={{
-                        position: 'absolute',
-                        bottom: '-5px',
-                        left: '50%',
-                        transform: 'translateX(-50%) rotate(45deg)',
-                        width: '10px',
-                        height: '10px',
-                        background: 'rgba(15, 23, 42, 0.96)',
-                        borderRight: '1px solid rgba(251, 191, 36, 0.45)',
-                        borderBottom: '1px solid rgba(251, 191, 36, 0.45)',
-                      }}
-                    />
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* Level 2: Deep VLM */}
-            {onBatchReassess && (
-              <div
-                style={{ position: 'relative' }}
-                onMouseEnter={() => setHoveredCard('deep')}
-                onMouseLeave={() => setHoveredCard(null)}
-              >
-                <button
-                  type="button"
-                  disabled={isBatchBusy}
-                  onClick={() => onBatchReassess('deep_vlm')}
-                  style={{
-                    background: 'rgba(56, 189, 248, 0.18)',
-                    border: '1px solid rgba(56, 189, 248, 0.55)',
-                    color: '#bae6fd',
-                    fontSize: '13px',
-                    fontWeight: 700,
-                    padding: '7px 12px',
-                    borderRadius: '9px',
-                    cursor: isBatchBusy ? 'wait' : 'pointer',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '5px',
-                  }}
-                >
-                  <span>🧠 Deep VLM (Level 2)</span>
-                  <span
-                    style={{
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      width: '14px',
-                      height: '14px',
-                      borderRadius: '50%',
-                      background: 'rgba(56, 189, 248, 0.3)',
-                      fontSize: '10px',
-                      fontWeight: 800,
-                      color: '#bae6fd',
-                    }}
-                  >
-                    ⓘ
-                  </span>
-                </button>
-                {hoveredCard === 'deep' && (
-                  <div
-                    style={{
-                      position: 'absolute',
-                      bottom: 'calc(100% + 10px)',
-                      left: '50%',
-                      transform: 'translateX(-50%)',
-                      width: '295px',
-                      background: 'rgba(15, 23, 42, 0.96)',
-                      backdropFilter: 'blur(12px)',
-                      border: '1px solid rgba(56, 189, 248, 0.45)',
-                      borderRadius: '10px',
-                      padding: '10px 12px',
-                      boxShadow: '0 16px 36px rgba(0, 0, 0, 0.75)',
-                      zIndex: 10000,
-                      pointerEvents: 'none',
-                      textAlign: 'left',
-                      lineHeight: 1.4,
-                    }}
-                  >
-                    <div style={{ fontSize: '13px', fontWeight: 800, color: '#7dd3fc', marginBottom: '4px', display: 'flex', justifyContent: 'space-between' }}>
-                      <span>🧠 Deep VLM (Level 2)</span>
-                      <span style={{ fontSize: '11px', color: '#94a3b8', fontWeight: 600 }}>1.4x Weight</span>
-                    </div>
-                    <div style={{ fontSize: '11px', color: '#cbd5e1', marginBottom: '6px' }}>
-                      Full multimodal vision-language inspection combined with 4-crop saliency. Anchors same-session flight orbits (±15 min).
-                    </div>
-                    <div style={{ borderTop: '1px solid rgba(255,255,255,0.1)', paddingTop: '6px', fontSize: '11px', color: '#38bdf8', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '4px' }}>
-                      <span>⏱ Live ETA ({selectedCount.toLocaleString()} photos):</span>
-                      <span style={{ color: '#fff' }}>{formatDeepEta(selectedCount)}</span>
-                    </div>
-                    <div style={{ fontSize: '10px', color: '#94a3b8', marginTop: '2px' }}>
-                      ~6.5s/photo with Local Qwen2.5-VL Multimodal
-                    </div>
-                    <div
-                      style={{
-                        position: 'absolute',
-                        bottom: '-5px',
-                        left: '50%',
-                        transform: 'translateX(-50%) rotate(45deg)',
-                        width: '10px',
-                        height: '10px',
-                        background: 'rgba(15, 23, 42, 0.96)',
-                        borderRight: '1px solid rgba(56, 189, 248, 0.45)',
-                        borderBottom: '1px solid rgba(56, 189, 248, 0.45)',
-                      }}
-                    />
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* Voice Tag */}
-            {onOpenVoiceTeach && (
-              <div
-                style={{ position: 'relative' }}
-                onMouseEnter={() => setHoveredCard('voice')}
-                onMouseLeave={() => setHoveredCard(null)}
-              >
-                <button
-                  type="button"
-                  onClick={onOpenVoiceTeach}
-                  style={{
-                    background: 'linear-gradient(135deg, #4f46e5, #7c3aed)',
-                    border: '1px solid #a78bfa',
-                    color: '#ffffff',
-                    fontSize: '13px',
-                    fontWeight: 700,
-                    padding: '7px 12px',
-                    borderRadius: '9px',
+                    padding: '7px 10px',
                     cursor: 'pointer',
                     display: 'flex',
                     alignItems: 'center',
-                    gap: '6px',
-                    boxShadow: '0 4px 14px rgba(124, 58, 237, 0.4)',
+                    gap: '2px',
+                    transition: 'all 0.15s ease',
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.color = '#fff';
+                    e.currentTarget.style.background = 'rgba(255,255,255,0.08)';
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.color = '#c7d2fe';
+                    e.currentTarget.style.background = 'transparent';
                   }}
                 >
-                  <span>🎙️ AI Voice Tag</span>
-                  <span
-                    style={{
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      width: '14px',
-                      height: '14px',
-                      borderRadius: '50%',
-                      background: 'rgba(255, 255, 255, 0.25)',
-                      fontSize: '10px',
-                      fontWeight: 800,
-                      color: '#ffffff',
-                    }}
-                  >
-                    ⓘ
-                  </span>
+                  ✕ Clear
                 </button>
-                {hoveredCard === 'voice' && (
-                  <div
-                    style={{
-                      position: 'absolute',
-                      bottom: 'calc(100% + 10px)',
-                      left: '50%',
-                      transform: 'translateX(-50%)',
-                      width: '280px',
-                      background: 'rgba(15, 23, 42, 0.96)',
-                      backdropFilter: 'blur(12px)',
-                      border: '1px solid rgba(167, 139, 250, 0.45)',
-                      borderRadius: '10px',
-                      padding: '10px 12px',
-                      boxShadow: '0 16px 36px rgba(0, 0, 0, 0.75)',
-                      zIndex: 10000,
-                      pointerEvents: 'none',
-                      textAlign: 'left',
-                      lineHeight: 1.4,
-                    }}
-                  >
-                    <div style={{ fontSize: '13px', fontWeight: 800, color: '#c4b5fd', marginBottom: '4px', display: 'flex', justifyContent: 'space-between' }}>
-                      <span>🎙️ AI Voice & Teach</span>
-                      <span style={{ fontSize: '11px', color: '#94a3b8', fontWeight: 600 }}>2.0x Weight</span>
-                    </div>
-                    <div style={{ fontSize: '11px', color: '#cbd5e1', marginBottom: '6px' }}>
-                      Speak or type custom context, pet names, or specific locations. Carries 2.0x supreme priority, propagating across flight orbits.
-                    </div>
-                    <div style={{ borderTop: '1px solid rgba(255,255,255,0.1)', paddingTop: '6px', fontSize: '10.5px', color: '#a78bfa', fontWeight: 600 }}>
-                      Ground-Truth Reference Tier (Instant)
-                    </div>
-                    <div
-                      style={{
-                        position: 'absolute',
-                        bottom: '-5px',
-                        left: '50%',
-                        transform: 'translateX(-50%) rotate(45deg)',
-                        width: '10px',
-                        height: '10px',
-                        background: 'rgba(15, 23, 42, 0.96)',
-                        borderRight: '1px solid rgba(167, 139, 250, 0.45)',
-                        borderBottom: '1px solid rgba(167, 139, 250, 0.45)',
-                      }}
-                    />
-                  </div>
-                )}
-              </div>
+              </>
             )}
           </div>
 
           <div style={{ width: '1px', height: '22px', background: 'rgba(255,255,255,0.14)' }} />
 
-          {/* Scout Similar Button */}
-          {onOpenVoiceScout && (
+          {/* Quick Star Rating (Upward popover) */}
+          {onBatchUpdateStar && (
+            <div ref={rateRef} style={{ position: 'relative' }}>
+              <button
+                type="button"
+                disabled={isBatchBusy}
+                onClick={() => setRateMenuOpen((prev) => !prev)}
+                title="Rate selected photos 0-5 Stars (or press keys 0-5)"
+                style={{
+                  background: rateMenuOpen ? 'rgba(245, 158, 11, 0.28)' : 'rgba(245, 158, 11, 0.16)',
+                  border: rateMenuOpen ? '1px solid #fbbf24' : '1px solid rgba(251, 191, 36, 0.45)',
+                  color: '#fbbf24',
+                  fontSize: '13px',
+                  fontWeight: 700,
+                  padding: '7px 11px',
+                  borderRadius: '9px',
+                  cursor: isBatchBusy ? 'wait' : 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '5px',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                <span>★ Rate</span>
+                <span style={{ fontSize: '11px', opacity: 0.85 }}>▾</span>
+              </button>
+
+              {rateMenuOpen && (
+                <div
+                  style={{
+                    position: 'absolute',
+                    bottom: 'calc(100% + 10px)',
+                    left: '50%',
+                    transform: 'translateX(-50%)',
+                    background: '#111827',
+                    border: '1px solid rgba(251, 191, 36, 0.4)',
+                    borderRadius: '10px',
+                    padding: '6px',
+                    boxShadow: '0 16px 36px rgba(0,0,0,0.85)',
+                    zIndex: 10000,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '4px',
+                  }}
+                >
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setRateMenuOpen(false);
+                      onBatchUpdateStar(0);
+                    }}
+                    title="Clear rating (Key 0)"
+                    style={{
+                      background: 'rgba(239, 68, 68, 0.18)',
+                      border: '1px solid rgba(248, 113, 113, 0.35)',
+                      color: '#fca5a5',
+                      fontSize: '12px',
+                      fontWeight: 700,
+                      padding: '5px 8px',
+                      borderRadius: '6px',
+                      cursor: 'pointer',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    0 (Clear)
+                  </button>
+                  {[1, 2, 3, 4, 5].map((stars) => (
+                    <button
+                      key={stars}
+                      type="button"
+                      onClick={() => {
+                        setRateMenuOpen(false);
+                        onBatchUpdateStar(stars);
+                      }}
+                      title={`Set ${stars} Star${stars > 1 ? 's' : ''} (Key ${stars})`}
+                      style={{
+                        background: 'rgba(245, 158, 11, 0.18)',
+                        border: '1px solid rgba(251, 191, 36, 0.35)',
+                        color: '#fde68a',
+                        fontSize: '12px',
+                        fontWeight: 700,
+                        padding: '5px 8px',
+                        borderRadius: '6px',
+                        cursor: 'pointer',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {stars}★
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          <div style={{ width: '1px', height: '22px', background: 'rgba(255,255,255,0.14)' }} />
+
+          {/* ⚡ Consolidated AI Keyword & Tagging Tools (UPWARD POPUP) */}
+          <div ref={aiToolsRef} style={{ position: 'relative' }}>
             <button
               type="button"
-              onClick={onOpenVoiceScout}
+              disabled={isBatchBusy}
+              onClick={() => setAiToolsMenuOpen((prev) => !prev)}
+              title="AI Keyword & Inspection Tools (Fast Scan, Deep VLM, AI Voice Tag, Scout Similar, Clear Tags)"
               style={{
-                background: 'rgba(16, 185, 129, 0.2)',
-                border: '1px solid rgba(52, 211, 153, 0.55)',
-                color: '#6ee7b7',
-                fontSize: '12.5px',
+                background: aiToolsMenuOpen
+                  ? 'rgba(124, 58, 237, 0.28)'
+                  : 'rgba(124, 58, 237, 0.18)',
+                border: aiToolsMenuOpen
+                  ? '1px solid #a78bfa'
+                  : '1px solid rgba(167, 139, 250, 0.55)',
+                color: '#e0e7ff',
+                fontSize: '13px',
+                fontWeight: 700,
+                padding: '7px 11px',
+                borderRadius: '9px',
+                cursor: isBatchBusy ? 'wait' : 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '5px',
+                transition: 'all 0.15s ease',
+              }}
+            >
+              <span>⚡ AI Tools</span>
+              <span style={{ fontSize: '11px', opacity: 0.85 }}>▾</span>
+            </button>
+
+            {aiToolsMenuOpen && (
+              <div
+                style={{
+                  position: 'absolute',
+                  bottom: 'calc(100% + 10px)',
+                  left: '50%',
+                  transform: 'translateX(-50%)',
+                  width: '380px',
+                  maxWidth: 'min(380px, calc(100vw - 32px))',
+                  maxHeight: 'min(500px, calc(100vh - 120px))',
+                  overflowY: 'auto',
+                  background: '#0f172a',
+                  border: '1px solid rgba(167, 139, 250, 0.45)',
+                  borderRadius: '12px',
+                  padding: '12px',
+                  boxShadow: '0 20px 48px rgba(0, 0, 0, 0.9)',
+                  zIndex: 10000,
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '8px',
+                  whiteSpace: 'normal',
+                  boxSizing: 'border-box',
+                }}
+              >
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    borderBottom: '1px solid rgba(255,255,255,0.1)',
+                    paddingBottom: '8px',
+                  }}
+                >
+                  <span style={{ fontSize: '12.5px', fontWeight: 800, color: '#e0e7ff' }}>
+                    ⚡ AI Keyword & Tagging Tools
+                  </span>
+                  <span style={{ fontSize: '11px', color: '#a78bfa', fontWeight: 600 }}>
+                    {selectedCount.toLocaleString()} Selected
+                  </span>
+                </div>
+
+                {/* Level 1: Fast Scan Section */}
+                {onBatchReassess && (
+                  <div
+                    style={{
+                      background: 'rgba(245, 158, 11, 0.08)',
+                      border: '1px solid rgba(251, 191, 36, 0.25)',
+                      borderRadius: '8px',
+                      padding: '8px',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '5px',
+                    }}
+                  >
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span style={{ fontSize: '12px', fontWeight: 700, color: '#fde68a' }}>
+                        ⚡ Fast Scan (Level 1 — 4-Pass Cascade)
+                      </span>
+                      <span style={{ fontSize: '10.5px', color: '#f59e0b', fontWeight: 600 }}>
+                        {formatFastEta(selectedCount)}
+                      </span>
+                    </div>
+                    <div style={{ display: 'flex', gap: '5px' }}>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAiToolsMenuOpen(false);
+                          onBatchReassess('fast_vectors', 'selected');
+                        }}
+                        style={{
+                          flex: 1,
+                          padding: '6px 8px',
+                          borderRadius: '6px',
+                          border: '1px solid rgba(251, 191, 36, 0.35)',
+                          background: 'rgba(251, 191, 36, 0.15)',
+                          color: '#fef3c7',
+                          fontSize: '11.5px',
+                          fontWeight: 700,
+                          cursor: 'pointer',
+                        }}
+                      >
+                        Selected ({selectedCount})
+                      </button>
+                      {effectiveShootDate && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setAiToolsMenuOpen(false);
+                            onBatchReassess('fast_vectors', 'day', { shoot_date: effectiveShootDate });
+                          }}
+                          style={{
+                            flex: 1,
+                            padding: '6px 8px',
+                            borderRadius: '6px',
+                            border: '1px solid rgba(255, 255, 255, 0.12)',
+                            background: 'rgba(255, 255, 255, 0.05)',
+                            color: '#cbd5e1',
+                            fontSize: '11px',
+                            fontWeight: 600,
+                            cursor: 'pointer',
+                          }}
+                        >
+                          Shoot Day
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAiToolsMenuOpen(false);
+                          onBatchReassess('fast_vectors', 'catalog', { catalog_name: effectiveCatalog });
+                        }}
+                        style={{
+                          flex: 1,
+                          padding: '6px 8px',
+                          borderRadius: '6px',
+                          border: '1px solid rgba(255, 255, 255, 0.12)',
+                          background: 'rgba(255, 255, 255, 0.05)',
+                          color: '#cbd5e1',
+                          fontSize: '11px',
+                          fontWeight: 600,
+                          cursor: 'pointer',
+                        }}
+                      >
+                        Full Catalog
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Level 2: Deep VLM Section */}
+                {onBatchReassess && (
+                  <div
+                    style={{
+                      background: 'rgba(56, 189, 248, 0.08)',
+                      border: '1px solid rgba(56, 189, 248, 0.25)',
+                      borderRadius: '8px',
+                      padding: '8px',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '5px',
+                    }}
+                  >
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span style={{ fontSize: '12px', fontWeight: 700, color: '#7dd3fc' }}>
+                        🧠 Deep VLM (Level 2 — Qwen2.5-VL)
+                      </span>
+                      <span style={{ fontSize: '10.5px', color: '#38bdf8', fontWeight: 600 }}>
+                        {formatDeepEta(selectedCount)}
+                      </span>
+                    </div>
+                    <div style={{ display: 'flex', gap: '5px' }}>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAiToolsMenuOpen(false);
+                          onBatchReassess('deep_vlm', 'selected');
+                        }}
+                        style={{
+                          flex: 1,
+                          padding: '6px 8px',
+                          borderRadius: '6px',
+                          border: '1px solid rgba(56, 189, 248, 0.35)',
+                          background: 'rgba(56, 189, 248, 0.15)',
+                          color: '#e0f2fe',
+                          fontSize: '11.5px',
+                          fontWeight: 700,
+                          cursor: 'pointer',
+                        }}
+                      >
+                        Selected ({selectedCount})
+                      </button>
+                      {effectiveShootDate && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setAiToolsMenuOpen(false);
+                            onBatchReassess('deep_vlm', 'day', { shoot_date: effectiveShootDate });
+                          }}
+                          style={{
+                            flex: 1,
+                            padding: '6px 8px',
+                            borderRadius: '6px',
+                            border: '1px solid rgba(255, 255, 255, 0.12)',
+                            background: 'rgba(255, 255, 255, 0.05)',
+                            color: '#cbd5e1',
+                            fontSize: '11px',
+                            fontWeight: 600,
+                            cursor: 'pointer',
+                          }}
+                        >
+                          Shoot Day
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAiToolsMenuOpen(false);
+                          onBatchReassess('deep_vlm', 'catalog', { catalog_name: effectiveCatalog });
+                        }}
+                        style={{
+                          flex: 1,
+                          padding: '6px 8px',
+                          borderRadius: '6px',
+                          border: '1px solid rgba(255, 255, 255, 0.12)',
+                          background: 'rgba(255, 255, 255, 0.05)',
+                          color: '#cbd5e1',
+                          fontSize: '11px',
+                          fontWeight: 600,
+                          cursor: 'pointer',
+                        }}
+                      >
+                        Full Catalog
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* AI Voice Tag & Teach */}
+                {onOpenVoiceTeach && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAiToolsMenuOpen(false);
+                      onOpenVoiceTeach();
+                    }}
+                    style={{
+                      width: '100%',
+                      textAlign: 'left',
+                      padding: '8px 10px',
+                      borderRadius: '8px',
+                      border: '1px solid rgba(167, 139, 250, 0.4)',
+                      background: 'rgba(124, 58, 237, 0.18)',
+                      color: '#f8fafc',
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                    }}
+                  >
+                    <div>
+                      <div style={{ fontSize: '12.5px', fontWeight: 700, color: '#c4b5fd' }}>
+                        🎙️ AI Voice Tag & Teach
+                      </div>
+                      <div style={{ fontSize: '11px', color: '#cbd5e1' }}>
+                        Speak or type ground-truth tags (2.0x priority)
+                      </div>
+                    </div>
+                    <span style={{ fontSize: '11px', color: '#a78bfa', fontWeight: 700 }}>Instant</span>
+                  </button>
+                )}
+
+                {/* Scout Similar */}
+                {onOpenVoiceScout && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAiToolsMenuOpen(false);
+                      onOpenVoiceScout();
+                    }}
+                    style={{
+                      width: '100%',
+                      textAlign: 'left',
+                      padding: '8px 10px',
+                      borderRadius: '8px',
+                      border: '1px solid rgba(52, 211, 153, 0.35)',
+                      background: 'rgba(16, 185, 129, 0.12)',
+                      color: '#6ee7b7',
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                    }}
+                  >
+                    <div>
+                      <div style={{ fontSize: '12.5px', fontWeight: 700, color: '#a7f3d0' }}>
+                        🔎 Scout Similar Photos
+                      </div>
+                      <div style={{ fontSize: '11px', color: '#cbd5e1' }}>
+                        Hunt for visual matches across entire archive
+                      </div>
+                    </div>
+                  </button>
+                )}
+
+                {/* Clear Tags */}
+                {onBatchClearTags && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAiToolsMenuOpen(false);
+                      onBatchClearTags();
+                    }}
+                    style={{
+                      width: '100%',
+                      textAlign: 'left',
+                      padding: '8px 10px',
+                      borderRadius: '8px',
+                      border: '1px solid rgba(248, 113, 113, 0.35)',
+                      background: 'rgba(239, 68, 68, 0.12)',
+                      color: '#fca5a5',
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                    }}
+                  >
+                    <div>
+                      <div style={{ fontSize: '12.5px', fontWeight: 700, color: '#fca5a5' }}>
+                        🧹 Clear Tags (Selected Photos)
+                      </div>
+                      <div style={{ fontSize: '11px', color: '#cbd5e1' }}>
+                        Clean-slate wipe with instant Undo (Cmd+Z)
+                      </div>
+                    </div>
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Add Selected to Collection (UPWARD OPENING) */}
+          <div ref={bookRef} style={{ position: 'relative' }}>
+            <button
+              type="button"
+              onClick={() => setShowBookMenu((prev) => !prev)}
+              title="Add selected photos to a curated collection or book"
+              style={{
+                background: 'rgba(245, 158, 11, 0.18)',
+                border: '1px solid rgba(251, 191, 36, 0.5)',
+                color: '#fde68a',
+                fontSize: '13px',
                 fontWeight: 700,
                 padding: '7px 11px',
                 borderRadius: '9px',
@@ -1274,30 +1157,11 @@ export default function SelectionActionBar({
                 display: 'flex',
                 alignItems: 'center',
                 gap: '5px',
-              }}
-              title="Use selected photos as visual seeds to hunt for matching photos across the archive & build a Collection/Book"
-            >
-              <span>🔎 Scout Similar</span>
-            </button>
-          )}
-
-          {/* Add Selected to Book / Collection (UPWARD OPENING) */}
-          <div ref={bookRef} style={{ position: 'relative' }}>
-            <button
-              type="button"
-              onClick={() => setShowBookMenu((prev) => !prev)}
-              style={{
-                background: 'rgba(245, 158, 11, 0.18)',
-                border: '1px solid rgba(251, 191, 36, 0.5)',
-                color: '#fde68a',
-                fontSize: '13px',
-                fontWeight: 700,
-                padding: '7px 12px',
-                borderRadius: '9px',
-                cursor: 'pointer',
+                whiteSpace: 'nowrap',
               }}
             >
-              +📚 Add to Book
+              <span>📚 Collection</span>
+              <span style={{ fontSize: '11px', opacity: 0.85 }}>▾</span>
             </button>
 
             {showBookMenu && (
@@ -1305,30 +1169,77 @@ export default function SelectionActionBar({
                 style={{
                   position: 'absolute',
                   bottom: 'calc(100% + 10px)',
-                  left: 0,
-                  width: '280px',
+                  left: '50%',
+                  transform: 'translateX(-50%)',
+                  width: '320px',
+                  maxWidth: 'min(320px, calc(100vw - 32px))',
+                  maxHeight: 'min(480px, calc(100vh - 120px))',
+                  overflowY: 'auto',
                   background: '#111827',
                   border: '1px solid rgba(255,255,255,0.2)',
                   borderRadius: '12px',
                   padding: '12px',
                   boxShadow: '0 16px 40px rgba(0,0,0,0.85)',
-                  zIndex: 9500,
+                  zIndex: 10000,
+                  boxSizing: 'border-box',
                 }}
               >
-                <div style={{ fontSize: '12px', fontWeight: 700, color: '#f8fafc', marginBottom: '8px' }}>
-                  Add {selectedCount} Photo{selectedCount > 1 ? 's' : ''} to Book:
+                <div style={{ fontSize: '13px', fontWeight: 800, color: '#f8fafc', marginBottom: '8px' }}>
+                  Add {selectedCount} Photo{selectedCount > 1 ? 's' : ''} to Collection:
                 </div>
+
+                {/* + Add New Collection Form */}
+                <form onSubmit={handleCreateNew} style={{ display: 'flex', gap: '6px', marginBottom: '10px' }}>
+                  <input
+                    type="text"
+                    placeholder="New Collection title..."
+                    value={newBookName}
+                    onChange={(e) => setNewBookName(e.target.value)}
+                    style={{
+                      flex: 1,
+                      background: '#1f2937',
+                      border: '1px solid rgba(255,255,255,0.25)',
+                      borderRadius: '7px',
+                      color: '#fff',
+                      padding: '7px 9px',
+                      fontSize: '12px',
+                      outline: 'none',
+                    }}
+                  />
+                  <button
+                    type="submit"
+                    disabled={busyBook || !newBookName.trim()}
+                    style={{
+                      background: '#f59e0b',
+                      border: '1.5px solid #fbbf24',
+                      color: '#090b10',
+                      fontWeight: 800,
+                      fontSize: '13px',
+                      padding: '8px 14px',
+                      borderRadius: '8px',
+                      cursor: newBookName.trim() ? 'pointer' : 'not-allowed',
+                      opacity: newBookName.trim() ? 1 : 0.6,
+                      whiteSpace: 'nowrap',
+                      boxShadow: '0 2px 10px rgba(245, 158, 11, 0.3)',
+                    }}
+                  >
+                    ＋ Create
+                  </button>
+                </form>
+
                 {collections.length > 0 && (
                   <div
                     style={{
-                      maxHeight: '150px',
+                      maxHeight: '160px',
                       overflowY: 'auto',
                       display: 'flex',
                       flexDirection: 'column',
                       gap: '4px',
-                      marginBottom: '10px',
                     }}
                   >
+                    <div style={{ fontSize: '11px', fontWeight: 700, color: '#94a3b8', marginBottom: '2px', textTransform: 'uppercase' }}>
+                      Existing Collections ({collections.length})
+                    </div>
                     {collections.map((col) => (
                       <button
                         key={col.id}
@@ -1340,53 +1251,143 @@ export default function SelectionActionBar({
                           background: 'rgba(255,255,255,0.06)',
                           border: '1px solid rgba(255,255,255,0.1)',
                           color: '#f1f5f9',
-                          padding: '6px 10px',
+                          padding: '7px 10px',
                           borderRadius: '7px',
                           fontSize: '12.5px',
                           cursor: 'pointer',
                           display: 'flex',
                           justifyContent: 'space-between',
+                          alignItems: 'center',
                         }}
                       >
-                        <span>📚 {col.name}</span>
-                        <span style={{ color: '#94a3b8', fontSize: '11px' }}>{col.item_count || 0}</span>
+                        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginRight: '8px' }}>
+                          📚 {col.name}
+                        </span>
+                        <span style={{ color: '#fbbf24', fontSize: '11px', fontWeight: 700, background: 'rgba(245,158,11,0.2)', padding: '1px 6px', borderRadius: '999px' }}>
+                          {col.item_count || 0}
+                        </span>
                       </button>
                     ))}
                   </div>
                 )}
-                <form onSubmit={handleCreateNew} style={{ display: 'flex', gap: '6px' }}>
-                  <input
-                    type="text"
-                    placeholder="New Book title..."
-                    value={newBookName}
-                    onChange={(e) => setNewBookName(e.target.value)}
-                    style={{
-                      flex: 1,
-                      background: '#1f2937',
-                      border: '1px solid rgba(255,255,255,0.2)',
-                      borderRadius: '7px',
-                      color: '#fff',
-                      padding: '6px 9px',
-                      fontSize: '12px',
-                    }}
-                  />
+              </div>
+            )}
+          </div>
+
+          <div style={{ width: '1px', height: '22px', background: 'rgba(255,255,255,0.14)' }} />
+
+          {/* Sleek Lightroom Menu (UPWARD OPENING) */}
+          <div ref={lrRef} style={{ position: 'relative' }}>
+            <button
+              type="button"
+              onClick={() => {
+                const next = !lrMenuOpen;
+                closeAllMenus();
+                setLrMenuOpen(next);
+              }}
+              disabled={isBatchBusy}
+              title="Lightroom Classic integration (Edit in Lightroom or Sync Edits)"
+              style={{
+                background: lrMenuOpen
+                  ? 'rgba(56, 189, 248, 0.28)'
+                  : 'rgba(56, 189, 248, 0.14)',
+                border: lrMenuOpen
+                  ? '1px solid #38bdf8'
+                  : '1px solid rgba(56, 189, 248, 0.45)',
+                color: '#bae6fd',
+                fontSize: '13px',
+                fontWeight: 700,
+                padding: '7px 11px',
+                borderRadius: '9px',
+                cursor: isBatchBusy ? 'wait' : 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '5px',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              <span>🎨 Lightroom</span>
+              <span style={{ fontSize: '11px', opacity: 0.85 }}>▾</span>
+            </button>
+
+            {lrMenuOpen && (
+              <div
+                style={{
+                  position: 'absolute',
+                  bottom: 'calc(100% + 10px)',
+                  left: '50%',
+                  transform: 'translateX(-50%)',
+                  width: '260px',
+                  background: '#0f172a',
+                  border: '1px solid rgba(56, 189, 248, 0.45)',
+                  borderRadius: '12px',
+                  padding: '8px',
+                  boxShadow: '0 20px 48px rgba(0, 0, 0, 0.9)',
+                  zIndex: 10000,
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '6px',
+                }}
+              >
+                <button
+                  type="button"
+                  onClick={() => {
+                    closeAllMenus();
+                    if (onOpenInLightroom) onOpenInLightroom('lightroom');
+                  }}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    padding: '8px 10px',
+                    borderRadius: '8px',
+                    background: 'rgba(56, 189, 248, 0.12)',
+                    border: '1px solid rgba(56, 189, 248, 0.3)',
+                    color: '#e0f2fe',
+                    cursor: 'pointer',
+                    textAlign: 'left',
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <span style={{ fontSize: '15px' }}>🎨</span>
+                    <div>
+                      <div style={{ fontSize: '12.5px', fontWeight: 700 }}>Edit in Lightroom</div>
+                      <div style={{ fontSize: '10.5px', color: '#94a3b8' }}>Open matching catalog</div>
+                    </div>
+                  </div>
+                  <kbd style={{ fontSize: '10px', padding: '2px 5px', background: '#1e293b', borderRadius: '4px', color: '#38bdf8' }}>L</kbd>
+                </button>
+
+                {onSyncEdits && (
                   <button
-                    type="submit"
-                    disabled={busyBook || !newBookName.trim()}
+                    type="button"
+                    onClick={() => {
+                      closeAllMenus();
+                      onSyncEdits();
+                    }}
                     style={{
-                      background: '#f59e0b',
-                      border: 'none',
-                      color: '#111827',
-                      fontWeight: 700,
-                      fontSize: '12px',
-                      padding: '6px 10px',
-                      borderRadius: '7px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      padding: '8px 10px',
+                      borderRadius: '8px',
+                      background: 'rgba(16, 185, 129, 0.12)',
+                      border: '1px solid rgba(16, 185, 129, 0.3)',
+                      color: '#a7f3d0',
                       cursor: 'pointer',
+                      textAlign: 'left',
                     }}
                   >
-                    Create
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <span style={{ fontSize: '15px' }}>🔄</span>
+                      <div>
+                        <div style={{ fontSize: '12.5px', fontWeight: 700 }}>Sync Edits</div>
+                        <div style={{ fontSize: '10.5px', color: '#94a3b8' }}>Read saved XMP &amp; previews</div>
+                      </div>
+                    </div>
+                    <kbd style={{ fontSize: '10px', padding: '2px 5px', background: '#1e293b', borderRadius: '4px', color: '#34d399' }}>⇧S</kbd>
                   </button>
-                </form>
+                )}
               </div>
             )}
           </div>
@@ -1431,12 +1432,14 @@ export default function SelectionActionBar({
                   right: 0,
                   width: '360px',
                   maxWidth: 'min(360px, calc(100vw - 32px))',
+                  maxHeight: 'min(500px, calc(100vh - 120px))',
+                  overflowY: 'auto',
                   background: '#0f172a',
                   border: '1px solid rgba(52, 211, 153, 0.4)',
                   borderRadius: '12px',
                   padding: '10px',
                   boxShadow: '0 20px 48px rgba(0, 0, 0, 0.85)',
-                  zIndex: 9600,
+                  zIndex: 10000,
                   display: 'flex',
                   flexDirection: 'column',
                   gap: '6px',
@@ -1464,20 +1467,24 @@ export default function SelectionActionBar({
                   <span style={{ color: '#34d399' }}>Desktop</span>
                 </div>
 
-                {/* Option 1: Full-Res JPEG Export */}
+                {/* Option 1: Custom Print Sizing (JPEG) Modal */}
                 <button
                   type="button"
                   onClick={() => {
                     setExportMenuOpen(false);
-                    if (onBatchExport) onBatchExport('jpeg');
+                    if (onOpenCustomPrintModal) {
+                      onOpenCustomPrintModal();
+                    } else if (onBatchExport) {
+                      onBatchExport('jpeg', { long_edge: 6000, dpi: 300 });
+                    }
                   }}
                   style={{
                     width: '100%',
                     textAlign: 'left',
                     padding: '9px 12px',
                     borderRadius: '8px',
-                    border: '1px solid rgba(255, 255, 255, 0.1)',
-                    background: 'rgba(255, 255, 255, 0.04)',
+                    border: '1px solid rgba(168, 85, 247, 0.35)',
+                    background: 'rgba(168, 85, 247, 0.10)',
                     color: '#f1f5f9',
                     cursor: 'pointer',
                     display: 'flex',
@@ -1487,47 +1494,15 @@ export default function SelectionActionBar({
                     boxSizing: 'border-box',
                   }}
                 >
-                  <div style={{ fontSize: '13px', fontWeight: 700, color: '#f8fafc', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                    <span>🖼️ High-Res JPEGs</span>
-                    <span style={{ fontSize: '10.5px', color: '#94a3b8', fontWeight: 500 }}>(Full Master Res)</span>
+                  <div style={{ fontSize: '13px', fontWeight: 700, color: '#c084fc', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <span>🖨️ Custom Print Sizing (JPEG)</span>
                   </div>
                   <div style={{ fontSize: '11px', color: '#cbd5e1', lineHeight: '1.35', whiteSpace: 'normal' }}>
-                    Exports full-resolution print JPEGs in sRGB with embedded IPTC/XMP tags (Quality 96, 300 DPI).
+                    Print sizing presets (3,600px up to 12,000px) and 240/300 DPI with develop edits applied.
                   </div>
                 </button>
 
-                {/* Option 2: Copy Originals to Desktop */}
-                <button
-                  type="button"
-                  onClick={() => {
-                    setExportMenuOpen(false);
-                    if (onBatchExport) onBatchExport('original');
-                  }}
-                  style={{
-                    width: '100%',
-                    textAlign: 'left',
-                    padding: '9px 12px',
-                    borderRadius: '8px',
-                    border: '1px solid rgba(255, 255, 255, 0.1)',
-                    background: 'rgba(255, 255, 255, 0.04)',
-                    color: '#f1f5f9',
-                    cursor: 'pointer',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: '3px',
-                    whiteSpace: 'normal',
-                    boxSizing: 'border-box',
-                  }}
-                >
-                  <div style={{ fontSize: '13px', fontWeight: 700, color: '#f8fafc', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                    <span>📁 Copy Originals (RAW / TIF)</span>
-                  </div>
-                  <div style={{ fontSize: '11px', color: '#cbd5e1', lineHeight: '1.35', whiteSpace: 'normal' }}>
-                    Direct byte-for-byte copy of master files (.TIF, .DNG, .IIQ, .NEF) + sidecar .xmp files to Desktop.
-                  </div>
-                </button>
-
-                {/* Option 3: 65" TV Showcase 16:9 Crop JPEGs */}
+                {/* Option 2: 65" TV Showcase & Samsung TV Push 16:9 Crop JPEGs (Always opens Crop Modal) */}
                 <button
                   type="button"
                   onClick={() => {
@@ -1543,8 +1518,8 @@ export default function SelectionActionBar({
                     textAlign: 'left',
                     padding: '10px 12px',
                     borderRadius: '8px',
-                    border: '1px solid rgba(52, 211, 153, 0.45)',
-                    background: 'linear-gradient(135deg, rgba(16, 185, 129, 0.14) 0%, rgba(56, 189, 248, 0.14) 100%)',
+                    border: '1px solid rgba(245, 158, 11, 0.5)',
+                    background: 'linear-gradient(135deg, rgba(245, 158, 11, 0.16) 0%, rgba(16, 185, 129, 0.14) 100%)',
                     color: '#e0f2fe',
                     cursor: 'pointer',
                     display: 'flex',
@@ -1554,11 +1529,42 @@ export default function SelectionActionBar({
                     boxSizing: 'border-box',
                   }}
                 >
-                  <div style={{ fontSize: '13px', fontWeight: 800, color: '#34d399', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                    <span>📺 65" TV Showcase JPEGs (16:9 Crop Modal)</span>
+                  <div style={{ fontSize: '13px', fontWeight: 800, color: '#fbbf24', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <span>📺 Samsung TV Push &amp; 16:9 Showcase</span>
                   </div>
                   <div style={{ fontSize: '11px', color: '#f1f5f9', lineHeight: '1.35', whiteSpace: 'normal' }}>
-                    Interactive modal to choose crop placement (Sky, Horizon, Center, Ground). Exact 12,500px long edge at 180 DPI with full embedded tags.
+                    Interactive 16:9 crop framing + Push directly to Samsung Frame TV over Wi-Fi (or Desktop, iCloud, Folder).
+                  </div>
+                </button>
+
+                {/* Option 3: Archival Master TIFF (.tif) */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setExportMenuOpen(false);
+                    if (onBatchExport) onBatchExport('tiff');
+                  }}
+                  style={{
+                    width: '100%',
+                    textAlign: 'left',
+                    padding: '9px 12px',
+                    borderRadius: '8px',
+                    border: '1px solid rgba(255, 255, 255, 0.1)',
+                    background: 'rgba(255, 255, 255, 0.04)',
+                    color: '#f1f5f9',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '3px',
+                    whiteSpace: 'normal',
+                    boxSizing: 'border-box',
+                  }}
+                >
+                  <div style={{ fontSize: '13px', fontWeight: 700, color: '#f8fafc', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <span>📁 Archival Master TIFF (.tif)</span>
+                  </div>
+                  <div style={{ fontSize: '11px', color: '#cbd5e1', lineHeight: '1.35', whiteSpace: 'normal' }}>
+                    Uncompressed archival master (.tif) with Lightroom develop edits applied and full IPTC/XMP tags embedded.
                   </div>
                 </button>
               </div>

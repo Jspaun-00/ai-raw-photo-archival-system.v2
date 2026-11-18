@@ -10,6 +10,10 @@ import SelectionActionBar from './components/SelectionActionBar.jsx';
 import VoiceTeachScoutModal from './components/VoiceTeachScoutModal.jsx';
 import LiveProgressDock from './components/LiveProgressDock.jsx';
 import TvShowcaseCropModal from './components/TvShowcaseCropModal.jsx';
+import CustomPrintModal from './components/CustomPrintModal.jsx';
+import CollectionsView from './components/CollectionsView.jsx';
+import TvDisplaysView from './components/TvDisplaysView.jsx';
+import StudioGuideDrawer from './components/StudioGuideDrawer.jsx';
 
 export const getPhotoKey = (p) =>
   String(p?.file_hash || p?.file_path || p?.id || p?.photo_id || '');
@@ -91,7 +95,23 @@ const PAGE_SIZE = 250;
 export default function App() {
   // Catalogs & filters state
   const [catalogs, setCatalogs] = useState([]);
-  const [activeCatalog, setActiveCatalog] = useState('Keepers');
+  const [activeCatalog, setActiveCatalogState] = useState(() => {
+    try {
+      const saved = localStorage.getItem('mr_darkroom_active_catalog');
+      if (saved && saved.trim() && saved !== 'Keepers') {
+        return saved;
+      }
+    } catch (_) {}
+    return 'All Catalogs';
+  });
+
+  const setActiveCatalog = useCallback((cat) => {
+    const next = cat || 'All Catalogs';
+    setActiveCatalogState(next);
+    try {
+      localStorage.setItem('mr_darkroom_active_catalog', next);
+    } catch (_) {}
+  }, []);
   const [viewMode, setViewMode] = useState('grid'); // 'grid' | 'date' | 'trips'
   const [searchQuery, setSearchQuery] = useState('');
   const [aestheticPercentile, setAestheticPercentile] = useState('all');
@@ -114,6 +134,15 @@ export default function App() {
   const [collectionsInitialId, setCollectionsInitialId] = useState(null);
   const [collectionsInitialMode, setCollectionsInitialMode] = useState('sequence');
   const [isTvCropModalOpen, setIsTvCropModalOpen] = useState(false);
+  const [tvCropOverridePhotos, setTvCropOverridePhotos] = useState(null);
+  const [isCustomPrintModalOpen, setIsCustomPrintModalOpen] = useState(false);
+  const [customPrintOverridePhotos, setCustomPrintOverridePhotos] = useState(null);
+  const [exportCollectionName, setExportCollectionName] = useState(null);
+
+  // In-App Studio Help Guide Drawer State
+  const [isStudioGuideOpen, setIsStudioGuideOpen] = useState(false);
+  const [guideInitialTopic, setGuideInitialTopic] = useState('import');
+  const [guidePosition, setGuidePosition] = useState('right');
 
   // Multi-Photo Selection & Voice Teach / Scout state
   const [selectedPhotoMap, setSelectedPhotoMap] = useState(() => new Map());
@@ -182,23 +211,7 @@ export default function App() {
     refreshJobStatus();
   }, [refreshJobStatus]);
 
-  useEffect(() => {
-    const isNowRunning = Boolean(jobStatus?.running);
-    if (prevJobRunningRef.current && !isNowRunning && !jobStatus?.error) {
-      loadCatalogs();
-      fetchUndoStatus();
-      const importedCat = jobStatus?.extra?.catalog_name;
-      if (importedCat) {
-        setActiveCatalog(importedCat);
-      } else {
-        fetchPhotos(1, false);
-      }
-      if (viewMode === 'trips') {
-        fetchTrips();
-      }
-    }
-    prevJobRunningRef.current = isNowRunning;
-  }, [jobStatus?.running]);
+
 
   // Auto-dismiss completed job toast after 4 seconds while keeping manual '×' close responsive
   useEffect(() => {
@@ -245,9 +258,12 @@ export default function App() {
       .then((res) => res.json())
       .then((data) => {
         setCatalogs(data.catalogs || []);
+        if (data.keepers_count === 0 && (activeCatalog === 'Keepers' || activeCatalog === 'KEEPERS')) {
+          setActiveCatalog('All Catalogs');
+        }
       })
       .catch((err) => console.error('Failed to load catalogs:', err));
-  }, []);
+  }, [activeCatalog, setActiveCatalog]);
 
   // Fetch curated collections & books
   const loadCollections = useCallback(() => {
@@ -413,6 +429,26 @@ export default function App() {
     ]
   );
 
+  // Reload catalogs, photos, or trips when background jobs finish
+  useEffect(() => {
+    const isNowRunning = Boolean(jobStatus?.running);
+    if (prevJobRunningRef.current && !isNowRunning && !jobStatus?.error) {
+      loadCatalogs();
+      fetchUndoStatus();
+      const importedCat = jobStatus?.extra?.catalog_name;
+      const isExportJob = jobStatus?.mode === 'tv_showcase' || jobStatus?.mode === 'jpeg' || jobStatus?.mode === 'tiff' || jobStatus?.mode === 'original' || jobStatus?.job_type === 'export';
+      if (importedCat) {
+        setActiveCatalog(importedCat);
+      } else if (!isExportJob) {
+        fetchPhotos(1, false);
+      }
+      if (viewMode === 'trips' && !isExportJob) {
+        fetchTrips();
+      }
+    }
+    prevJobRunningRef.current = isNowRunning;
+  }, [jobStatus?.running, jobStatus?.mode, jobStatus?.job_type, jobStatus?.extra?.catalog_name, jobStatus?.error, viewMode, loadCatalogs, fetchUndoStatus, fetchPhotos, fetchTrips]);
+
   const handleTripPhotosUpdated = useCallback((updatedTripPhotos) => {
     if (Array.isArray(updatedTripPhotos) && updatedTripPhotos.length > 0) {
       setActiveLightboxList(updatedTripPhotos);
@@ -503,6 +539,62 @@ export default function App() {
         fetchUndoStatus();
       });
   }, [applyUndoStatusPayload, fetchUndoStatus]);
+
+  // Batch star rating across all selected photos (keys 0-5 or dock buttons)
+  const handleBatchUpdateStar = useCallback(
+    (newStars) => {
+      if (!selectedPhotosArray || selectedPhotosArray.length === 0) return;
+      const count = selectedPhotosArray.length;
+      const keySet = new Set(selectedPhotosArray.map(getPhotoKey));
+      const pids = selectedPhotosArray
+        .map((p) => p.file_hash || p.file_path)
+        .filter(Boolean);
+
+      // Optimistically update in-place immediately across all views
+      const patchItem = (item) =>
+        keySet.has(getPhotoKey(item)) ? { ...item, star_rating: newStars } : item;
+
+      setPhotos((prev) => prev.map(patchItem));
+      setActiveLightboxList((prev) => prev.map(patchItem));
+      setActiveLightboxPhoto((prev) =>
+        prev && keySet.has(getPhotoKey(prev))
+          ? { ...prev, star_rating: newStars }
+          : prev
+      );
+      setSelectedPhotoMap((prev) => {
+        const next = new Map();
+        for (const [k, v] of prev.entries()) {
+          next.set(k, { ...v, star_rating: newStars });
+        }
+        return next;
+      });
+
+      if (newStars === 0) {
+        showGlobalToast(`Cleared star ratings on ${count.toLocaleString()} selected photo${count > 1 ? 's' : ''}`);
+      } else {
+        showGlobalToast(`★ Assigned ${newStars} star${newStars > 1 ? 's' : ''} across ${count.toLocaleString()} selected photo${count > 1 ? 's' : ''}`);
+      }
+
+      fetch('/api/photos/batch-star', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ photo_ids: pids, star_rating: newStars }),
+      })
+        .then((res) => res.json())
+        .then((data) => {
+          if (data?.undo_status) {
+            applyUndoStatusPayload(data.undo_status);
+          } else {
+            fetchUndoStatus();
+          }
+        })
+        .catch((err) => {
+          console.error('Failed to batch rate:', err);
+          fetchUndoStatus();
+        });
+    },
+    [selectedPhotosArray, showGlobalToast, applyUndoStatusPayload, fetchUndoStatus]
+  );
 
   // Lightbox previous/next navigation across activeLightboxList
   const handleNavigateLightbox = useCallback(
@@ -661,6 +753,13 @@ export default function App() {
   const handleClearSelection = useCallback(() => {
     setSelectedPhotoMap(new Map());
     setLastSelectedKey(null);
+  }, []);
+
+  const handleSingleSelectPhoto = useCallback((photo) => {
+    if (!photo) return;
+    const key = getPhotoKey(photo);
+    setSelectedPhotoMap(new Map([[key, photo]]));
+    setLastSelectedKey(key);
   }, []);
 
   // Select all currently loaded photos on the page
@@ -830,8 +929,7 @@ export default function App() {
           showGlobalToast(`Created "${name}" with ${photoIds.length} photo(s)`);
           loadCollections();
           setCollectionsInitialId(data.id);
-          setCollectionsInitialMode('sequence');
-          setIsCollectionsModalOpen(true);
+          setViewMode('collections');
         }
       } catch (err) {
         showGlobalToast(`Failed to create collection: ${err.message}`);
@@ -840,24 +938,60 @@ export default function App() {
     [selectedPhotosArray, loadCollections]
   );
 
-  // Batch Re-Assess selected photos (Fast Scan Level 1 or Deep VLM Level 2)
+  // Batch Re-Assess photos (Fast Scan Level 1 or Deep VLM Level 2) with scope: 'selected' | 'day' | 'catalog'
   const handleBatchReassessSelected = useCallback(
-    async (mode = 'fast_vectors') => {
-      if (selectedPhotosArray.length === 0) return;
-      const photoIds = selectedPhotosArray.map((p) => p.file_hash || p.file_path);
-      const isAsync = photoIds.length > 10 || (mode === 'deep_vlm' && photoIds.length > 1);
+    async (mode = 'fast_vectors', scope = 'selected', options = {}) => {
+      let photoIds = null;
+      let shootDate = null;
+      let catalogName = null;
+
+      if (scope === 'day') {
+        shootDate = options.shootDate || activeShootDate || (selectedPhotosArray[0]?.shoot_date);
+        catalogName =
+          activeCatalog && activeCatalog !== 'All Catalogs' && activeCatalog !== 'ALL'
+            ? activeCatalog
+            : null;
+        if (!shootDate) {
+          showGlobalToast('No shoot date found for day scan');
+          return;
+        }
+      } else if (scope === 'catalog') {
+        catalogName =
+          activeCatalog && activeCatalog !== 'All Catalogs' && activeCatalog !== 'ALL'
+            ? activeCatalog
+            : null;
+      } else {
+        if (selectedPhotosArray.length === 0) return;
+        photoIds = selectedPhotosArray.map((p) => p.file_hash || p.file_path);
+      }
+
+      const totalTarget =
+        scope === 'selected'
+          ? (photoIds?.length || 0)
+          : scope === 'day'
+          ? `shoot day (${shootDate})`
+          : (catalogName || 'full active catalog');
+
+      const isAsync =
+        scope !== 'selected' ||
+        (photoIds && photoIds.length > 10) ||
+        (mode === 'deep_vlm' && photoIds && photoIds.length > 1);
+
       setIsBatchBusy(true);
       showGlobalToast(
         mode === 'deep_vlm'
-          ? `🧠 Running Deep VLM (Level 2) on ${photoIds.length.toLocaleString()} photo(s)...`
-          : `⚡ Running Fast Scan (Level 1) on ${photoIds.length.toLocaleString()} photo(s)...`
+          ? `🧠 Running Deep VLM (Level 2) on ${typeof totalTarget === 'number' ? totalTarget.toLocaleString() + ' photo(s)' : totalTarget}...`
+          : `⚡ Running Fast Scan (Level 1) on ${typeof totalTarget === 'number' ? totalTarget.toLocaleString() + ' photo(s)' : totalTarget}...`
       );
+
       try {
         const res = await fetch('/api/reassess', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             photo_ids: photoIds,
+            shoot_date: shootDate,
+            catalog_name: catalogName,
             mode,
             async_job: isAsync,
           }),
@@ -898,23 +1032,124 @@ export default function App() {
           );
         }
       } catch (err) {
-        showGlobalToast(`Batch reassessment failed: ${err.message}`);
+        showGlobalToast(`Scan failed: ${err.message}`);
       } finally {
         setIsBatchBusy(false);
       }
     },
-    [selectedPhotosArray, refreshJobStatus, fetchUndoStatus, applyUndoStatusPayload]
+    [
+      selectedPhotosArray,
+      activeShootDate,
+      activeCatalog,
+      refreshJobStatus,
+      fetchUndoStatus,
+      applyUndoStatusPayload,
+      getPhotoKey,
+      showGlobalToast,
+    ]
   );
 
-  // Batch Export selected (or visible) photos: High-Res JPEG, Copy Original, or 65" TV Showcase 16:9 crop
+  // Open photo in Adobe Lightroom Classic or Camera Raw (identifies specific .lrcat catalog)
+  const handleOpenInLightroom = useCallback(
+    async (targetApp = 'lightroom') => {
+      if (selectedPhotosArray.length === 0) {
+        showGlobalToast('Select a photo first to open in Lightroom or Camera Raw');
+        return;
+      }
+      const firstPhoto = selectedPhotosArray[0];
+      const photoId = firstPhoto.file_hash || firstPhoto.file_path;
+      const photoIds = selectedPhotosArray.map((p) => p.file_hash || p.file_path);
+      showGlobalToast(
+        targetApp === 'camera_raw'
+          ? '📸 Opening in Adobe Camera Raw / Photoshop...'
+          : targetApp === 'finder'
+          ? '📁 Revealing master file in Finder...'
+          : `🎨 Opening Lightroom Classic with catalog for "${firstPhoto.title || 'photo'}"...`
+      );
+      try {
+        const res = await fetch('/api/system/open-in-lightroom', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            photo_id: photoId,
+            photo_ids: photoIds,
+            target_app: targetApp,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || data.message || `HTTP ${res.status}`);
+        showGlobalToast(data.message || `Launched ${targetApp}`);
+      } catch (err) {
+        showGlobalToast(`Open failed: ${err.message}`);
+      }
+    },
+    [selectedPhotosArray, showGlobalToast]
+  );
+
+  // Sync external Lightroom / Photoshop edits (.xmp sidecars or _Edit.tif derivatives)
+  const handleSyncSelectedEdits = useCallback(
+    async () => {
+      const photoIds = selectedPhotosArray.map((p) => p.file_hash || p.file_path);
+      showGlobalToast(
+        photoIds.length > 0
+          ? `🔄 Syncing external edits / XMP for ${photoIds.length} photo(s)...`
+          : '🔄 Syncing all watched external Lightroom / Photoshop edits...'
+      );
+      try {
+        const res = await fetch('/api/photos/sync-edits', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            photo_ids: photoIds.length > 0 ? photoIds : null,
+            force: true,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+        if (data.photos && data.photos.length > 0) {
+          const updatedMap = new Map(data.photos.map((p) => [getPhotoKey(p), p]));
+          setPhotos((prev) =>
+            prev.map((item) => updatedMap.get(getPhotoKey(item)) || item)
+          );
+          setActiveLightboxList((prev) =>
+            prev.map((item) => updatedMap.get(getPhotoKey(item)) || item)
+          );
+          setSelectedPhotoMap((prev) => {
+            const next = new Map(prev);
+            for (const [k, v] of updatedMap.entries()) {
+              if (next.has(k)) next.set(k, v);
+            }
+            return next;
+          });
+        }
+        const updatedCount = data.updated_count || (data.updated_files || []).length;
+        const newCount = data.ingested_count || (data.ingested_derivatives || []).length;
+        if (updatedCount > 0 || newCount > 0) {
+          showGlobalToast(
+            `Sync complete: ${updatedCount} preview(s) refreshed, ${newCount} new derivative(s) linked`
+          );
+        } else {
+          showGlobalToast(
+            'No new edits rendered yet. In Lightroom Classic, press Cmd+S to save metadata, or choose Library > Previews > Build Standard Previews. Adobe can take 2–3 minutes to finish writing previews to disk.'
+          );
+        }
+      } catch (err) {
+        showGlobalToast(`Sync failed: ${err.message}`);
+      }
+    },
+    [selectedPhotosArray, showGlobalToast, getPhotoKey]
+  );
+
+  // Batch Export selected (or visible) photos: Custom Print Sizing (JPEG), 65" TV Showcase (16:9 crop), or Archival Master TIFF (.tif)
   const handleBatchExport = useCallback(
-    async (mode = 'jpeg') => {
-      const targetList = selectedPhotosArray.length > 0 ? selectedPhotosArray : photos;
+    async (mode = 'jpeg', options = {}, overrideTargetList = null) => {
+      const targetList = overrideTargetList && overrideTargetList.length > 0 ? overrideTargetList : (selectedPhotosArray.length > 0 ? selectedPhotosArray : photos);
       if (!targetList || targetList.length === 0) {
         showGlobalToast('No photos to export. Select photos or load a catalog first.');
         return;
       }
-      if (mode === 'tv_showcase') {
+      if (mode === 'tv_showcase' && !options.long_edge) {
+        setTvCropOverridePhotos(overrideTargetList && overrideTargetList.length > 0 ? overrideTargetList : null);
         setIsTvCropModalOpen(true);
         return;
       }
@@ -922,29 +1157,61 @@ export default function App() {
       if (photoIds.length === 0) return;
 
       const modeLabels = {
-        jpeg: 'High-Res JPEGs',
+        jpeg: options.long_edge ? `Custom Print JPEGs (${options.long_edge}px, ${options.dpi || 300} DPI)` : 'Custom Print JPEGs',
+        tv_showcase: `TV Showcase JPEGs (${options.long_edge || 12000}px, ${options.dpi || 180} DPI)`,
+        tiff: 'Archival Master TIFFs (.tif)',
         original: 'Original Masters',
       };
       const label = modeLabels[mode] || 'photos';
+      const isSamsungTv = options.target_destination === 'samsung_tv';
+      const destName = isSamsungTv
+        ? `Samsung Frame TV (${options.samsung_tv_ip || '192.168.68.88'})`
+        : options.custom_folder_path
+        ? `custom folder (${options.custom_folder_path.split('/').filter(Boolean).pop()})`
+        : options.target_destination === 'icloud'
+        ? 'iCloud Drive'
+        : 'Desktop';
 
-      showGlobalToast(`Exporting ${photoIds.length.toLocaleString()} ${label} to Desktop...`);
+      showGlobalToast(
+        isSamsungTv
+          ? `📺 Pushing ${photoIds.length.toLocaleString()} photo(s) to ${destName}...`
+          : `Exporting ${photoIds.length.toLocaleString()} ${label} to ${destName}...`
+      );
       setIsBatchBusy(true);
 
       try {
+        const payload = {
+          photo_ids: photoIds,
+          mode,
+          async_job: true,
+        };
+        if (options.folder_name) payload.folder_name = options.folder_name;
+        if (options.long_edge) payload.long_edge = Number(options.long_edge);
+        if (options.dpi) payload.dpi = Number(options.dpi);
+        if (options.target_destination) payload.target_destination = options.target_destination;
+        if (options.custom_folder_path) payload.custom_folder_path = options.custom_folder_path;
+        if (options.samsung_tv_ip) payload.samsung_tv_ip = options.samsung_tv_ip;
+        if (options.slideshow_minutes) payload.slideshow_minutes = Number(options.slideshow_minutes);
+
         const res = await fetch('/api/photos/export', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            photo_ids: photoIds,
-            mode,
-            async_job: true,
-          }),
+          body: JSON.stringify(payload),
         });
-        const data = await res.json();
-        if (!res.ok) {
-          throw new Error(data.detail || 'Export failed to start');
+        let data = {};
+        try {
+          data = await res.json();
+        } catch (_) {
+          data = { detail: res.statusText || `Export server error (${res.status})` };
         }
-        showGlobalToast(`Started export to ~/Desktop/MRDarkroom_Exports/`);
+        if (!res.ok) {
+          throw new Error(data.detail || `Export failed (${res.status})`);
+        }
+        showGlobalToast(
+          isSamsungTv
+            ? `📺 Started Samsung TV slideshow push (${photoIds.length} photo(s)) to ${destName}`
+            : `Started export of ${photoIds.length} photo(s) to ${destName}`
+        );
         refreshJobStatus();
       } catch (err) {
         console.error('Batch export error:', err);
@@ -956,11 +1223,16 @@ export default function App() {
     [selectedPhotosArray, photos, refreshJobStatus]
   );
 
-  // Confirm and run 65" TV Showcase Export with interactive 16:9 crop framing & exact 12.5k px sizing
+  // Confirm and run 65" TV Showcase Export with interactive 16:9 crop framing & exact 12k px sizing
   const handleConfirmTvShowcaseExport = useCallback(
-    async (cropsMap) => {
+    async (cropsMap, targetDestination = 'desktop', customFolderPath = null, extraOptions = {}) => {
       setIsTvCropModalOpen(false);
-      const targetList = selectedPhotosArray.length > 0 ? selectedPhotosArray : photos;
+      const targetList = tvCropOverridePhotos && tvCropOverridePhotos.length > 0
+        ? tvCropOverridePhotos
+        : (selectedPhotosArray.length > 0 ? selectedPhotosArray : photos);
+      setTvCropOverridePhotos(null);
+      const exportName = exportCollectionName;
+      setExportCollectionName(null);
       if (!targetList || targetList.length === 0) {
         showGlobalToast('No photos to export.');
         return;
@@ -968,8 +1240,21 @@ export default function App() {
       const photoIds = targetList.map((p) => p.file_hash || p.file_path).filter(Boolean);
       if (photoIds.length === 0) return;
 
+      const isSamsungTv = targetDestination === 'samsung_tv';
+      const isCustom = Boolean(customFolderPath);
+      const isIcloud = targetDestination === 'icloud';
+      const destText = isSamsungTv
+        ? `Samsung Frame TV (${extraOptions.samsung_tv_ip || '192.168.68.88'})`
+        : isCustom
+        ? `custom folder (${customFolderPath.split('/').filter(Boolean).pop() || customFolderPath})`
+        : isIcloud
+        ? 'iCloud Drive'
+        : 'Desktop';
+
       showGlobalToast(
-        `Exporting ${photoIds.length.toLocaleString()} 65" TV Showcase JPEGs (12,500px, 180 DPI) to Desktop...`
+        isSamsungTv
+          ? `📺 Pushing ${photoIds.length.toLocaleString()} 16:9 photo(s) to ${destText} (Persistent Art Mode Slideshow)...`
+          : `Exporting ${photoIds.length.toLocaleString()} 65" TV Showcase JPEGs (12,000px, 180 DPI) to ${destText}...`
       );
       setIsBatchBusy(true);
 
@@ -981,14 +1266,34 @@ export default function App() {
             photo_ids: photoIds,
             mode: 'tv_showcase',
             crops: cropsMap,
+            folder_name: exportName || undefined,
+            target_destination: targetDestination,
+            custom_folder_path: customFolderPath,
+            samsung_tv_ip: extraOptions.samsung_tv_ip || undefined,
+            slideshow_minutes: extraOptions.slideshow_minutes || 15,
+            mat_mode: extraOptions.mat_mode || 'studio',
+            mat_color: extraOptions.mat_color || '#F4EFE6',
+            mat_placement: extraOptions.mat_placement || 'slim_optical',
+            mat_aspect: extraOptions.mat_aspect || 'original',
+            mat_style: extraOptions.mat_style || 'single',
+            inner_mat_color: extraOptions.inner_mat_color || '#F4EFE6',
             async_job: true,
           }),
         });
-        const data = await res.json();
-        if (!res.ok) {
-          throw new Error(data.detail || 'Export failed to start');
+        let data = {};
+        try {
+          data = await res.json();
+        } catch (_) {
+          data = { detail: res.statusText || `Export server error (${res.status})` };
         }
-        showGlobalToast(`Started 12.5k TV Showcase export to ~/Desktop/MRDarkroom_Exports/`);
+        if (!res.ok) {
+          throw new Error(data.detail || `Export failed (${res.status})`);
+        }
+        showGlobalToast(
+          isSamsungTv
+            ? `📺 Uploading & starting persistent slideshow on ${destText}`
+            : `Started 12k TV Showcase export to ${destText}`
+        );
         refreshJobStatus();
       } catch (err) {
         console.error('TV Showcase export error:', err);
@@ -997,7 +1302,52 @@ export default function App() {
         setIsBatchBusy(false);
       }
     },
-    [selectedPhotosArray, photos, refreshJobStatus]
+    [tvCropOverridePhotos, selectedPhotosArray, photos, refreshJobStatus, showGlobalToast, exportCollectionName]
+  );
+
+  // Open Custom Print Sizing Modal (Direct 1-click presets & 240/300 DPI)
+  const handleOpenCustomPrintModal = useCallback((overridePhotos = null) => {
+    setCustomPrintOverridePhotos(
+      overridePhotos && Array.isArray(overridePhotos) && overridePhotos.length > 0
+        ? overridePhotos
+        : null
+    );
+    setIsCustomPrintModalOpen(true);
+  }, []);
+
+  // Confirm and run Custom Print Sizing Export
+  const handleConfirmCustomPrintExport = useCallback(
+    async ({
+      long_edge,
+      dpi,
+      target_destination = 'desktop',
+      custom_folder_path = null,
+      samsung_tv_ip = null,
+      slideshow_minutes = 15,
+    }) => {
+      setIsCustomPrintModalOpen(false);
+      const targetList =
+        customPrintOverridePhotos && customPrintOverridePhotos.length > 0
+          ? customPrintOverridePhotos
+          : (selectedPhotosArray.length > 0 ? selectedPhotosArray : photos);
+      setCustomPrintOverridePhotos(null);
+      const exportName = exportCollectionName;
+      setExportCollectionName(null);
+      await handleBatchExport(
+        'jpeg',
+        {
+          long_edge,
+          dpi,
+          target_destination,
+          custom_folder_path,
+          folder_name: exportName,
+          samsung_tv_ip,
+          slideshow_minutes,
+        },
+        targetList
+      );
+    },
+    [customPrintOverridePhotos, selectedPhotosArray, photos, handleBatchExport, exportCollectionName]
   );
 
   // Rescan active catalog or current archive view (Idle Bottom Dock Rescan)
@@ -1201,65 +1551,6 @@ export default function App() {
     }
   }, [fetchPhotos, fetchTrips, fetchUndoStatus, loadCollections, viewMode]);
 
-  // Global Cmd+Z / Ctrl+Z and 'G' (Jump to Main Grid) shortcuts when focus is not inside an input/textarea
-  useEffect(() => {
-    const handleKeyDown = (e) => {
-      const tag = document.activeElement?.tagName;
-      if (
-        tag === 'INPUT' ||
-        tag === 'TEXTAREA' ||
-        tag === 'SELECT' ||
-        document.activeElement?.isContentEditable
-      ) {
-        return;
-      }
-
-      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key?.toLowerCase() === 'z') {
-        if (undoStatus?.available) {
-          e.preventDefault();
-          handleTriggerUndo();
-        }
-        return;
-      }
-
-      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key?.toLowerCase() === 'a') {
-        if (!activeLightboxPhoto && !isVoiceModalOpen && !isCollectionsModalOpen && !isPipelineModalOpen) {
-          e.preventDefault();
-          if (selectedPhotosArray.length >= photos.length && totalPhotos > photos.length) {
-            handleSelectAllInCatalog();
-          } else {
-            handleSelectAllLoaded();
-          }
-        }
-        return;
-      }
-
-      if (!e.metaKey && !e.ctrlKey && !e.altKey && e.key?.toLowerCase() === 'g') {
-        e.preventDefault();
-        setActiveLightboxPhoto(null);
-        setIsCollectionsModalOpen(false);
-        setIsVoiceModalOpen(false);
-        setActiveSequenceId(null);
-        setViewMode('grid');
-        showGlobalToast('⊞ Switched to Main Grid View');
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [
-    undoStatus?.available,
-    handleTriggerUndo,
-    activeLightboxPhoto,
-    isVoiceModalOpen,
-    isCollectionsModalOpen,
-    isPipelineModalOpen,
-    selectedPhotosArray.length,
-    photos.length,
-    totalPhotos,
-    handleSelectAllInCatalog,
-    handleSelectAllLoaded,
-  ]);
-
   // Global Sync External Edits (Photoshop / Lightroom mtime + size check)
   const handleSyncExternalEdits = useCallback(async () => {
     showGlobalToast('Scanning catalog for external Photoshop / Lightroom edits...');
@@ -1283,6 +1574,214 @@ export default function App() {
       showGlobalToast(`Sync error: ${err.message}`);
     }
   }, [fetchPhotos, fetchTrips, viewMode]);
+
+  // Global Cmd+Z / Ctrl+Z, Cmd+S (Sync Edits) and 'G' (Jump to Main Grid) shortcuts when focus is not inside an input/textarea
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      const tag = document.activeElement?.tagName;
+      if (
+        tag === 'INPUT' ||
+        tag === 'TEXTAREA' ||
+        tag === 'SELECT' ||
+        document.activeElement?.isContentEditable
+      ) {
+        return;
+      }
+
+      // Intercept Cmd+S to prevent Safari "Save Page As" in Documents, triggering Sync Edits instead
+      if ((e.metaKey || e.ctrlKey) && (e.key === 's' || e.key === 'S')) {
+        e.preventDefault();
+        e.stopPropagation();
+        handleSyncExternalEdits();
+        return;
+      }
+
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key?.toLowerCase() === 'z') {
+        if (undoStatus?.available) {
+          e.preventDefault();
+          handleTriggerUndo();
+        }
+        return;
+      }
+
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key?.toLowerCase() === 'a') {
+        if (!activeLightboxPhoto && !isVoiceModalOpen && !isCollectionsModalOpen && !isPipelineModalOpen) {
+          e.preventDefault();
+          if (selectedPhotosArray.length >= photos.length && totalPhotos > photos.length) {
+            handleSelectAllInCatalog();
+          } else {
+            handleSelectAllLoaded();
+          }
+        }
+        return;
+      }
+
+      // 0-5 Star Rating hotkeys: when photos are selected and Lightbox is not open
+      if (!e.metaKey && !e.ctrlKey && !e.altKey && ['0', '1', '2', '3', '4', '5'].includes(e.key)) {
+        if (!activeLightboxPhoto && selectedPhotosArray.length > 0) {
+          e.preventDefault();
+          handleBatchUpdateStar(parseInt(e.key, 10));
+          return;
+        }
+      }
+
+      // Left and Right Arrow Navigation across the Grid / Loaded Photos
+      if (
+        !e.metaKey &&
+        !e.ctrlKey &&
+        !e.altKey &&
+        (e.key === 'ArrowRight' || e.key === 'ArrowLeft') &&
+        !activeLightboxPhoto &&
+        !isVoiceModalOpen &&
+        !isCollectionsModalOpen &&
+        !isPipelineModalOpen &&
+        !isTvCropModalOpen &&
+        !isCustomPrintModalOpen &&
+        viewMode !== 'collections'
+      ) {
+        if (photos.length === 0) return;
+        e.preventDefault();
+
+        let currentIndex = -1;
+        if (lastSelectedKey) {
+          currentIndex = photos.findIndex((p) => getPhotoKey(p) === lastSelectedKey);
+        }
+        if (currentIndex === -1 && selectedPhotosArray.length > 0) {
+          currentIndex = photos.findIndex((p) => getPhotoKey(p) === getPhotoKey(selectedPhotosArray[0]));
+        }
+
+        let nextIndex = 0;
+        if (e.key === 'ArrowRight') {
+          nextIndex = currentIndex === -1 ? 0 : Math.min(currentIndex + 1, photos.length - 1);
+        } else {
+          nextIndex = currentIndex === -1 ? 0 : Math.max(currentIndex - 1, 0);
+        }
+
+        const nextPhoto = photos[nextIndex];
+        if (nextPhoto) {
+          handleSingleSelectPhoto(nextPhoto);
+          const nextKey = getPhotoKey(nextPhoto);
+          setTimeout(() => {
+            const el = document.querySelector(`[data-photo-key="${CSS.escape(nextKey)}"]`);
+            if (el) {
+              el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            }
+          }, 30);
+        }
+        return;
+      }
+
+      // Space, Enter, or 'E' key opens active selected photo in Lightbox Loupe view (Lightroom style)
+      if (
+        !e.metaKey &&
+        !e.ctrlKey &&
+        !e.altKey &&
+        (e.key === ' ' || e.code === 'Space' || e.key === 'Enter' || e.key?.toLowerCase() === 'e') &&
+        !activeLightboxPhoto &&
+        !isVoiceModalOpen &&
+        !isCollectionsModalOpen &&
+        !isPipelineModalOpen &&
+        !isTvCropModalOpen &&
+        !isCustomPrintModalOpen
+      ) {
+        if (e.repeat) return;
+        let activePhoto = null;
+        if (lastSelectedKey) {
+          activePhoto = photos.find((p) => getPhotoKey(p) === lastSelectedKey);
+        }
+        if (!activePhoto && selectedPhotosArray.length > 0) {
+          activePhoto = selectedPhotosArray[0];
+        }
+        if (!activePhoto && photos.length > 0) {
+          activePhoto = photos[0];
+        }
+        if (activePhoto) {
+          e.preventDefault();
+          handleOpenLightbox(activePhoto, photos);
+        }
+        return;
+      }
+
+      // 'L' key launches selected photo directly into Lightroom Classic from Grid view
+      if (
+        !e.metaKey &&
+        !e.ctrlKey &&
+        !e.altKey &&
+        e.key?.toLowerCase() === 'l' &&
+        !activeLightboxPhoto &&
+        !isVoiceModalOpen &&
+        !isCollectionsModalOpen &&
+        !isPipelineModalOpen &&
+        !isTvCropModalOpen &&
+        !isCustomPrintModalOpen
+      ) {
+        if (selectedPhotosArray.length > 0) {
+          e.preventDefault();
+          handleOpenInLightroom('lightroom');
+        } else {
+          showGlobalToast('Select a photo first, then press L to open in Lightroom Classic');
+        }
+        return;
+      }
+
+      // 'Shift+S' triggers Sync Lightroom Edits from Grid view
+      if (
+        !e.metaKey &&
+        !e.ctrlKey &&
+        !e.altKey &&
+        e.shiftKey &&
+        e.key?.toLowerCase() === 's' &&
+        !activeLightboxPhoto &&
+        !isVoiceModalOpen &&
+        !isCollectionsModalOpen &&
+        !isPipelineModalOpen
+      ) {
+        e.preventDefault();
+        handleSyncSelectedEdits();
+        return;
+      }
+
+      if (!e.metaKey && !e.ctrlKey && !e.altKey && e.key?.toLowerCase() === 'g') {
+        e.preventDefault();
+        setActiveLightboxPhoto(null);
+        setIsCollectionsModalOpen(false);
+        setIsVoiceModalOpen(false);
+        setActiveSequenceId(null);
+        setViewMode('grid');
+        showGlobalToast('⊞ Switched to Main Grid View');
+      }
+
+      // '?' key toggles Studio Help Guide
+      if (!e.metaKey && !e.ctrlKey && !e.altKey && e.key === '?') {
+        e.preventDefault();
+        setIsStudioGuideOpen((prev) => !prev);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [
+    undoStatus?.available,
+    handleTriggerUndo,
+    handleSyncExternalEdits,
+    handleSyncSelectedEdits,
+    handleOpenInLightroom,
+    handleBatchUpdateStar,
+    handleSingleSelectPhoto,
+    handleOpenLightbox,
+    activeLightboxPhoto,
+    isVoiceModalOpen,
+    isCollectionsModalOpen,
+    isPipelineModalOpen,
+    isTvCropModalOpen,
+    isCustomPrintModalOpen,
+    viewMode,
+    selectedPhotosArray,
+    lastSelectedKey,
+    photos,
+    totalPhotos,
+    handleSelectAllInCatalog,
+    handleSelectAllLoaded,
+  ]);
 
   // Trigger DAS Backup
   const handleTriggerBackup = () => {
@@ -1314,7 +1813,7 @@ export default function App() {
       : null;
 
   return (
-    <div className="flex flex-col h-screen w-screen overflow-hidden bg-studio-bg select-none">
+    <div className="flex flex-col h-full w-full overflow-hidden bg-studio-bg select-none">
       {/* Top Studio Control Ribbon */}
       <TopRibbon
         catalogs={catalogs}
@@ -1328,8 +1827,14 @@ export default function App() {
           window.scrollTo({ top: 0, behavior: 'instant' });
         }}
         viewMode={viewMode}
-        onViewModeChange={(mode) => setViewMode(mode)}
-        onSelectViewMode={(mode) => setViewMode(mode)}
+        onViewModeChange={(mode) => {
+          setViewMode(mode);
+          setIsCollectionsModalOpen(false);
+        }}
+        onSelectViewMode={(mode) => {
+          setViewMode(mode);
+          setIsCollectionsModalOpen(false);
+        }}
         searchQuery={searchQuery}
         onSearchChange={(q) => {
           setSearchQuery(q);
@@ -1353,6 +1858,10 @@ export default function App() {
         onOpenPipelineModal={(tab) => {
           setPipelineInitialTab(typeof tab === 'string' ? tab : 'pipeline');
           setIsPipelineModalOpen(true);
+        }}
+        onOpenHelpGuide={(topic = 'import') => {
+          setGuideInitialTopic(topic);
+          setIsStudioGuideOpen((prev) => !prev);
         }}
         onOpenCollectionsModal={() => {
           setCollectionsInitialMode('sequence');
@@ -1397,107 +1906,177 @@ export default function App() {
         }}
       />
 
-      {/* Main Content View: Continuous Grid, By Date, or Trips & Geo-Map */}
-      {viewMode === 'trips' ? (
-        <TripsMapView
-          trips={trips}
-          portfolioThemes={portfolioThemes}
-          isLoading={isTripsLoading}
-          activeTrip={activeTrip}
-          onSelectTrip={(trip) => {
-            setActiveTrip(trip);
-          }}
-          onClearTrip={() => {
-            setActiveTrip(null);
-            setActivePortfolioTheme(null);
-          }}
-          onSelectPhoto={handleOpenLightbox}
-          onOpenSequence={(seqId) => setActiveSequenceId(seqId)}
-          onUpdateStar={handleUpdateStar}
-          onTagClick={handleTagClick}
-          onRefreshTrips={fetchTrips}
-          onTripPhotosUpdated={handleTripPhotosUpdated}
-          activeCatalog={activeCatalog}
-          sortBy={sortBy}
-          aestheticPercentile={aestheticPercentile}
-          minStars={minStars}
-          hideUnsharp={hideUnsharp}
-          collections={collections}
-          onTogglePhotoInCollection={handleTogglePhotoInCollection}
-          onCreateCollectionWithPhoto={handleCreateCollectionWithPhoto}
-          selectedPhotoIds={selectedPhotoIds}
-          onToggleSelectPhoto={handleToggleSelectPhoto}
-        />
-      ) : (
-        <PhotoGrid
-          photos={photos}
-          isLoading={isLoading}
-          viewMode={viewMode}
-          activeTrip={activeTrip}
-          onClearTrip={() => setActiveTrip(null)}
-          activeShootDate={activeShootDate}
-          onClearShootDate={() => setActiveShootDate(null)}
-          onSelectPhoto={handleOpenLightbox}
-          onOpenSequence={(seqId) => setActiveSequenceId(seqId)}
-          onUpdateStar={handleUpdateStar}
-          onTagClick={handleTagClick}
-          collections={collections}
-          onTogglePhotoInCollection={handleTogglePhotoInCollection}
-          onCreateCollectionWithPhoto={handleCreateCollectionWithPhoto}
-          onOpenCollectionsModal={() => setIsCollectionsModalOpen(true)}
-          onLoadMore={handleLoadMore}
-          hasMore={hasMore}
-          selectedPhotoIds={selectedPhotoIds}
-          onToggleSelectPhoto={handleToggleSelectPhoto}
-        />
-      )}
+      {/* Main Workspace Row - Accommodates Docked Studio Help Guide (pushes elements over, never sits on top) */}
+      <div className="flex-1 flex flex-row overflow-hidden min-h-0 relative">
+        {/* Left Docked Guide (when open and docked to left) */}
+        {isStudioGuideOpen && guidePosition === 'left' && (
+          <StudioGuideDrawer
+            isOpen={isStudioGuideOpen}
+            onClose={() => setIsStudioGuideOpen(false)}
+            position="left"
+            onTogglePosition={() => setGuidePosition('right')}
+            initialTopic={guideInitialTopic}
+          />
+        )}
+
+        {/* Center Workspace (flex-1 min-w-0: resizes and pushes over naturally when guide opens) */}
+        <div className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden relative">
+          {/* Main Content View: Curated Collections Gallery, TV Displays, Trips & Geo-Map, or Continuous Grid / By Date */}
+          {viewMode === 'collections' ? (
+            <CollectionsView
+              collections={collections}
+              initialCollectionId={collectionsInitialId}
+              onRefreshCollections={loadCollections}
+              onSelectPhoto={handleOpenLightbox}
+              onSwitchToGrid={() => setViewMode('grid')}
+              onExportCustomPrint={(targetPhotos, name) => {
+                setExportCollectionName(name);
+                setCustomPrintOverridePhotos(targetPhotos);
+                setIsCustomPrintModalOpen(true);
+              }}
+              onExportTvShowcase={(targetPhotos, name) => {
+                setExportCollectionName(name);
+                setTvCropOverridePhotos(targetPhotos);
+                setIsTvCropModalOpen(true);
+              }}
+              onExportTiff={async (colId, targetPhotos, name) => {
+                await handleBatchExport('tiff', { folder_name: name }, targetPhotos);
+              }}
+              onOpenHelpGuide={(topic) => {
+                setGuideInitialTopic(topic || 'collections');
+                setIsStudioGuideOpen(true);
+              }}
+              showGlobalToast={showGlobalToast}
+            />
+          ) : viewMode === 'tv_displays' ? (
+            <TvDisplaysView
+              collections={collections}
+              onRefreshCollections={loadCollections}
+              onSelectPhoto={handleOpenLightbox}
+              showGlobalToast={showGlobalToast}
+            />
+          ) : viewMode === 'trips' ? (
+            <TripsMapView
+              trips={trips}
+              portfolioThemes={portfolioThemes}
+              isLoading={isTripsLoading}
+              activeTrip={activeTrip}
+              onSelectTrip={(trip) => {
+                setActiveTrip(trip);
+              }}
+              onClearTrip={() => {
+                setActiveTrip(null);
+                setActivePortfolioTheme(null);
+              }}
+              onSelectPhoto={handleOpenLightbox}
+              onOpenSequence={(seqId) => setActiveSequenceId(seqId)}
+              onUpdateStar={handleUpdateStar}
+              onTagClick={handleTagClick}
+              onRefreshTrips={fetchTrips}
+              onTripPhotosUpdated={handleTripPhotosUpdated}
+              activeCatalog={activeCatalog}
+              sortBy={sortBy}
+              aestheticPercentile={aestheticPercentile}
+              minStars={minStars}
+              hideUnsharp={hideUnsharp}
+              collections={collections}
+              onTogglePhotoInCollection={handleTogglePhotoInCollection}
+              onCreateCollectionWithPhoto={handleCreateCollectionWithPhoto}
+              selectedPhotoIds={selectedPhotoIds}
+              onToggleSelectPhoto={handleToggleSelectPhoto}
+            />
+          ) : (
+            <PhotoGrid
+              photos={photos}
+              isLoading={isLoading}
+              viewMode={viewMode}
+              activeTrip={activeTrip}
+              onClearTrip={() => setActiveTrip(null)}
+              activeShootDate={activeShootDate}
+              onClearShootDate={() => setActiveShootDate(null)}
+              onSelectPhoto={handleOpenLightbox}
+              onOpenSequence={(seqId) => setActiveSequenceId(seqId)}
+              onUpdateStar={handleUpdateStar}
+              onTagClick={handleTagClick}
+              collections={collections}
+              onTogglePhotoInCollection={handleTogglePhotoInCollection}
+              onCreateCollectionWithPhoto={handleCreateCollectionWithPhoto}
+              onOpenCollectionsModal={() => setViewMode('collections')}
+              onLoadMore={handleLoadMore}
+              hasMore={hasMore}
+              selectedPhotoIds={selectedPhotoIds}
+              onToggleSelectPhoto={handleToggleSelectPhoto}
+              onSingleSelectPhoto={handleSingleSelectPhoto}
+              lastSelectedKey={lastSelectedKey}
+            />
+          )}
+        </div>
+
+        {/* Right Docked Guide (when open and docked to right) */}
+        {isStudioGuideOpen && guidePosition === 'right' && (
+          <StudioGuideDrawer
+            isOpen={isStudioGuideOpen}
+            onClose={() => setIsStudioGuideOpen(false)}
+            position="right"
+            onTogglePosition={() => setGuidePosition('left')}
+            initialTopic={guideInitialTopic}
+          />
+        )}
+      </div>
 
       {/* Floating Centered Studio Dock (Idle Studio Tools & Active Selection Batch Actions) */}
-      <SelectionActionBar
-        selectedCount={selectedPhotosArray.length}
-        totalVisibleCount={photos.length}
-        totalCatalogCount={totalPhotos}
-        totalPhotos={totalPhotos}
-        isSelectingAll={isSelectingAll}
-        isBatchBusy={isBatchBusy}
-        undoStatus={undoStatus}
-        onTriggerUndo={handleTriggerUndo}
-        activeCatalog={activeCatalog}
-        searchQuery={searchQuery}
-        onSearchChange={(q) => {
-          setSearchQuery(q);
-          if (q && viewMode === 'trips') {
-            setViewMode('grid');
-          }
-        }}
-        onQueryChange={(q) => {
-          setSearchQuery(q);
-          if (q && viewMode === 'trips') {
-            setViewMode('grid');
-          }
-        }}
-        onSelectAll={handleSelectAllLoaded}
-        onSelectAllInCatalog={handleSelectAllInCatalog}
-        onClearSelection={handleClearSelection}
-        onBatchClearTags={handleBatchClearTags}
-        onBatchReassess={handleBatchReassessSelected}
-        onReassessCatalog={handleReassessCatalog}
-        onOpenVoiceTeach={() => handleOpenVoiceModal('teach', null, true)}
-        onOpenVoiceScout={() => handleOpenVoiceModal('scout', null, false)}
-        onOpenTeachModal={() => handleOpenVoiceModal('teach', null, true)}
-        onOpenScoutModal={() => handleOpenVoiceModal('scout', null, false)}
-        collections={collections}
-        collectionsCount={collections.length}
-        onOpenCollectionsModal={() => {
-          setCollectionsInitialMode('sequence');
-          setIsCollectionsModalOpen(true);
-        }}
-        onBatchAddToCollection={handleBatchAddToCollection}
-        onCreateCollectionWithSelected={handleBatchCreateCollectionWithSelected}
-        onBatchCreateCollection={handleBatchCreateCollectionWithSelected}
-        onBatchExport={handleBatchExport}
-        onOpenTvCropModal={() => setIsTvCropModalOpen(true)}
-      />
+      {!activeLightboxPhoto && viewMode !== 'collections' && viewMode !== 'tv_displays' && (
+        <SelectionActionBar
+          selectedCount={selectedPhotosArray.length}
+          totalVisibleCount={photos.length}
+          totalCatalogCount={totalPhotos}
+          totalPhotos={totalPhotos}
+          isSelectingAll={isSelectingAll}
+          isBatchBusy={isBatchBusy}
+          undoStatus={undoStatus}
+          onTriggerUndo={handleTriggerUndo}
+          activeCatalog={activeCatalog}
+          searchQuery={searchQuery}
+          onSearchChange={(q) => {
+            setSearchQuery(q);
+            if (q && viewMode === 'trips') {
+              setViewMode('grid');
+            }
+          }}
+          onQueryChange={(q) => {
+            setSearchQuery(q);
+            if (q && viewMode === 'trips') {
+              setViewMode('grid');
+            }
+          }}
+          onSelectAll={handleSelectAllLoaded}
+          onSelectAllInCatalog={handleSelectAllInCatalog}
+          onClearSelection={handleClearSelection}
+          onBatchUpdateStar={handleBatchUpdateStar}
+          onBatchClearTags={handleBatchClearTags}
+          onBatchReassess={handleBatchReassessSelected}
+          onReassessCatalog={handleReassessCatalog}
+          onOpenVoiceTeach={() => handleOpenVoiceModal('teach', null, true)}
+          onOpenVoiceScout={() => handleOpenVoiceModal('scout', null, false)}
+          onOpenTeachModal={() => handleOpenVoiceModal('teach', null, true)}
+          onOpenScoutModal={() => handleOpenVoiceModal('scout', null, false)}
+          collections={collections}
+          collectionsCount={collections.length}
+          onOpenCollectionsModal={() => {
+            setViewMode('collections');
+          }}
+          onBatchAddToCollection={handleBatchAddToCollection}
+          onCreateCollectionWithSelected={handleBatchCreateCollectionWithSelected}
+          onBatchCreateCollection={handleBatchCreateCollectionWithSelected}
+          onBatchExport={handleBatchExport}
+          onOpenTvCropModal={() => setIsTvCropModalOpen(true)}
+          onOpenCustomPrintModal={() => handleOpenCustomPrintModal()}
+          selectedPhotosArray={selectedPhotosArray}
+          activeShootDate={activeShootDate}
+          onOpenInLightroom={handleOpenInLightroom}
+          onSyncEdits={handleSyncSelectedEdits}
+        />
+      )}
 
       {/* Voice / Text AI Teach & Archive Scout Modal */}
       <ModalErrorBoundary
@@ -1581,7 +2160,18 @@ export default function App() {
             collections={collections}
             onTogglePhotoInCollection={handleTogglePhotoInCollection}
             onCreateCollectionWithPhoto={handleCreateCollectionWithPhoto}
-            onOpenCollectionsModal={() => setIsCollectionsModalOpen(true)}
+            onOpenCollectionsModal={() => {
+              setActiveLightboxPhoto(null);
+              setViewMode('collections');
+            }}
+            onExportPhoto={(targetPhoto, mode, options) => handleBatchExport(mode, options, [targetPhoto])}
+            onOpenTvCropModal={(targetPhoto) => {
+              setTvCropOverridePhotos(targetPhoto ? [targetPhoto] : null);
+              setIsTvCropModalOpen(true);
+            }}
+            onOpenCustomPrintModal={(targetPhotos) => {
+              handleOpenCustomPrintModal(targetPhotos);
+            }}
             onOpenVoiceTeachForPhoto={(targetPhoto, autoStart = true) =>
               handleOpenVoiceModal('teach', [targetPhoto], autoStart)
             }
@@ -1621,6 +2211,13 @@ export default function App() {
           onResumeJob={handleResumeJob}
           onCancelJob={handleCancelJob}
           onJobStarted={refreshJobStatus}
+          onOpenTvCropModal={(overridePhotos) => {
+            setTvCropOverridePhotos(overridePhotos);
+            setIsTvCropModalOpen(true);
+          }}
+          onOpenCustomPrintModal={(overridePhotos) => {
+            handleOpenCustomPrintModal(overridePhotos);
+          }}
         />
       </ModalErrorBoundary>
 
@@ -1660,17 +2257,39 @@ export default function App() {
       <ModalErrorBoundary onClose={() => setIsTvCropModalOpen(false)}>
         <TvShowcaseCropModal
           isOpen={isTvCropModalOpen}
-          onClose={() => setIsTvCropModalOpen(false)}
-          photos={selectedPhotosArray.length > 0 ? selectedPhotosArray : photos}
+          onClose={() => {
+            setIsTvCropModalOpen(false);
+            setTvCropOverridePhotos(null);
+          }}
+          photos={tvCropOverridePhotos && tvCropOverridePhotos.length > 0 ? tvCropOverridePhotos : (selectedPhotosArray.length > 0 ? selectedPhotosArray : photos)}
+          collectionName={exportCollectionName}
           onConfirmExport={handleConfirmTvShowcaseExport}
+          isBusy={isBatchBusy}
+        />
+      </ModalErrorBoundary>
+
+      {/* Custom Print Sizing Modal */}
+      <ModalErrorBoundary onClose={() => setIsCustomPrintModalOpen(false)}>
+        <CustomPrintModal
+          isOpen={isCustomPrintModalOpen}
+          onClose={() => {
+            setIsCustomPrintModalOpen(false);
+            setCustomPrintOverridePhotos(null);
+          }}
+          photos={customPrintOverridePhotos && customPrintOverridePhotos.length > 0 ? customPrintOverridePhotos : (selectedPhotosArray.length > 0 ? selectedPhotosArray : photos)}
+          collectionName={exportCollectionName}
+          onConfirmExport={handleConfirmCustomPrintExport}
           isBusy={isBatchBusy}
         />
       </ModalErrorBoundary>
 
       {/* Global Studio Toast */}
       {globalToast && (
-        <div className="fixed bottom-6 right-6 bg-studio-panel border border-studio-borderLight text-white px-3.5 py-2 rounded-sm shadow-2xl text-xs font-mono z-50 flex items-center gap-2">
-          <span className="w-2 h-2 rounded-sm bg-studio-accent animate-ping"></span>
+        <div
+          className="fixed bottom-6 right-6 bg-studio-panel border border-studio-borderLight text-white px-3.5 py-2 rounded-sm shadow-2xl text-xs font-mono z-[10000] flex items-center gap-2"
+          style={{ zIndex: 10000 }}
+        >
+          <span className="w-2 h-2 rounded-full bg-amber-400"></span>
           <span>{globalToast}</span>
         </div>
       )}

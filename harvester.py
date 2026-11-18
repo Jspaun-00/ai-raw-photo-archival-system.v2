@@ -1052,14 +1052,18 @@ def harvest_lrcat_metadata(
                 )
                 if prev_match:
                     u_str, d_str, o_str = prev_match
-                    cand_lrprev = previews_lrdata_dir / u_str[0] / u_str[0:4] / f"{u_str}-{d_str}.lrprev"
-                    if not cand_lrprev.exists():
-                        cand_fallback = previews_lrdata_dir / u_str[0] / u_str[0:4] / f"{u_str}.lrprev"
-                        if cand_fallback.exists():
-                            cand_lrprev = cand_fallback
-                    if cand_lrprev.exists():
-                        lrprev_path_str = str(cand_lrprev)
-                        lrprev_orient = o_str
+                    cand_folder = previews_lrdata_dir / u_str[0] / u_str[0:4]
+                    if not cand_folder.exists():
+                        cand_folder = previews_lrdata_dir / u_str[0].lower() / u_str[0:4].lower()
+                    if cand_folder.exists():
+                        matched = [
+                            f for f in cand_folder.glob(f"*{u_str}*")
+                            if f.is_file() and f.stat().st_size > 1024
+                        ]
+                        if matched:
+                            matched.sort(key=lambda x: x.stat().st_size, reverse=True)
+                            lrprev_path_str = str(matched[0])
+                            lrprev_orient = o_str
 
             entry = {
                 "star_rating": max(0, min(5, rating)),

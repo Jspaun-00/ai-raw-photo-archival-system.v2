@@ -7,6 +7,7 @@ MR Darkroom — Fine-Art Archival & Book Curation Studio
 import asyncio
 import base64
 import glob
+import io
 import json
 import logging
 import os
@@ -19,7 +20,9 @@ import time
 from collections import Counter
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
+
+from PIL import Image, ImageDraw, ImageFilter, ImageOps
 
 import numpy as np
 import open_clip
@@ -68,6 +71,8 @@ from stage1_engine import (
     bridge_same_day_gps_locations,
     build_or_update_crop_vectors_mps,
     detect_hardware_profile,
+    extract_fullres_and_generate_webps,
+    extract_jpeg_from_lrprev,
     load_or_init_color_signatures,
     load_or_init_crop_vectors_matrix,
     load_or_init_vectors_matrix,
@@ -468,7 +473,8 @@ def resolve_photo_record(photo_id: str) -> Optional[Dict[str, Any]]:
 # ==============================================================================
 # PREVIEW STATIC FILE ROUTES (AGGRESSIVE BROWSER CACHING)
 # ==============================================================================
-@app.get("/previews/thumbs_360/{filename}")
+@app.api_route("/previews/thumbs_360/{filename}", methods=["GET", "HEAD"])
+@app.api_route("/thumbs_360/{filename}", methods=["GET", "HEAD"])
 async def get_thumb_360(filename: str):
     p = DEFAULT_THUMBS_360_DIR / filename
     if not p.exists():
@@ -480,11 +486,17 @@ async def get_thumb_360(filename: str):
     )
 
 
-@app.get("/previews/previews_1600/{filename}")
+@app.api_route("/previews/previews_1600/{filename}", methods=["GET", "HEAD"])
+@app.api_route("/previews_1600/{filename}", methods=["GET", "HEAD"])
 async def get_preview_1600(filename: str):
     p = DEFAULT_PREVIEWS_1600_DIR / filename
     if not p.exists():
-        raise HTTPException(status_code=404, detail="Preview not found")
+        # Fallback to thumbs_360 if 1600 preview is missing
+        p_thumb = DEFAULT_THUMBS_360_DIR / filename
+        if p_thumb.exists():
+            p = p_thumb
+        else:
+            raise HTTPException(status_code=404, detail="Preview not found")
     return FileResponse(
         str(p),
         media_type="image/webp",
@@ -592,7 +604,7 @@ async def list_catalogs():
 
     total_photos = cursor.execute("SELECT COUNT(*) FROM photo_records WHERE status != 'failed'").fetchone()[0]
     keepers_count = cursor.execute(
-        "SELECT COUNT(*) FROM photo_records WHERE catalog_name = 'Keepers' AND status != 'failed'"
+        "SELECT COUNT(*) FROM photo_records WHERE star_rating = 5 AND status != 'failed'"
     ).fetchone()[0]
     unsharp_count = cursor.execute(
         "SELECT COUNT(*) FROM photo_records WHERE is_unsharp = 1"
@@ -1561,7 +1573,7 @@ async def query_photos(
     cat_clean = (catalog or "").strip()
     if cat_clean and cat_clean.lower() not in ("all catalogs", "all", "all photos"):
         if cat_clean.lower() == "keepers":
-            where_clauses.append("catalog_name = 'Keepers'")
+            where_clauses.append("star_rating = 5")
         else:
             where_clauses.append("catalog_name = ?")
             params.append(cat_clean)
@@ -2652,7 +2664,7 @@ async def get_trips(
     cat_clean = (catalog or "").strip()
     if cat_clean and cat_clean.lower() not in ("all catalogs", "all", "all photos"):
         if cat_clean.lower() == "keepers":
-            where_clauses.append("catalog_name = 'Keepers'")
+            where_clauses.append("star_rating = 5")
         else:
             where_clauses.append("catalog_name = ?")
             params.append(cat_clean)
@@ -2793,6 +2805,67 @@ async def set_star_rating(photo_id: str, payload: StarRatingPayload, background_
     return {
         "status": "ok",
         "file_path": fp,
+        "star_rating": stars,
+        "undo_status": get_undo_status(DEFAULT_DB_PATH),
+    }
+
+
+class BatchStarRatingPayload(BaseModel):
+    photo_ids: List[str]
+    star_rating: int
+
+
+@app.post("/api/photo/batch-star")
+@app.post("/api/photos/batch-star")
+async def set_batch_star_rating(payload: BatchStarRatingPayload, background_tasks: BackgroundTasks):
+    raw_pids = [p for p in payload.photo_ids if p and str(p).strip()]
+    if not raw_pids:
+        raise HTTPException(status_code=400, detail="No photo IDs provided")
+
+    stars = max(0, min(5, payload.star_rating))
+
+    conn = get_db_connection(DEFAULT_DB_PATH)
+    ph = ",".join("?" for _ in raw_pids)
+    rows = conn.execute(
+        f"""
+        SELECT file_path, file_hash
+        FROM photo_records
+        WHERE file_hash IN ({ph}) OR file_path IN ({ph})
+        """,
+        raw_pids + raw_pids,
+    ).fetchall()
+
+    if not rows:
+        conn.close()
+        raise HTTPException(status_code=404, detail="No matching photos found")
+
+    file_paths = list(dict.fromkeys(r["file_path"] for r in rows if r["file_path"]))
+    file_hashes = list(dict.fromkeys(r["file_hash"] for r in rows if r["file_hash"]))
+    all_keys = list(set(file_paths + file_hashes))
+
+    record_undo_snapshot(
+        db_path=DEFAULT_DB_PATH,
+        action_type="batch_star_rating",
+        description=f"Batch star rating → {stars}★ across {len(file_paths)} photo{'s' if len(file_paths) != 1 else ''}",
+        photo_ids=all_keys,
+        create_vault_backup=False,
+    )
+
+    update_ph = ",".join("?" for _ in file_paths)
+    conn.execute(
+        f"UPDATE photo_records SET star_rating = ?, updated_at = CURRENT_TIMESTAMP WHERE file_path IN ({update_ph})",
+        [stars] + file_paths,
+    )
+    conn.commit()
+    conn.close()
+
+    # Trigger safe additive XMP sync in background tasks
+    for fp in file_paths[:200]:
+        background_tasks.add_task(sync_record_metadata_additive, file_path=fp)
+
+    return {
+        "status": "ok",
+        "updated_count": len(file_paths),
         "star_rating": stars,
         "undo_status": get_undo_status(DEFAULT_DB_PATH),
     }
@@ -3107,10 +3180,10 @@ async def open_external_app(photo_id: str, payload: OpenAppPayload):
     target_to_open = file_path
     cmd: List[str] = []
 
-    if app_choice == "finder":
+    if app_choice in ("lightroom", "lr"):
+        return await open_in_lightroom_endpoint(OpenLightroomRequest(photo_id=photo_id, target_app="lightroom"))
+    elif app_choice == "finder":
         cmd = ["open", "-R", file_path]
-    elif app_choice == "lightroom":
-        cmd = ["open", "-a", "Adobe Lightroom Classic", file_path]
     elif app_choice == "capture_one":
         cmd = ["open", "-a", "Capture One", file_path]
     elif app_choice == "photoshop":
@@ -3175,18 +3248,511 @@ async def open_external_app(photo_id: str, payload: OpenAppPayload):
         )
 
 
-@app.post("/api/photos/{photo_id}/sync-edits")
-@app.post("/api/photo/{photo_id}/sync-edits")
-async def sync_single_photo_edits(photo_id: str, force: bool = Query(False)):
-    rec = resolve_photo_record(photo_id)
-    if not rec:
-        raise HTTPException(status_code=404, detail="Photo not found")
+class OpenLightroomRequest(BaseModel):
+    photo_id: Optional[str] = None
+    photo_ids: Optional[List[str]] = None
+    target_app: str = "lightroom"  # "lightroom" | "camera_raw" | "photoshop" | "finder"
 
-    target_fp = rec["file_path"]
-    if force and Path(target_fp).exists():
-        # Force mtime reset in DB so sync_external_edits regenerates previews & vector unconditionally
+
+def _auto_navigate_lightroom_async(file_name: str):
+    """
+    Automates Lightroom Classic navigation for an 85-year-old user:
+    Waits for Lightroom to launch and open the catalog window, brings it to front,
+    ensures Library view, populates the text filter with the exact target filename,
+    and switches straight into Develop module so the photo is ready to edit immediately.
+    """
+    def _worker():
+        script = f'''
+        on run
+            set targetFilename to "{file_name}"
+            set maxWait to 25
+            repeat with i from 1 to maxWait
+                tell application "System Events"
+                    if exists (process "Adobe Lightroom Classic") then
+                        tell process "Adobe Lightroom Classic"
+                            if exists (first window whose name contains "Adobe Photoshop Lightroom Classic") then
+                                exit repeat
+                            end if
+                        end tell
+                    end if
+                end tell
+                delay 0.4
+            end repeat
+
+            tell application "Adobe Lightroom Classic" to activate
+            delay 0.5
+
+            tell application "System Events" to tell process "Adobe Lightroom Classic"
+                -- 1. Ensure Library view to filter
+                try
+                    click menu item "  Library" of menu 1 of menu bar item "Window" of menu bar 1
+                    delay 0.3
+                end try
+
+                -- 2. Open / focus Library Text Filter
+                try
+                    click menu item "Find..." of menu 1 of menu bar item "Library" of menu bar 1
+                    delay 0.3
+                on error
+                    try
+                        keystroke "f" using command down
+                        delay 0.3
+                    end try
+                end try
+
+                -- 3. Target main Lightroom window and enter filename
+                try
+                    set w to (first window whose name contains "Adobe Photoshop Lightroom Classic")
+                    set tfList to every text field of w
+                    if (count of tfList) > 0 then
+                        set value of (item 1 of tfList) to targetFilename
+                        delay 0.2
+                        key code 36
+                        delay 0.4
+                    end if
+                end try
+
+                -- 4. Switch directly into Develop module for immediate editing
+                try
+                    click menu item "  Develop" of menu 1 of menu bar item "Window" of menu bar 1
+                on error
+                    try
+                        click menu item "Go to Develop" of menu 1 of menu bar item "View" of menu bar 1
+                    end try
+                end try
+            end tell
+        end run
+        '''
+        try:
+            subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=20.0, check=False)
+        except Exception as e:
+            logging.warning(f"Lightroom auto-navigation background script failed: {e}")
+
+    threading.Thread(target=_worker, daemon=True).start()
+
+
+def find_lightroom_preview_for_photo(file_path: str, catalog_name: Optional[str] = None) -> Tuple[Optional[Path], Optional[str]]:
+    """
+    Locates the highest resolution rendered JPEG preview file in Lightroom Classic's
+    Previews.lrdata bundle corresponding to the given file_path and catalog_name,
+    along with its Lightroom orientation code ('AB', 'BC', 'CD', 'DA').
+    Works for modern LRC catalogs (v12, v13, v14+) which store pyramid dimensions
+    (_1440, _2880, etc.) as well as legacy .lrprev files.
+    """
+    try:
+        p = Path(file_path)
+        if not p.exists():
+            return None, None
+        file_name = p.name
+
+        conn_main = get_db_connection(DEFAULT_DB_PATH)
+        lrcat_path = None
+        if catalog_name:
+            row = conn_main.execute("SELECT lrcat_path FROM catalogs WHERE catalog_name = ?", (catalog_name,)).fetchone()
+            if row and row["lrcat_path"] and Path(row["lrcat_path"]).exists():
+                lrcat_path = Path(row["lrcat_path"])
+        if not lrcat_path:
+            row = conn_main.execute("SELECT lrcat_path FROM catalogs WHERE ? LIKE root_path || '%'", (str(p),)).fetchone()
+            if row and row["lrcat_path"] and Path(row["lrcat_path"]).exists():
+                lrcat_path = Path(row["lrcat_path"])
+        conn_main.close()
+
+        if not lrcat_path and p.parent.exists():
+            disc_lrcat, _, _ = find_active_lrcat_and_previews(p.parent)
+            if disc_lrcat and disc_lrcat.exists():
+                lrcat_path = disc_lrcat
+
+        if not lrcat_path or not lrcat_path.exists():
+            return None, None
+
+        prev_dir = lrcat_path.parent / (lrcat_path.stem + " Previews.lrdata")
+        prev_db = prev_dir / "previews.db"
+        if not prev_dir.exists() or not prev_db.exists():
+            return None, None
+
+        conn_lr = sqlite3.connect(f"file:{lrcat_path}?mode=ro", uri=True)
+        conn_lr.row_factory = sqlite3.Row
+        lr_row = conn_lr.execute(
+            "SELECT f.idx_filename, i.id_local, i.id_global, i.orientation FROM AgLibraryFile f JOIN Adobe_images i ON f.id_local = i.rootFile WHERE f.idx_filename = ? OR f.baseName = ?",
+            (file_name, p.stem),
+        ).fetchone()
+        conn_lr.close()
+
+        if not lr_row:
+            return None, None
+
+        img_id = lr_row["id_local"]
+        id_global = str(lr_row["id_global"] or "").upper()
+        lr_orient = str(lr_row["orientation"] or "").strip() or None
+
+        conn_pr = sqlite3.connect(f"file:{prev_db}?mode=ro", uri=True)
+        conn_pr.row_factory = sqlite3.Row
+        pr_row = conn_pr.execute(
+            "SELECT uuid, digest, orientation FROM ImageCacheEntry WHERE imageId = ? OR uuid = ?",
+            (img_id, id_global),
+        ).fetchone()
+        conn_pr.close()
+
+        if not pr_row:
+            return None, None
+
+        orient = str(pr_row["orientation"] or "").strip() or lr_orient or "AB"
+
+        puuid = str(pr_row["uuid"]).upper()
+        cand_folder = prev_dir / puuid[0] / puuid[0:4]
+        if not cand_folder.exists():
+            cand_folder = prev_dir / puuid[0].lower() / puuid[0:4].lower()
+        if not cand_folder.exists():
+            return None, None
+
+        matched = [f for f in cand_folder.glob(f"*{puuid}*") if f.is_file() and f.stat().st_size > 1024]
+        if matched:
+            matched.sort(key=lambda x: x.stat().st_size, reverse=True)
+            return matched[0], orient
+    except Exception as e:
+        logging.warning(f"find_lightroom_preview_for_photo failed for {file_path}: {e}")
+    return None, None
+
+
+def sync_recent_lightroom_edits(
+    db_path: Path = DEFAULT_DB_PATH,
+    limit: int = 100,
+) -> List[str]:
+    """
+    Scans registered Lightroom Classic catalogs for recently touched or developed photos.
+    Checks Previews.lrdata for newer preview pyramids, regenerates WebP thumbnails with correct
+    Lightroom orientation, and updates photo_records metadata (is_monochrome, colorfulness, sharpness).
+    """
+    updated_fps: List[str] = []
+    try:
+        conn_main = get_db_connection(db_path)
+        cat_rows = conn_main.execute("SELECT catalog_name, lrcat_path FROM catalogs WHERE lrcat_path IS NOT NULL").fetchall()
+        for cat in cat_rows:
+            lrcat_p = Path(cat["lrcat_path"])
+            if not lrcat_p.exists():
+                continue
+            prev_dir = lrcat_p.parent / (lrcat_p.stem + " Previews.lrdata")
+            prev_db = prev_dir / "previews.db"
+            if not prev_dir.exists() or not prev_db.exists():
+                continue
+
+            try:
+                conn_lr = sqlite3.connect(f"file:{lrcat_p}?mode=ro", uri=True)
+                conn_lr.row_factory = sqlite3.Row
+                recent_imgs = conn_lr.execute("""
+                    SELECT f.idx_filename, f.baseName, i.id_local, i.id_global, i.touchTime, i.orientation
+                    FROM Adobe_images i
+                    JOIN AgLibraryFile f ON f.id_local = i.rootFile
+                    ORDER BY i.touchTime DESC
+                    LIMIT ?
+                """, (limit,)).fetchall()
+                conn_lr.close()
+            except Exception as e_cat:
+                logging.warning(f"Failed querying recent edits from {lrcat_p}: {e_cat}")
+                continue
+
+            for img_row in recent_imgs:
+                fn = img_row["idx_filename"]
+                p_rec = conn_main.execute(
+                    "SELECT file_path, sibling_path, file_hash, file_mtime, catalog_name FROM photo_records WHERE file_path LIKE ? OR file_path LIKE ?",
+                    (f"%/{fn}", f"%/{img_row['baseName']}.%"),
+                ).fetchone()
+                if not p_rec:
+                    continue
+
+                fp = p_rec["file_path"]
+                f_hash = p_rec["file_hash"]
+                rec_mtime = float(p_rec["file_mtime"] or 0)
+
+                lr_prev, lr_orient = find_lightroom_preview_for_photo(fp, cat["catalog_name"])
+                if not lr_prev or not lr_prev.exists():
+                    continue
+
+                prev_mtime = lr_prev.stat().st_mtime
+                if prev_mtime > rec_mtime + 1.0 or abs(prev_mtime - rec_mtime) > 1.0:
+                    try:
+                        pr = extract_fullres_and_generate_webps(
+                            primary_path=Path(fp),
+                            sibling_path=Path(p_rec["sibling_path"]) if p_rec["sibling_path"] else None,
+                            file_hash=f_hash,
+                            thumbs_360_dir=DEFAULT_THUMBS_360_DIR,
+                            previews_1600_dir=DEFAULT_PREVIEWS_1600_DIR,
+                            lrprev_path=lr_prev,
+                            lrprev_orientation=lr_orient,
+                            prefer_lrprev=True,
+                            force_regenerate=True,
+                        )
+                        if pr:
+                            conn_main.execute(
+                                """UPDATE photo_records SET
+                                    file_mtime = ?,
+                                    updated_at = CURRENT_TIMESTAMP,
+                                    phash = COALESCE(?, phash),
+                                    sharpness_score = COALESCE(?, sharpness_score),
+                                    is_unsharp = COALESCE(?, is_unsharp),
+                                    colorfulness_score = COALESCE(?, colorfulness_score),
+                                    is_monochrome = COALESCE(?, is_monochrome)
+                                WHERE file_hash = ?""",
+                                (
+                                    prev_mtime,
+                                    pr.get("phash"),
+                                    pr.get("sharpness_score"),
+                                    pr.get("is_unsharp"),
+                                    pr.get("colorfulness_score"),
+                                    pr.get("is_monochrome"),
+                                    f_hash,
+                                ),
+                            )
+                            conn_main.commit()
+                            updated_fps.append(fp)
+                    except Exception as e_sync:
+                        logging.warning(f"Error syncing recent LR edit for {fp}: {e_sync}")
+        conn_main.close()
+    except Exception as e_top:
+        logging.warning(f"sync_recent_lightroom_edits failed: {e_top}")
+    return updated_fps
+
+
+def _trigger_lightroom_save_metadata_async():
+    """No-op: develop edits are read directly from Previews.lrdata; no synthetic keystrokes sent to OS."""
+    pass
+
+
+@app.post("/api/system/open-in-lightroom")
+async def open_in_lightroom_endpoint(payload: OpenLightroomRequest):
+    """
+    Intelligently identifies the exact Lightroom Classic (.lrcat) catalog matching
+    the photo record, launches Adobe Lightroom Classic with that catalog loaded,
+    copies the photo filename to the macOS clipboard (for instant 1-key Cmd+F / \\ search),
+    reveals the master file in Finder, and registers the photo for live edit auto-sync.
+    Also supports opening directly in Adobe Camera Raw / Photoshop or Finder.
+    """
+    target_id = payload.photo_id or (payload.photo_ids[0] if payload.photo_ids else None)
+    if not target_id:
+        raise HTTPException(status_code=400, detail="No photo_id provided")
+
+    rec = resolve_photo_record(target_id)
+    if not rec:
+        raise HTTPException(status_code=404, detail=f"Photo not found: {target_id}")
+
+    file_path = rec["file_path"]
+    sibling_path = rec.get("sibling_path")
+    catalog_name = rec.get("catalog_name")
+    app_choice = (payload.target_app or "lightroom").lower().strip()
+
+    target_to_reveal = sibling_path if (sibling_path and Path(sibling_path).exists()) else file_path
+
+    # Register all requested photos for live edit watcher
+    all_target_records = []
+    if payload.photo_ids and len(payload.photo_ids) > 1:
+        all_target_records = _resolve_photo_records_by_ids(payload.photo_ids)
+    if not all_target_records and rec:
+        all_target_records = [rec]
+
+    paths_to_write: List[str] = []
+    for r in all_target_records:
+        fp = r.get("file_path")
+        sp = r.get("sibling_path")
+        if fp:
+            _register_file_for_edit_watcher(fp)
+            paths_to_write.append(str(fp))
+        if sp and sp != fp:
+            _register_file_for_edit_watcher(sp)
+            paths_to_write.append(str(sp))
+
+    # 1. Reveal in Finder
+    if app_choice == "finder":
+        subprocess.run(["open", "-R", str(target_to_reveal)], check=False)
+        return {
+            "status": "ok",
+            "app": "finder",
+            "target": str(target_to_reveal),
+            "message": f"Revealed {Path(target_to_reveal).name} in Finder",
+        }
+
+    # 2. Camera Raw / Photoshop
+    if app_choice in ("camera_raw", "photoshop", "acr"):
+        ps_candidates = glob.glob("/Applications/*Photoshop*.app") + glob.glob(
+            "/Applications/Adobe Photoshop*/Adobe Photoshop*.app"
+        )
+        ps_app_name = Path(ps_candidates[0]).stem if ps_candidates else "Adobe Photoshop"
+        target_to_open = sibling_path if (sibling_path and Path(sibling_path).exists()) else file_path
+        cmd = ["open", "-a", ps_app_name, str(target_to_open)]
+        res = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        if res.returncode != 0:
+            subprocess.run(["open", str(target_to_open)], check=False)
+        return {
+            "status": "ok",
+            "app": "camera_raw",
+            "target": str(target_to_open),
+            "message": f"Opened {Path(target_to_open).name} in Adobe Camera Raw / Photoshop (watching for saved edits)",
+        }
+
+    # 3. Lightroom Classic: Find matching .lrcat catalog
+    lrcat_path = None
+    conn = get_db_connection(DEFAULT_DB_PATH)
+    cursor = conn.cursor()
+    if catalog_name:
+        row = cursor.execute("SELECT lrcat_path FROM catalogs WHERE catalog_name = ?", (catalog_name,)).fetchone()
+        if row and row["lrcat_path"] and Path(row["lrcat_path"]).exists():
+            lrcat_path = Path(row["lrcat_path"])
+    if not lrcat_path:
+        row = cursor.execute("SELECT lrcat_path, catalog_name FROM catalogs WHERE ? LIKE root_path || '%'", (file_path,)).fetchone()
+        if row and row["lrcat_path"] and Path(row["lrcat_path"]).exists():
+            lrcat_path = Path(row["lrcat_path"])
+            catalog_name = row["catalog_name"] or catalog_name
+    conn.close()
+
+    if not lrcat_path and Path(file_path).exists():
+        discovered_lrcat, _, _ = find_active_lrcat_and_previews(Path(file_path).parent)
+        if discovered_lrcat and discovered_lrcat.exists():
+            lrcat_path = discovered_lrcat
+
+    # Write navigation request for MR Darkroom Bridge (.lrplugin) inside Lightroom Classic
+    try:
+        lr_nav_file = DEFAULT_DB_PATH.parent / "lr_navigation_request.txt"
+        lr_nav_file.parent.mkdir(parents=True, exist_ok=True)
+        if not paths_to_write:
+            paths_to_write = [str(file_path)]
+            if sibling_path and str(sibling_path) != str(file_path):
+                paths_to_write.append(str(sibling_path))
+        lr_nav_file.write_text("\n".join(paths_to_write), encoding="utf-8")
+    except Exception as e_nav:
+        logging.warning(f"Failed to write lr_navigation_request: {e_nav}")
+
+    # Put filename onto macOS clipboard via pbcopy
+    file_name = Path(file_path).name
+    try:
+        subprocess.run(["pbcopy"], input=file_name.encode("utf-8"), check=False, timeout=2.0)
+    except Exception as e_clip:
+        logging.warning(f"pbcopy failed: {e_clip}")
+
+    # Reveal the file in Finder so user can also drag or inspect directly
+    try:
+        subprocess.run(["open", "-R", str(target_to_reveal)], check=False)
+    except Exception:
+        pass
+
+    batch_count = len(all_target_records)
+    batch_suffix = f" ({batch_count} photos queued, auto-sync active)" if batch_count > 1 else ""
+
+    if lrcat_path and lrcat_path.exists():
+        cmd = ["open", "-a", "Adobe Lightroom Classic", str(lrcat_path)]
+        lr_msg = f"Opened Lightroom Classic ({lrcat_path.stem}). Auto-navigating to {file_name} in Develop view{batch_suffix}..."
+    else:
+        cmd = ["open", "-a", "Adobe Lightroom Classic", str(file_path)]
+        lr_msg = f"Opened Lightroom Classic for {file_name}. Auto-navigating in Develop view{batch_suffix}..."
+
+    res = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    if res.returncode != 0:
+        err_msg = res.stderr.strip() or "Failed to launch Adobe Lightroom Classic"
+        return JSONResponse(status_code=500, content={"status": "error", "message": err_msg})
+
+    # Trigger background automated navigation directly into Develop view for selected photo
+    _auto_navigate_lightroom_async(file_name)
+
+    return {
+        "status": "ok",
+        "app": "lightroom",
+        "catalog_name": catalog_name or (lrcat_path.stem if lrcat_path else "Lightroom Classic"),
+        "lrcat_path": str(lrcat_path) if lrcat_path else None,
+        "file_path": str(file_path),
+        "filename": file_name,
+        "clipboard_copied": file_name,
+        "message": lr_msg,
+    }
+
+
+class BatchSyncEditsRequest(BaseModel):
+    photo_ids: Optional[List[str]] = None
+    force: bool = True
+
+
+@app.post("/api/photos/sync-edits")
+def sync_photos_batch_edits(payload: BatchSyncEditsRequest):
+    """
+    Forces immediate re-synchronization of external edits (sidecar .xmp, sibling .tif/.psd derivatives,
+    or Lightroom catalog edits) for specified photo IDs or all watched files, regenerating 1600px preview,
+    360px thumbnail, and OpenCLIP vectors so MR Darkroom reflects latest edits instantly.
+    """
+    target_fps: List[str] = []
+    if payload.photo_ids:
+        resolved = _resolve_photo_records_by_ids(payload.photo_ids)
+        for r in resolved:
+            if r.get("file_path"):
+                target_fps.append(r["file_path"])
+            if r.get("sibling_path"):
+                target_fps.append(r["sibling_path"])
+
+    if not target_fps:
+        with WATCHER_LOCK:
+            target_fps = list(WATCHED_EDIT_TARGETS["files"].keys())
+
+    _trigger_lightroom_save_metadata_async()
+
+    # Pre-extract any Lightroom Classic Develop previews directly from Previews.lrdata
+    lr_synced_fps = set()
+    if target_fps:
+        conn_chk = get_db_connection(DEFAULT_DB_PATH)
+        for fp_item in target_fps:
+            row_chk = conn_chk.execute(
+                "SELECT file_path, sibling_path, file_hash, catalog_name FROM photo_records WHERE file_path = ? OR sibling_path = ?",
+                (fp_item, fp_item),
+            ).fetchone()
+            if row_chk:
+                lr_p, lr_orient = find_lightroom_preview_for_photo(row_chk["file_path"], row_chk["catalog_name"])
+                if lr_p and lr_p.exists():
+                    try:
+                        pr = extract_fullres_and_generate_webps(
+                            primary_path=Path(row_chk["file_path"]),
+                            sibling_path=Path(row_chk["sibling_path"]) if row_chk["sibling_path"] else None,
+                            file_hash=row_chk["file_hash"],
+                            thumbs_360_dir=DEFAULT_THUMBS_360_DIR,
+                            previews_1600_dir=DEFAULT_PREVIEWS_1600_DIR,
+                            lrprev_path=lr_p,
+                            lrprev_orientation=lr_orient,
+                            prefer_lrprev=True,
+                            force_regenerate=True,
+                        )
+                        if pr:
+                            lr_synced_fps.add(row_chk["file_path"])
+                            if row_chk["sibling_path"]:
+                                lr_synced_fps.add(row_chk["sibling_path"])
+                            conn_chk.execute(
+                                """UPDATE photo_records SET
+                                    file_mtime = ?,
+                                    updated_at = CURRENT_TIMESTAMP,
+                                    phash = COALESCE(?, phash),
+                                    sharpness_score = COALESCE(?, sharpness_score),
+                                    is_unsharp = COALESCE(?, is_unsharp),
+                                    colorfulness_score = COALESCE(?, colorfulness_score),
+                                    is_monochrome = COALESCE(?, is_monochrome)
+                                WHERE file_hash = ?""",
+                                (
+                                    time.time(),
+                                    pr.get("phash"),
+                                    pr.get("sharpness_score"),
+                                    pr.get("is_unsharp"),
+                                    pr.get("colorfulness_score"),
+                                    pr.get("is_monochrome"),
+                                    row_chk["file_hash"],
+                                ),
+                            )
+                    except Exception as e_lr_b:
+                        logging.warning(f"Batch LR preview extraction warning for {row_chk['file_path']}: {e_lr_b}")
+        conn_chk.commit()
+        conn_chk.close()
+
+    non_lr_targets = [fp for fp in target_fps if fp not in lr_synced_fps]
+    if payload.force and non_lr_targets:
         conn = get_db_connection(DEFAULT_DB_PATH)
-        conn.execute("UPDATE photo_records SET file_mtime = 0 WHERE file_path = ?", (target_fp,))
+        for i in range(0, len(non_lr_targets), 400):
+            chunk = non_lr_targets[i : i + 400]
+            ph = ",".join("?" for _ in chunk)
+            conn.execute(
+                f"UPDATE photo_records SET file_mtime = 0 WHERE file_path IN ({ph}) OR sibling_path IN ({ph})",
+                chunk + chunk,
+            )
         conn.commit()
         conn.close()
 
@@ -3196,9 +3762,129 @@ async def sync_single_photo_edits(photo_id: str, force: bool = Query(False)):
         color_sigs_path=DEFAULT_COLOR_SIGS_PATH,
         thumbs_360_dir=DEFAULT_THUMBS_360_DIR,
         previews_1600_dir=DEFAULT_PREVIEWS_1600_DIR,
-        target_file_paths=[target_fp],
+        target_file_paths=non_lr_targets if non_lr_targets else ["__lr_synced_skip_reprocessing__"],
+        watched_dirs=[str(Path(fp).parent) for fp in target_fps if Path(fp).exists()] if not non_lr_targets else None,
         scan_parent_dirs=True,
+        force_regenerate=payload.force if non_lr_targets else False,
     )
+    if lr_synced_fps:
+        updated = set(res.get("updated_files") or [])
+        updated.update(lr_synced_fps)
+        res["updated_files"] = list(updated)
+
+    global VECTORS_MTIME, COLOR_SIGS_MTIME
+    VECTORS_MTIME = 0.0
+    COLOR_SIGS_MTIME = 0.0
+
+    synced_paths = res.get("updated_files") or res.get("synced_files") or target_fps
+    if synced_paths:
+        try:
+            reassess_records_fast(
+                db_path=DEFAULT_DB_PATH,
+                vectors_path=DEFAULT_VECTORS_PATH,
+                photo_ids=list(synced_paths),
+                encode_text_batch_fn=encode_text_batch,
+            )
+        except Exception as exc:
+            logging.warning(f"Fast reassessment after batch sync warning: {exc}")
+
+    refreshed_photos = []
+    if payload.photo_ids:
+        refreshed_photos = [_serialize_photo_item(r) for r in _resolve_photo_records_by_ids(payload.photo_ids)]
+
+    res["photos"] = refreshed_photos
+    return res
+
+
+@app.post("/api/photos/{photo_id}/sync-edits")
+@app.post("/api/photo/{photo_id}/sync-edits")
+def sync_single_photo_edits(photo_id: str, force: bool = Query(False)):
+    rec = resolve_photo_record(photo_id)
+    if not rec:
+        raise HTTPException(status_code=404, detail="Photo not found")
+
+    target_fp = rec["file_path"]
+    cat_name = rec.get("catalog_name")
+    f_hash = rec["file_hash"]
+
+    _trigger_lightroom_save_metadata_async()
+
+    # If photo exists in Lightroom Classic Previews.lrdata, extract develop preview directly
+    lr_prev, lr_orient = find_lightroom_preview_for_photo(target_fp, cat_name)
+    lr_synced = False
+    if lr_prev and lr_prev.exists():
+        try:
+            pr = extract_fullres_and_generate_webps(
+                primary_path=Path(target_fp),
+                sibling_path=Path(rec["sibling_path"]) if rec.get("sibling_path") else None,
+                file_hash=f_hash,
+                thumbs_360_dir=DEFAULT_THUMBS_360_DIR,
+                previews_1600_dir=DEFAULT_PREVIEWS_1600_DIR,
+                lrprev_path=lr_prev,
+                lrprev_orientation=lr_orient,
+                prefer_lrprev=True,
+                force_regenerate=True,
+            )
+            if pr:
+                lr_synced = True
+                now_ts = time.time()
+                conn = get_db_connection(DEFAULT_DB_PATH)
+                conn.execute(
+                    """UPDATE photo_records SET
+                        file_mtime = ?,
+                        updated_at = CURRENT_TIMESTAMP,
+                        phash = COALESCE(?, phash),
+                        sharpness_score = COALESCE(?, sharpness_score),
+                        is_unsharp = COALESCE(?, is_unsharp),
+                        colorfulness_score = COALESCE(?, colorfulness_score),
+                        is_monochrome = COALESCE(?, is_monochrome)
+                    WHERE file_hash = ?""",
+                    (
+                        now_ts,
+                        pr.get("phash"),
+                        pr.get("sharpness_score"),
+                        pr.get("is_unsharp"),
+                        pr.get("colorfulness_score"),
+                        pr.get("is_monochrome"),
+                        f_hash,
+                    ),
+                )
+                conn.commit()
+                conn.close()
+        except Exception as e_lr:
+            logging.warning(f"Lightroom preview extraction failed for {target_fp}: {e_lr}")
+
+    if not lr_synced:
+        if force and Path(target_fp).exists():
+            # Force mtime reset in DB so sync_external_edits regenerates previews & vector unconditionally
+            conn = get_db_connection(DEFAULT_DB_PATH)
+            conn.execute("UPDATE photo_records SET file_mtime = 0 WHERE file_path = ?", (target_fp,))
+            conn.commit()
+            conn.close()
+
+        res = sync_external_edits(
+            db_path=DEFAULT_DB_PATH,
+            vectors_path=DEFAULT_VECTORS_PATH,
+            color_sigs_path=DEFAULT_COLOR_SIGS_PATH,
+            thumbs_360_dir=DEFAULT_THUMBS_360_DIR,
+            previews_1600_dir=DEFAULT_PREVIEWS_1600_DIR,
+            target_file_paths=[target_fp],
+            scan_parent_dirs=True,
+        )
+    else:
+        # Check parent directory for any newly exported derivative files without clobbering LR preview WebPs
+        res = sync_external_edits(
+            db_path=DEFAULT_DB_PATH,
+            vectors_path=DEFAULT_VECTORS_PATH,
+            color_sigs_path=DEFAULT_COLOR_SIGS_PATH,
+            thumbs_360_dir=DEFAULT_THUMBS_360_DIR,
+            previews_1600_dir=DEFAULT_PREVIEWS_1600_DIR,
+            target_file_paths=["__lr_synced_skip_reprocessing__"],
+            watched_dirs=[str(Path(target_fp).parent)] if Path(target_fp).exists() else None,
+            scan_parent_dirs=True,
+        )
+        res["updated_files"] = [target_fp]
+
     global VECTORS_MTIME, COLOR_SIGS_MTIME
     VECTORS_MTIME = 0.0
     COLOR_SIGS_MTIME = 0.0
@@ -3222,9 +3908,15 @@ async def sync_single_photo_edits(photo_id: str, force: bool = Query(False)):
 
 
 @app.post("/api/sync-edits")
-async def sync_all_external_edits():
+def sync_all_external_edits():
     with WATCHER_LOCK:
         watched_list = list(WATCHED_EDIT_TARGETS["files"].keys())
+
+    # 1. Automatically scan all registered Lightroom catalogs for recently touched photos
+    lr_updated_fps = sync_recent_lightroom_edits(DEFAULT_DB_PATH, limit=100)
+
+    # 2. Check watched targets & disk files
+    all_targets = list(set(watched_list + lr_updated_fps)) if (watched_list or lr_updated_fps) else None
 
     res = sync_external_edits(
         db_path=DEFAULT_DB_PATH,
@@ -3232,14 +3924,20 @@ async def sync_all_external_edits():
         color_sigs_path=DEFAULT_COLOR_SIGS_PATH,
         thumbs_360_dir=DEFAULT_THUMBS_360_DIR,
         previews_1600_dir=DEFAULT_PREVIEWS_1600_DIR,
-        target_file_paths=watched_list if watched_list else None,
+        target_file_paths=all_targets,
         scan_parent_dirs=True,
     )
+    if lr_updated_fps:
+        updated = set(res.get("updated_files") or [])
+        updated.update(lr_updated_fps)
+        res["updated_files"] = list(updated)
+        res["changed_count"] = max(res.get("changed_count", 0), len(updated))
+
     global VECTORS_MTIME, COLOR_SIGS_MTIME
     VECTORS_MTIME = 0.0
     COLOR_SIGS_MTIME = 0.0
 
-    synced_paths = res.get("synced_files") or watched_list
+    synced_paths = res.get("updated_files") or res.get("synced_files") or all_targets
     if synced_paths:
         try:
             reassess_records_fast(
@@ -3267,7 +3965,8 @@ async def get_sync_edits_status():
 # 8B. CURATED COLLECTIONS & COFFEE-TABLE BOOKS + DESKTOP HIGH-RES JPEG EXPORT
 # ==============================================================================
 class CreateCollectionPayload(BaseModel):
-    name: str
+    name: Optional[str] = None
+    title: Optional[str] = None
     description: Optional[str] = ""
     photo_id: Optional[str] = None
     photo_ids: Optional[List[str]] = None
@@ -3335,7 +4034,7 @@ async def list_collections():
 
 @app.post("/api/collections")
 async def create_collection(payload: CreateCollectionPayload):
-    clean_name = (payload.name or "").strip()
+    clean_name = (payload.name or payload.title or "").strip()
     if not clean_name:
         raise HTTPException(status_code=400, detail="Collection name cannot be empty")
 
@@ -3585,7 +4284,7 @@ async def add_photo_to_collection(collection_id: int, payload: CollectionItemPay
     return res
 
 
-@app.delete("/api/collections/{collection_id}/items/{photo_id}")
+@app.delete("/api/collections/{collection_id}/items/{photo_id:path}")
 async def remove_photo_from_collection(collection_id: int, photo_id: str):
     rec = resolve_photo_record(photo_id)
     canonical_pid = rec["file_hash"] if rec and rec.get("file_hash") else photo_id
@@ -3594,7 +4293,7 @@ async def remove_photo_from_collection(collection_id: int, photo_id: str):
         db_path=DEFAULT_DB_PATH,
         action_type="collection_remove_item",
         description=f"Remove photo from collection #{collection_id}",
-        collection_ids=[collection_id],
+        collection_id=collection_id,
         create_vault_backup=False,
     )
 
@@ -3636,26 +4335,44 @@ async def reorder_collection_items(collection_id: int, payload: ReorderCollectio
 
 
 def _sanitize_folder_name(name: str) -> str:
-    cleaned = re.sub(r'[<>:"/\\|?*]+', "_", (name or "Collection").strip())
-    cleaned = re.sub(r"\s+", "_", cleaned).strip("._")
-    return cleaned or "MR_Darkroom_Collection"
+    if not name:
+        return "Collection"
+    # Remove characters forbidden by macOS / Windows / Linux filesystems (<>:"/\|?*)
+    cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', "", str(name).strip())
+    # Collapse multiple consecutive whitespace characters to a single space
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(". ")
+    return cleaned or "Collection"
 
 
 def _run_collection_export_worker(collection_id: int, col_detail: Dict[str, Any]) -> Dict[str, Any]:
     from PIL import Image, ImageOps
+    import shutil
 
     photos_list = col_detail.get("photos") or []
     total_photos = len(photos_list)
     folder_name = _sanitize_folder_name(col_detail["name"])
-    desktop_root = Path.home() / "Desktop"
-    export_dir = desktop_root / folder_name
-    export_dir.mkdir(parents=True, exist_ok=True)
+    
+    is_tv_collection = folder_name.lower().startswith("tv")
+    icloud_base = Path.home() / "Library/Mobile Documents/com~apple~CloudDocs"
+    desktop_base = Path.home() / "Desktop"
+    
+    if is_tv_collection:
+        export_dir = desktop_base / "TV Folder" / folder_name
+        export_dir.mkdir(parents=True, exist_ok=True)
+        icloud_tv_dir = None
+        if icloud_base.exists():
+            icloud_tv_dir = icloud_base / "TV Folder" / folder_name
+            icloud_tv_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        export_dir = desktop_base / folder_name
+        export_dir.mkdir(parents=True, exist_ok=True)
+        icloud_tv_dir = None
 
     JOB_MANAGER.start_job(
         task_type="collection_export",
-        title=f"Exporting '{col_detail['name']}' to Desktop",
+        title=f"Exporting '{col_detail['name']}'",
         total=total_photos,
-        phase=f"Exporting {total_photos} high-res JPEGs to ~/Desktop/{folder_name}",
+        phase=f"Exporting {total_photos} high-res JPEGs to {export_dir}",
         extra={"collection_id": collection_id, "export_dir": str(export_dir)},
     )
 
@@ -3745,6 +4462,11 @@ def _run_collection_export_worker(collection_id: int, col_detail: Dict[str, Any]
                     master_count += 1
                 else:
                     preview_fallback_count += 1
+                if icloud_tv_dir is not None:
+                    try:
+                        shutil.copy2(str(out_path), str(icloud_tv_dir / out_name))
+                    except Exception:
+                        pass
                 exported_files.append({
                     "filename": out_name,
                     "path": str(out_path),
@@ -3758,7 +4480,7 @@ def _run_collection_export_worker(collection_id: int, col_detail: Dict[str, Any]
                 processed=idx,
                 total=total_photos,
                 current_file=out_name,
-                phase=f"Exported {len(exported_files)} of {total_photos} JPEGs to ~/Desktop/{folder_name}",
+                phase=f"Exported {len(exported_files)} of {total_photos} JPEGs to {export_dir.name}",
             )
 
         result_payload = {
@@ -3776,9 +4498,9 @@ def _run_collection_export_worker(collection_id: int, col_detail: Dict[str, Any]
         JOB_MANAGER.finish_job(
             result=result_payload,
             phase=(
-                f"Cancelled early — kept {len(exported_files)} exported JPEGs in ~/Desktop/{folder_name}"
+                f"Cancelled early — kept {len(exported_files)} exported JPEGs in {export_dir}"
                 if cancelled_early
-                else f"Exported {len(exported_files)} JPEGs to ~/Desktop/{folder_name}"
+                else f"Exported {len(exported_files)} JPEGs to {export_dir}"
             ),
         )
         return result_payload
@@ -3787,36 +4509,85 @@ def _run_collection_export_worker(collection_id: int, col_detail: Dict[str, Any]
         raise
 
 
+class CollectionExportRequest(BaseModel):
+    mode: str = "jpeg"  # "jpeg" | "tv_showcase" | "original" | "tiff"
+    crops: Optional[Dict[str, Dict[str, float]]] = None
+    long_edge: Optional[int] = None
+    dpi: Optional[int] = None
+    target_destination: Optional[str] = "desktop"  # "desktop" | "icloud" | "custom"
+    custom_folder_path: Optional[str] = None
+
+
 @app.post("/api/collections/{collection_id}/export")
-async def export_collection_to_desktop(collection_id: int, async_job: bool = Query(False)):
+async def export_collection_to_desktop(
+    collection_id: int,
+    mode: str = Query("jpeg"),
+    async_job: bool = Query(False),
+    payload: Optional[CollectionExportRequest] = None,
+):
     """
-    Exports all photos in the Collection/Book to ~/Desktop/{Sanitized_Collection_Name}/
-    as print-quality JPEGs (Quality=96, 4:4:4 subsampling=0, sRGB) named 01_{original_stem}.jpg, etc.
-    Supports live progress reporting, Pause/Resume, and Cancel via JOB_MANAGER.
+    Exports all photos in the Collection to ~/Desktop/MRDarkroom_Exports/{Sanitized_Collection_Name}/
+    or to iCloud Drive / Custom Folder.
+    Supports High-Res JPEGs (300 DPI), 65" TV Showcase (16:9, 12,000 px, 180 DPI), or Original Masters / Archival TIFFs.
+    Brings over all Lightroom Develop edits!
     """
     col_detail = await get_collection_details(collection_id)
     photos_list = col_detail.get("photos") or []
     if not photos_list:
         raise HTTPException(status_code=400, detail="Collection is empty — add photos before exporting")
 
+    effective_mode = payload.mode if payload else mode
+    effective_crops = payload.crops if payload else None
+    effective_long_edge = payload.long_edge if payload else None
+    effective_dpi = payload.dpi if payload else None
+    effective_target_dest = payload.target_destination if payload else "desktop"
+    effective_custom_folder = payload.custom_folder_path if payload else None
+
     if async_job:
         threading.Thread(
-            target=_run_collection_export_worker,
-            args=(collection_id, col_detail),
+            target=_run_batch_export_worker,
+            args=(
+                photos_list,
+                effective_mode,
+                col_detail["name"],
+                effective_crops,
+                effective_long_edge,
+                effective_dpi,
+                effective_target_dest,
+                effective_custom_folder,
+            ),
             daemon=True,
         ).start()
         folder_name = _sanitize_folder_name(col_detail["name"])
+        base_dest = (
+            Path(effective_custom_folder)
+            if effective_custom_folder and Path(effective_custom_folder).exists()
+            else (Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/MRDarkroom_Exports")
+            if effective_target_dest == "icloud"
+            else (Path.home() / "Desktop" / "MRDarkroom_Exports")
+        )
         return {
             "status": "started",
             "collection_id": collection_id,
             "collection_name": col_detail["name"],
-            "export_dir": str(Path.home() / "Desktop" / folder_name),
+            "export_dir": str(base_dest / folder_name),
             "total": len(photos_list),
+            "mode": effective_mode,
         }
 
-    # Run in worker thread so FastAPI event loop remains responsive to /api/jobs/status, /pause, /cancel
     loop = asyncio.get_running_loop()
-    result = await loop.run_in_executor(None, _run_collection_export_worker, collection_id, col_detail)
+    result = await loop.run_in_executor(
+        None,
+        _run_batch_export_worker,
+        photos_list,
+        effective_mode,
+        col_detail["name"],
+        effective_crops,
+        effective_long_edge,
+        effective_dpi,
+        effective_target_dest,
+        effective_custom_folder,
+    )
     return result
 
 
@@ -3833,10 +4604,1352 @@ async def reveal_exported_collection_folder(collection_id: int):
 
 class BatchExportRequest(BaseModel):
     photo_ids: List[str]
-    mode: str = "jpeg"  # "jpeg", "original", "tv_showcase"
+    mode: str = "jpeg"  # "jpeg", "original", "tv_showcase", "tiff"
     crops: Optional[Dict[str, Dict[str, float]]] = None
     folder_name: Optional[str] = None
     async_job: bool = True
+    long_edge: Optional[int] = None
+    dpi: Optional[int] = None
+    target_destination: Optional[str] = "desktop"  # "desktop" | "icloud" | "custom" | "samsung_tv"
+    custom_folder_path: Optional[str] = None
+    samsung_tv_ip: Optional[str] = None
+    slideshow_minutes: Optional[int] = 15
+    mat_mode: Optional[str] = "studio"  # "none" | "studio" | "samsung_native"
+    mat_color: Optional[str] = "#F4EFE6"
+    mat_placement: Optional[str] = "optical_center"  # "slim_optical" | "modern_thin" | "optical_center" | "exact_center" | "modern_wide" | "grand_exhibition" | "none"
+    mat_aspect: Optional[str] = "original"
+    mat_style: Optional[str] = "single"  # "single" | "double"
+    inner_mat_color: Optional[str] = "#F4EFE6"
+
+
+class SamsungTvDiscoverRequest(BaseModel):
+    rescan: bool = True
+    manual_ip: Optional[str] = None
+
+
+class SamsungTvAddRemoteRequest(BaseModel):
+    name: Optional[str] = None
+    host: str
+
+
+def _parse_target_aspect_ratio(aspect_str: Optional[str]) -> Optional[float]:
+    if not aspect_str:
+        return None
+    s = str(aspect_str).strip().lower()
+    if s in ("original", "natural", "auto", "none", ""):
+        return None
+    aspect_map = {
+        "16:9": 16.0 / 9.0,
+        "4:3": 4.0 / 3.0,
+        "3:2": 3.0 / 2.0,
+        "5:4": 5.0 / 4.0,
+        "2:1": 2.0 / 1.0,
+        "12:5": 12.0 / 5.0,
+        "1:1": 1.0,
+        "3:4": 3.0 / 4.0,
+        "4:5": 4.0 / 5.0,
+        "2:3": 2.0 / 3.0,
+    }
+    if s in aspect_map:
+        return aspect_map[s]
+    if ":" in s:
+        try:
+            parts = s.split(":", 1)
+            w_p = float(parts[0])
+            h_p = float(parts[1])
+            if w_p > 0 and h_p > 0:
+                return w_p / h_p
+        except Exception:
+            pass
+    return None
+
+
+def _crop_image_to_aspect(im: Any, target_aspect: float, crop_x: float = 0.5, crop_y: float = 0.5) -> Any:
+    orig_w, orig_h = im.size
+    if orig_w <= 1 or orig_h <= 1 or not target_aspect or target_aspect <= 0:
+        return im
+    src_aspect = orig_w / float(orig_h)
+    cx = max(0.0, min(1.0, float(crop_x if crop_x is not None else 0.5)))
+    cy = max(0.0, min(1.0, float(crop_y if crop_y is not None else 0.5)))
+
+    if abs(src_aspect - target_aspect) < 0.005:
+        return im
+    if src_aspect > target_aspect:
+        crop_h = orig_h
+        crop_w = max(1, int(round(crop_h * target_aspect)))
+        slack_w = max(0, orig_w - crop_w)
+        left = int(round(slack_w * cx))
+        return im.crop((left, 0, left + crop_w, crop_h))
+    else:
+        crop_w = orig_w
+        crop_h = max(1, int(round(crop_w / target_aspect)))
+        slack_h = max(0, orig_h - crop_h)
+        top = int(round(slack_h * cy))
+        return im.crop((0, top, crop_w, top + crop_h))
+
+
+def _load_tv_source_image(
+    file_path: Optional[str],
+    file_hash: Optional[str] = None,
+    catalog_name: Optional[str] = None,
+) -> Optional[Any]:
+    """
+    Loads a clean, high-resolution 8-bit RGB PIL Image for Samsung Frame TV rendering
+    that 100% preserves Lightroom Classic's non-destructive crop & color grading.
+    Priority:
+      1. Full-resolution Lightroom Preview pyramid (.lrprev -> up to 14,204 px with exact crop & edits)
+      2. Pre-rendered 1600px WebP preview (guaranteed to match UI aspect ratio & edits)
+      3. Direct master file (only if aspect ratio matches preview or no preview exists)
+    """
+    from PIL import Image, ImageOps
+    f_hash = (file_hash or "").strip()
+    preview_webp = DEFAULT_PREVIEWS_1600_DIR / f"{f_hash}.webp" if f_hash else None
+    webp_im = None
+    webp_aspect = None
+
+    if preview_webp and preview_webp.exists():
+        try:
+            with Image.open(preview_webp) as p_im:
+                webp_im = p_im.convert("RGB")
+                if webp_im.height > 0:
+                    webp_aspect = webp_im.width / float(webp_im.height)
+        except Exception:
+            webp_im = None
+
+    # 1. Try Lightroom Classic's Previews.lrdata first (contains full-res cropped & color-graded master)
+    if file_path:
+        try:
+            lr_prev_file, lr_orient = find_lightroom_preview_for_photo(file_path, catalog_name)
+            if lr_prev_file and lr_prev_file.exists():
+                res_lr = extract_jpeg_from_lrprev(lr_prev_file, orientation=lr_orient)
+                lr_im = None
+                if isinstance(res_lr, Image.Image):
+                    lr_im = res_lr.convert("RGB")
+                elif isinstance(res_lr, (bytes, bytearray)):
+                    with Image.open(io.BytesIO(res_lr)) as b_im:
+                        lr_im = b_im.convert("RGB")
+                if lr_im is not None and lr_im.width > 0 and lr_im.height > 0:
+                    lr_aspect = lr_im.width / float(lr_im.height)
+                    if webp_aspect is None or abs(lr_aspect - webp_aspect) < 0.04:
+                        return lr_im
+        except Exception as e_lr:
+            logging.warning(f"LR preview load warning for TV image {file_path}: {e_lr}")
+
+    # 2. If we have the rendered WebP preview, check if raw master has the same aspect ratio
+    raw_exts = {".dng", ".iiq", ".cr2", ".cr3", ".nef", ".arw", ".raf", ".orf", ".rw2"}
+    src_p = Path(file_path) if file_path else None
+    master_im = None
+
+    if src_p and src_p.exists() and src_p.suffix.lower() not in raw_exts:
+        try:
+            with Image.open(src_p) as opened:
+                opened = ImageOps.exif_transpose(opened)
+                if max(opened.size) >= 600:
+                    m_aspect = opened.width / float(max(1, opened.height))
+                    # Only use raw master TIFF/JPEG if its aspect ratio matches the edited preview
+                    if webp_aspect is None or abs(m_aspect - webp_aspect) < 0.03:
+                        if opened.mode in ("I;16", "I;16L", "I;16B", "I"):
+                            arr = np.array(opened, dtype=np.float32)
+                            max_v = float(np.max(arr)) if arr.size > 0 else 65535.0
+                            if max_v > 255.0:
+                                arr = np.clip((arr / 65535.0) * 255.0, 0, 255).astype(np.uint8)
+                            else:
+                                arr = np.clip(arr, 0, 255).astype(np.uint8)
+                            master_im = Image.fromarray(arr).convert("RGB")
+                        else:
+                            master_im = opened.convert("RGB")
+        except Exception:
+            master_im = None
+
+    if master_im is not None:
+        return master_im
+
+    if webp_im is not None:
+        return webp_im
+
+    # 3. Last resort fallback for RAW files without a cached preview
+    if src_p and src_p.exists():
+        try:
+            with tempfile.TemporaryDirectory() as tmp_d:
+                tmp_jpg = Path(tmp_d) / "tv_raw.jpg"
+                sips_cmd = [
+                    "sips", "-s", "format", "jpeg", "-s", "formatOptions", "96",
+                    "--matchTo", "/System/Library/ColorSync/Profiles/sRGB Profile.icc",
+                    str(src_p), "--out", str(tmp_jpg),
+                ]
+                res = subprocess.run(sips_cmd, capture_output=True, text=True, timeout=30, check=False)
+                if res.returncode == 0 and tmp_jpg.exists():
+                    with Image.open(tmp_jpg) as s_im:
+                        return s_im.convert("RGB")
+        except Exception:
+            pass
+
+    return None
+
+
+def _draw_soft_samsung_bevel(
+    draw: Any,
+    x0: int,
+    y0: int,
+    x1: int,
+    y1: int,
+    bevel_w: int,
+    scale_factor: float = 1.0,
+) -> None:
+    """
+    Draws a soft, natural Samsung Frame-style 45-degree angled 4-facet paper bevel
+    around the aperture [x0, y0, x1, y1] expanding outward by `bevel_w` pixels.
+    Matches the gentle overhead lighting and soft paper-cut miters of Samsung's Art Mode,
+    with a refined scoshe of subtle upper/left shading for authentic optical depth.
+    """
+    # Soft warm museum rag paper tones with a gentle scoshe of overhead shading:
+    # Top slope (soft overhead gallery shade): #c4beaf -> #ada697
+    # Left slope (gentle lateral shade): #d2ccbe -> #c0baab
+    # Right slope (soft warm ambient light): #e6e1d5 -> #f0ebe0
+    # Bottom slope (upward warm bounce highlight): #eee9de -> #f8f6f0
+    top_outer, top_inner = (196, 190, 175), (173, 166, 151)
+    left_outer, left_inner = (210, 204, 190), (192, 186, 171)
+    right_outer, right_inner = (230, 225, 213), (240, 235, 224)
+    bot_outer, bot_inner = (238, 233, 222), (248, 246, 240)
+
+    def _lerp_rgb(c1, c2, t: float):
+        return (
+            int(round(c1[0] + (c2[0] - c1[0]) * t)),
+            int(round(c1[1] + (c2[1] - c1[1]) * t)),
+            int(round(c1[2] + (c2[2] - c1[2]) * t)),
+        )
+
+    for step in range(bevel_w, 0, -1):
+        t = 1.0 - ((step - 1) / float(max(1, bevel_w - 1)))
+        bx0 = x0 - step
+        by0 = y0 - step
+        bx1 = x1 + step
+        by1 = y1 + step
+
+        draw.line([(bx0, by0), (bx1, by0)], fill=_lerp_rgb(top_outer, top_inner, t))
+        draw.line([(bx0, by1), (bx1, by1)], fill=_lerp_rgb(bot_outer, bot_inner, t))
+        draw.line([(bx0, by0), (bx0, by1)], fill=_lerp_rgb(left_outer, left_inner, t))
+        draw.line([(bx1, by0), (bx1, by1)], fill=_lerp_rgb(right_outer, right_inner, t))
+
+    # Subtle 45-degree diagonal miter seams at all 4 corners (soft paper cut, not dark wire)
+    miter_width = max(1, int(round(1.1 * scale_factor)))
+    draw.line([(x0 - bevel_w, y0 - bevel_w), (x0, y0)], fill=(162, 156, 144), width=miter_width)
+    draw.line([(x1 + bevel_w, y0 - bevel_w), (x1, y0)], fill=(174, 168, 156), width=miter_width)
+    draw.line([(x0 - bevel_w, y1 + bevel_w), (x0, y1)], fill=(186, 180, 168), width=miter_width)
+    draw.line([(x1 + bevel_w, y1 + bevel_w), (x1, y1)], fill=(206, 201, 190), width=miter_width)
+
+    # Whisper-soft inner contact line where the bevel rests on the print/under-mat
+    contact_w = max(1, int(round(1.0 * scale_factor)))
+    draw.rectangle([x0, y0, x1, y1], outline=(158, 152, 140), width=contact_w)
+    # Faint subtle top contact crease for natural paper shadow depth
+    draw.line([(x0, y0), (x1, y0)], fill=(144, 138, 126), width=contact_w)
+
+
+def generate_fine_art_mat(
+    im: Any,
+    color_hex: str = "#F4EFE6",
+    placement: str = "optical_center",
+    aspect_ratio: str = "original",
+    crop_x: float = 0.5,
+    crop_y: float = 0.5,
+    mat_style: str = "single",
+    inner_mat_color: str = "#F4EFE6",
+    canvas_w: int = 3840,
+    canvas_h: int = 2160,
+) -> Any:
+    """
+    Renders an authentic Samsung Frame-grade 45-degree angled bevel mat (Single or Double Mat).
+    Features:
+      - Preserves the photo's natural Lightroom-edited aspect ratio by default ('original'),
+        or crops to a selected window aspect ratio ('16:9', '4:3', '3:2', '5:4', '2:1', '1:1').
+      - Soft, natural 45-degree chamfered bevel (3/4 refined depth) with subtle overhead gallery lighting.
+      - Single or Double Bevel Mat support (`mat_style='single' | 'double'`).
+      - Placement / Border modes:
+          * slim_optical: Slim 88% gallery border with optical vertical balance (ideal for panoramas)
+          * modern_thin: Slim 88% gallery border with 50/50 geometric center
+          * optical_center: Classic 78% museum mat with optical vertical balance
+          * exact_center: Classic 78% museum mat with 50/50 geometric center
+          * modern_wide: Wide 64% exhibition mat border with optical balance
+          * grand_exhibition: Extra-large 52% museum exhibition border with optical balance
+          * none: Full 16:9 bleed without mat
+    """
+    from PIL import Image, ImageDraw
+
+    canvas_w = max(800, int(canvas_w))
+    canvas_h = max(450, int(canvas_h))
+
+    if placement == "none":
+        cropped_bleed = _crop_image_to_aspect(im, canvas_w / float(canvas_h), crop_x=crop_x, crop_y=crop_y)
+        return cropped_bleed.resize((canvas_w, canvas_h), Image.Resampling.LANCZOS)
+
+    def _hex_to_rgb(h_str: str, default_rgb=(244, 239, 230)):
+        c_clean = (h_str or "").strip().lstrip("#")
+        try:
+            if len(c_clean) == 3:
+                c_clean = "".join(ch * 2 for ch in c_clean)
+            return tuple(int(c_clean[i:i+2], 16) for i in (0, 2, 4))
+        except Exception:
+            return default_rgb
+
+    mat_rgb = _hex_to_rgb(color_hex, (244, 239, 230))
+    inner_rgb = _hex_to_rgb(inner_mat_color, (244, 239, 230))
+
+    # 1. Crop source image if a specific window aspect ratio was requested
+    target_aspect = _parse_target_aspect_ratio(aspect_ratio)
+    working_im = _crop_image_to_aspect(im, target_aspect, crop_x=crop_x, crop_y=crop_y) if target_aspect else im
+
+    # 2. Compute maximum aperture bounding box for the chosen border thickness
+    if placement == "grand_exhibition":
+        max_w = int(canvas_w * 0.52)
+        max_h = int(canvas_h * 0.52)
+    elif placement == "modern_wide":
+        max_w = int(canvas_w * 0.64)
+        max_h = int(canvas_h * 0.64)
+    elif placement in ("modern_thin", "slim_optical"):
+        max_w = int(canvas_w * 0.88)
+        max_h = int(canvas_h * 0.86)
+    else:  # optical_center or exact_center
+        max_w = int(canvas_w * 0.78)
+        max_h = int(canvas_h * 0.76)
+
+    orig_w, orig_h = working_im.size
+    aspect = orig_w / float(max(1, orig_h))
+
+    if max_w / float(max_h) > aspect:
+        photo_h = max_h
+        photo_w = max(1, int(round(photo_h * aspect)))
+    else:
+        photo_w = max_w
+        photo_h = max(1, int(round(photo_w / aspect)))
+
+    photo_scaled = working_im.resize((photo_w, photo_h), Image.Resampling.LANCZOS)
+
+    offset_x = (canvas_w - photo_w) // 2
+    is_optical = placement in ("optical_center", "slim_optical", "modern_wide", "grand_exhibition")
+    if is_optical:
+        total_v_margin = canvas_h - photo_h
+        offset_y = int(round(total_v_margin * 0.44))  # Bottom-weighted optical gallery balance
+    else:
+        offset_y = (canvas_h - photo_h) // 2
+
+    canvas = Image.new("RGB", (canvas_w, canvas_h), mat_rgb)
+    draw = ImageDraw.Draw(canvas)
+
+    # 3. Refined 3/4 bevel depth (19px on 4K 3840x2160 canvas, down 25% from 26px)
+    scale_factor = canvas_w / 3840.0
+    bevel_w = max(5, int(round(19 * scale_factor)))
+
+    x0, y0 = offset_x, offset_y
+    x1, y1 = offset_x + photo_w - 1, offset_y + photo_h - 1
+
+    # 4. If Double Mat is active, draw the stepped Inner Mat + Outer Bevel first
+    if str(mat_style or "single").lower() == "double":
+        reveal_w = max(10, int(round(36 * scale_factor)))
+        ix0 = x0 - bevel_w - reveal_w
+        iy0 = y0 - bevel_w - reveal_w
+        ix1 = x1 + bevel_w + reveal_w
+        iy1 = y1 + bevel_w + reveal_w
+        draw.rectangle([ix0, iy0, ix1, iy1], fill=inner_rgb)
+        _draw_soft_samsung_bevel(draw, ix0, iy0, ix1, iy1, bevel_w, scale_factor=scale_factor)
+
+    # 5. Paste photo and draw the inner 45-degree bevel resting on the photo
+    canvas.paste(photo_scaled, (offset_x, offset_y))
+    _draw_soft_samsung_bevel(draw, x0, y0, x1, y1, bevel_w, scale_factor=scale_factor)
+
+    return canvas
+
+
+def _get_samsung_tvs_registry_path() -> Path:
+    return DATA_VAULT_DIR / "samsung_tvs.json"
+
+
+def _probe_samsung_tv_ip(ip: str, timeout: float = 0.8) -> Optional[Dict[str, Any]]:
+    import urllib.request
+    import ssl
+    ip = (ip or "").strip()
+    if not ip:
+        return None
+
+    probe_host = ip
+    custom_port = None
+    if ":" in ip and not ip.startswith("["):
+        parts = ip.split(":")
+        probe_host = parts[0]
+        try:
+            custom_port = int(parts[1])
+        except ValueError:
+            pass
+
+    ports_to_try = [(custom_port, "https" if custom_port == 8002 else "http")] if custom_port else [(8001, "http"), (8002, "https")]
+
+    for port, proto in ports_to_try:
+        try:
+            ctx = ssl._create_unverified_context() if proto == "https" else None
+            req = urllib.request.Request(
+                f"{proto}://{probe_host}:{port}/api/v2/",
+                headers={"User-Agent": "MRDarkroomStudio"},
+            )
+            with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
+                raw = json.loads(resp.read().decode("utf-8", errors="ignore"))
+                dev = raw.get("device") or {}
+                name = dev.get("name") or raw.get("name") or f"Samsung TV ({ip})"
+                model_name = dev.get("modelName") or dev.get("model") or "Samsung SmartTV"
+                frame_support = str(dev.get("FrameTVSupport", "false")).lower() == "true" or "LS03" in model_name.upper()
+                return {
+                    "name": name,
+                    "ip": ip,
+                    "model": model_name,
+                    "resolution": dev.get("resolution") or "3840x2160",
+                    "frame_support": frame_support,
+                    "power_state": dev.get("PowerState") or "on",
+                    "online": True,
+                }
+        except Exception:
+            pass
+    return None
+
+
+def _load_samsung_tvs() -> List[Dict[str, Any]]:
+    reg_path = _get_samsung_tvs_registry_path()
+    default_tvs = [
+        {
+            "name": "TV1",
+            "ip": "192.168.68.88",
+            "model": "QN55LS03HEFXZA",
+            "resolution": "3840x2160",
+            "frame_support": True,
+            "power_state": "on",
+            "online": True,
+        }
+    ]
+    if not reg_path.exists():
+        return default_tvs
+    try:
+        loaded = json.loads(reg_path.read_text(encoding="utf-8"))
+        if isinstance(loaded, list) and loaded:
+            return loaded
+    except Exception:
+        pass
+    return default_tvs
+
+
+def _save_samsung_tvs(tvs: List[Dict[str, Any]]) -> None:
+    try:
+        reg_path = _get_samsung_tvs_registry_path()
+        reg_path.parent.mkdir(parents=True, exist_ok=True)
+        reg_path.write_text(json.dumps(tvs, indent=2), encoding="utf-8")
+    except Exception as exc:
+        logging.warning(f"Could not save samsung_tvs.json: {exc}")
+
+
+def _discover_samsung_tvs_sync(rescan: bool = False, manual_ip: Optional[str] = None) -> List[Dict[str, Any]]:
+    from concurrent.futures import ThreadPoolExecutor
+    known_list = _load_samsung_tvs()
+    by_ip: Dict[str, Dict[str, Any]] = {t["ip"]: dict(t) for t in known_list if t.get("ip")}
+
+    candidate_ips = set(by_ip.keys())
+    candidate_ips.add("192.168.68.88")
+    if manual_ip and manual_ip.strip():
+        candidate_ips.add(manual_ip.strip())
+
+    if rescan:
+        # 1. Collect active ARP table IPs
+        try:
+            arp_out = subprocess.check_output(["arp", "-an"], text=True, timeout=2.0, stderr=subprocess.DEVNULL)
+            for m in re.findall(r"\((\d+\.\d+\.\d+\.\d+)\)\s+at\s+([0-9a-fA-F:]+)", arp_out):
+                candidate_ips.add(m[0])
+        except Exception:
+            pass
+
+        # 2. Fast mDNS browse for _googlecast._tcp and _airplay._tcp (where Samsung LS03 Frame TVs advertise)
+        try:
+            p = subprocess.Popen(
+                ["dns-sd", "-B", "_googlecast._tcp", "local"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+            time.sleep(1.0)
+            p.terminate()
+            out, _ = p.communicate(timeout=1.0)
+            for line in (out or "").splitlines():
+                if "LS03" in line or "Samsung" in line or "TV" in line:
+                    inst = line.split("_googlecast._tcp.")[-1].strip()
+                    if inst:
+                        p2 = subprocess.Popen(
+                            ["dns-sd", "-L", inst, "_googlecast._tcp", "local"],
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT,
+                            text=True,
+                        )
+                        time.sleep(0.8)
+                        p2.terminate()
+                        out2, _ = p2.communicate(timeout=1.0)
+                        for host in re.findall(r"can be reached at ([^\s:]+)", out2 or ""):
+                            p3 = subprocess.Popen(
+                                ["dns-sd", "-G", "v4", host],
+                                stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT,
+                                text=True,
+                            )
+                            time.sleep(0.6)
+                            p3.terminate()
+                            out3, _ = p3.communicate(timeout=1.0)
+                            for ip_m in re.findall(r"\b(?:192\.168|10\.|172\.)\d+\.\d+\.\d+\b", out3 or ""):
+                                candidate_ips.add(ip_m)
+        except Exception:
+            pass
+
+    probe_timeout = 1.0 if rescan else 0.5
+    with ThreadPoolExecutor(max_workers=24) as ex:
+        results = list(ex.map(lambda ip: _probe_samsung_tv_ip(ip, timeout=probe_timeout), sorted(candidate_ips)))
+
+    for r in results:
+        if r and r.get("ip"):
+            by_ip[r["ip"]] = r
+
+    # Mark any known TVs that didn't respond on this quick probe
+    probed_ok = {r["ip"] for r in results if r and r.get("ip")}
+    for ip, info in by_ip.items():
+        if ip not in probed_ok:
+            info["online"] = False
+
+    final_list = sorted(by_ip.values(), key=lambda x: (not x.get("online", False), x.get("name", "")))
+    _save_samsung_tvs(final_list)
+    return final_list
+
+
+@app.get("/api/samsung-tvs")
+async def get_samsung_tvs(rescan: bool = False):
+    loop = asyncio.get_running_loop()
+    tvs = await loop.run_in_executor(None, _discover_samsung_tvs_sync, rescan, None)
+    return {"status": "ok", "tvs": tvs}
+
+
+@app.post("/api/samsung-tvs/discover")
+async def discover_samsung_tvs(payload: SamsungTvDiscoverRequest):
+    loop = asyncio.get_running_loop()
+    tvs = await loop.run_in_executor(None, _discover_samsung_tvs_sync, payload.rescan, payload.manual_ip)
+    return {"status": "ok", "tvs": tvs}
+
+
+@app.post("/api/samsung-tvs/add-remote")
+async def add_remote_samsung_tv(payload: SamsungTvAddRemoteRequest):
+    host = (payload.host or "").strip()
+    if not host:
+        raise HTTPException(status_code=400, detail="TV host or IP cannot be empty")
+
+    loop = asyncio.get_running_loop()
+    probe = await loop.run_in_executor(None, _probe_samsung_tv_ip, host, 2.5)
+
+    custom_name = payload.name.strip() if payload.name and payload.name.strip() else None
+    if probe:
+        tv_entry = dict(probe)
+        if custom_name:
+            tv_entry["name"] = custom_name
+        tv_entry["is_remote"] = True
+    else:
+        # Fallback registration for firewalled, VPN, or Tailscale TVs where port 8002 is routed
+        tv_entry = {
+            "name": custom_name or f"Remote TV ({host})",
+            "ip": host,
+            "model": "Samsung Frame TV (Remote)",
+            "resolution": "3840x2160",
+            "frame_support": True,
+            "power_state": "unknown",
+            "online": True,
+            "is_remote": True,
+        }
+
+    current_tvs = _load_samsung_tvs()
+    updated = [t for t in current_tvs if t.get("ip") != host]
+    updated.insert(0, tv_entry)
+    _save_samsung_tvs(updated)
+    return {"status": "ok", "tv": tv_entry, "tvs": updated}
+
+
+# =========================================================================
+# SAMSUNG FRAME TV DISPLAYS MANAGEMENT & CURATION SYNC
+# =========================================================================
+
+def _get_tv_sync_registry_path() -> Path:
+    return DATA_VAULT_DIR / "tv_displays_sync.json"
+
+
+def _load_tv_sync_data() -> Dict[str, Any]:
+    p = _get_tv_sync_registry_path()
+    if not p.exists():
+        return {}
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        pass
+    return {}
+
+
+def _save_tv_sync_data(data: Dict[str, Any]) -> None:
+    try:
+        p = _get_tv_sync_registry_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    except Exception as exc:
+        logging.warning(f"Could not save tv_displays_sync.json: {exc}")
+
+
+_TV_WS_LOCKS: Dict[str, threading.Lock] = {}
+_TV_WS_LOCKS_GUARD = threading.Lock()
+
+
+def _get_tv_ws_lock(ip: str) -> threading.Lock:
+    key = (ip or "default").strip()
+    with _TV_WS_LOCKS_GUARD:
+        if key not in _TV_WS_LOCKS:
+            _TV_WS_LOCKS[key] = threading.Lock()
+        return _TV_WS_LOCKS[key]
+
+
+def _get_samsung_tv_client(ip: str, timeout: float = 12.0):
+    import re
+    from samsungtvws import SamsungTVWS
+    token_clean = re.sub(r'[^a-zA-Z0-9_\-]', '_', ip)
+    token_path = str(DATA_VAULT_DIR / f"samsung_tv_{token_clean}_token.txt")
+    host = ip
+    port = 8002
+    if ":" in ip:
+        parts = ip.split(":", 1)
+        host = parts[0].strip()
+        try:
+            port = int(parts[1].strip())
+        except Exception:
+            port = 8002
+    return SamsungTVWS(host=host, port=port, token_file=token_path, timeout=timeout, name="MR Darkroom Studio")
+
+
+class SamsungTvArtActionRequest(BaseModel):
+    ip: str
+    content_id: str
+
+
+class SamsungTvPowerRequest(BaseModel):
+    ip: str
+    mode: str  # "on" | "off"
+
+
+class SamsungTvSlideshowRequest(BaseModel):
+    ip: str
+    duration: Optional[int] = 15
+    status: str = "on"  # "on" | "off"
+
+
+class SamsungTvSyncCollectionRequest(BaseModel):
+    ip: str
+    collection_id: Optional[Union[str, int]] = None
+    photo_ids: Optional[List[Union[str, int]]] = None
+    mode: str = "additive"  # "additive" | "overwrite"
+    mat_mode: str = "studio"
+    mat_color: str = "#F4EFE6"
+    mat_placement: str = "slim_optical"
+    mat_aspect: str = "original"  # "original" | "4:3" | "3:2" | "16:9" | "5:4" | "2:1" | "1:1"
+    mat_style: str = "single"  # "single" | "double"
+    inner_mat_color: str = "#F4EFE6"
+    crop_x: float = 0.5
+    crop_y: float = 0.5
+    slideshow_minutes: Optional[int] = 15
+
+
+class SamsungTvUpdateMatRequest(BaseModel):
+    ip: str
+    content_id: Optional[str] = None
+    file_hash: Optional[str] = None
+    mat_mode: str = "studio"
+    mat_color: str = "#F4EFE6"
+    mat_placement: str = "slim_optical"
+    mat_aspect: str = "original"
+    mat_style: str = "single"
+    inner_mat_color: str = "#F4EFE6"
+    crop_x: float = 0.5
+    crop_y: float = 0.5
+    apply_to_all: bool = False
+
+
+class SamsungTvReorderArtRequest(BaseModel):
+    ip: str
+    content_ids: Optional[List[str]] = None
+    ordered_ids: Optional[List[str]] = None
+    select_first: bool = False
+
+
+@app.get("/api/samsung-tvs/displays")
+async def get_samsung_tv_displays():
+    """
+    Returns full live display status, art mode state, slideshow status, and
+    curated photos for all discovered and registered Samsung Frame TVs.
+    """
+    loop = asyncio.get_running_loop()
+
+    def _fetch_displays_sync():
+        known_tvs = _load_samsung_tvs()
+        sync_data = _load_tv_sync_data()
+        displays = []
+
+        conn = get_db_connection(DEFAULT_DB_PATH)
+
+        for tv_info in known_tvs:
+            ip = tv_info.get("ip")
+            display_entry = dict(tv_info)
+            display_entry["online"] = False
+            display_entry["art_mode"] = "unknown"
+            display_entry["current_content_id"] = None
+            display_entry["slideshow"] = {"status": False, "duration": 15, "current": None}
+            display_entry["photos"] = []
+
+            # Stored local sync records for this TV (preserves user's custom sequence order!)
+            local_tv_photos = sync_data.get(ip, {}).get("photos", [])
+            local_by_cid = {p.get("content_id"): p for p in local_tv_photos if p.get("content_id")}
+            local_order_map = {p.get("content_id"): idx for idx, p in enumerate(local_tv_photos) if p.get("content_id")}
+
+            if ip:
+                tv_lock = _get_tv_ws_lock(ip)
+                with tv_lock:
+                    try:
+                        tv_client = _get_samsung_tv_client(ip, timeout=5.0)
+                        art = tv_client.art()
+                        art_mode_res = art.get_artmode()
+                        display_entry["online"] = True
+                        display_entry["art_mode"] = "on" if str(art_mode_res).lower() in ("on", "true", "1") else "off"
+
+                        try:
+                            curr = art.get_current()
+                            if isinstance(curr, dict):
+                                display_entry["current_content_id"] = curr.get("content_id")
+                        except Exception:
+                            pass
+
+                        try:
+                            ss = art.get_slideshow_status()
+                            if isinstance(ss, dict):
+                                display_entry["slideshow"] = {
+                                    "status": True if ss.get("type") == "slideshow" or ss.get("category_id") else False,
+                                    "duration": int(ss.get("value") or 15),
+                                    "current": ss.get("current_content_id"),
+                                }
+                        except Exception:
+                            pass
+
+                        try:
+                            available_items = art.available()
+                            if isinstance(available_items, list):
+                                merged_photos = []
+                                seen_cids = set()
+                                for item in available_items:
+                                    cid = item.get("content_id")
+                                    if not cid or cid in seen_cids:
+                                        continue
+                                    # Skip built-in Samsung ROM artworks (e.g. SAM-S4509) that are not user uploads
+                                    if not str(cid).startswith("MY_F") and cid not in local_by_cid:
+                                        continue
+                                    seen_cids.add(cid)
+
+                                    # If we have full darkroom metadata saved for this content_id:
+                                    if cid in local_by_cid:
+                                        rec = dict(local_by_cid[cid])
+                                        f_hash = rec.get("file_hash")
+                                        if f_hash and not rec.get("thumb_url"):
+                                            rec["thumb_url"] = f"/previews_1600/{f_hash}.webp"
+                                        rec.setdefault("mat_mode", "studio")
+                                        rec.setdefault("mat_color", "#F4EFE6")
+                                        rec.setdefault("mat_placement", "slim_optical")
+                                        rec.setdefault("mat_aspect", "original")
+                                        rec.setdefault("mat_style", "single")
+                                        rec.setdefault("inner_mat_color", "#F4EFE6")
+                                        rec.setdefault("crop_x", 0.5)
+                                        rec.setdefault("crop_y", 0.5)
+                                        merged_photos.append(rec)
+                                    else:
+                                        merged_photos.append({
+                                            "content_id": cid,
+                                            "category_id": item.get("category_id"),
+                                            "title": f"TV Art ({cid})",
+                                            "filename": f"{cid}.jpg",
+                                            "shoot_date": item.get("image_date") or "Samsung Frame",
+                                            "star_rating": 5,
+                                            "width": item.get("width") or 3840,
+                                            "height": item.get("height") or 2160,
+                                            "is_external": True,
+                                        })
+                                curated = [p for p in merged_photos if p.get("thumb_url")]
+                                external = [p for p in merged_photos if not p.get("thumb_url")]
+                                # Preserve the exact custom sequence order stored in local_tv_photos
+                                curated.sort(key=lambda p: local_order_map.get(p.get("content_id"), 9999))
+                                display_entry["photos"] = curated + external
+                        except Exception as e_avail:
+                            logging.warning(f"Error fetching art.available() for {ip}: {e_avail}")
+                            display_entry["photos"] = local_tv_photos
+                    except Exception as e_conn:
+                        logging.info(f"TV ({ip}) offline or unreachable: {e_conn}")
+                        display_entry["online"] = False
+                        display_entry["photos"] = local_tv_photos
+
+            displays.append(display_entry)
+
+        conn.close()
+        return displays
+
+    displays = await loop.run_in_executor(None, _fetch_displays_sync)
+    return {"status": "ok", "displays": displays}
+
+
+@app.post("/api/samsung-tvs/reorder-art")
+async def reorder_samsung_tv_art(payload: SamsungTvReorderArtRequest):
+    """
+    Reorders the curated photos for a Samsung Frame TV and persists the sequence.
+    Optionally switches the active TV display to the new #1 photo.
+    """
+    ip = payload.ip.strip()
+    if not ip:
+        raise HTTPException(status_code=400, detail="TV IP is required")
+
+    loop = asyncio.get_running_loop()
+
+    def _reorder_sync():
+        sync_data = _load_tv_sync_data()
+        tv_entry = sync_data.setdefault(ip, {"ip": ip, "photos": []})
+        photos_list = tv_entry.get("photos", [])
+        by_cid = {}
+        for p in photos_list:
+            k1 = p.get("content_id")
+            k2 = p.get("file_hash")
+            if k1:
+                by_cid[k1] = p
+            if k2 and k2 not in by_cid:
+                by_cid[k2] = p
+
+        requested_ids = payload.content_ids if payload.content_ids is not None else (payload.ordered_ids or [])
+        new_photos = []
+        seen_objs = set()
+        for cid in requested_ids:
+            if cid in by_cid:
+                obj = by_cid[cid]
+                if id(obj) not in seen_objs:
+                    new_photos.append(obj)
+                    seen_objs.add(id(obj))
+
+        for p in photos_list:
+            if id(p) not in seen_objs:
+                new_photos.append(p)
+                seen_objs.add(id(p))
+
+        tv_entry["photos"] = new_photos
+        _save_tv_sync_data(sync_data)
+
+        if payload.select_first and new_photos:
+            first_cid = new_photos[0].get("content_id")
+            if first_cid:
+                tv_lock = _get_tv_ws_lock(ip)
+                with tv_lock:
+                    try:
+                        tv_client = _get_samsung_tv_client(ip, timeout=10.0)
+                        art = tv_client.art()
+                        art.select_image(first_cid, show=True)
+                    except Exception as e_sel:
+                        logging.warning(f"Could not select first reordered photo {first_cid}: {e_sel}")
+
+        return {"status": "ok", "photos": new_photos}
+
+    res = await loop.run_in_executor(None, _reorder_sync)
+    return res
+
+
+@app.post("/api/samsung-tvs/purge-legacy-art")
+async def purge_legacy_samsung_tv_art(payload: SamsungTvArtActionRequest):
+    """
+    Deletes all external / legacy user-uploaded photos from the TV hardware (photos not tracked by MR Darkroom),
+    leaving only curated MR Darkroom artworks on the Frame TV.
+    Uses fast batch delete_list and ensures the active displayed image is switched to a curated photo first.
+    """
+    ip = payload.ip.strip()
+    if not ip:
+        raise HTTPException(status_code=400, detail="TV IP is required")
+
+    loop = asyncio.get_running_loop()
+
+    def _purge_sync():
+        tv_lock = _get_tv_ws_lock(ip)
+        with tv_lock:
+            tv_client = _get_samsung_tv_client(ip, timeout=15.0)
+            art = tv_client.art()
+            sync_data = _load_tv_sync_data()
+            curated_cids = [p.get("content_id") for p in sync_data.get(ip, {}).get("photos", []) if p.get("content_id")]
+            curated_set = set(curated_cids)
+
+            legacy_cids = []
+            try:
+                avail = art.available()
+                if isinstance(avail, list):
+                    seen = set()
+                    for item in avail:
+                        cid = item.get("content_id")
+                        if cid and cid not in seen and cid not in curated_set and str(cid).startswith("MY_F"):
+                            seen.add(cid)
+                            legacy_cids.append(cid)
+            except Exception as e_avail:
+                logging.warning(f"Error reading available items on {ip}: {e_avail}")
+
+            if not legacy_cids:
+                return {"status": "ok", "purged_count": 0}
+
+            if curated_cids:
+                try:
+                    art.select_image(curated_cids[0], show=True)
+                except Exception:
+                    pass
+
+            purged_count = 0
+            try:
+                art.delete_list(legacy_cids)
+                purged_count = len(legacy_cids)
+            except Exception as e_batch:
+                logging.warning(f"Batch delete fallback on {ip}: {e_batch}")
+                for cid in legacy_cids:
+                    try:
+                        art.delete(cid)
+                        purged_count += 1
+                    except Exception as e_del:
+                        logging.warning(f"Could not purge {cid} from {ip}: {e_del}")
+
+            return {"status": "ok", "purged_count": purged_count}
+
+    res = await loop.run_in_executor(None, _purge_sync)
+    return res
+
+
+@app.post("/api/samsung-tvs/remove-art")
+async def remove_samsung_tv_art(payload: SamsungTvArtActionRequest):
+    """
+    Deletes an artwork image from the Samsung Frame TV hardware (via art.delete)
+    and removes it from the local MR Darkroom TV curation sync.
+    """
+    ip = payload.ip.strip()
+    cid = payload.content_id.strip()
+    if not ip or not cid:
+        raise HTTPException(status_code=400, detail="Both IP and content_id are required")
+
+    loop = asyncio.get_running_loop()
+
+    def _delete_sync():
+        tv_lock = _get_tv_ws_lock(ip)
+        with tv_lock:
+            tv_client = _get_samsung_tv_client(ip, timeout=12.0)
+            art = tv_client.art()
+            sync_data = _load_tv_sync_data()
+            remaining = [p for p in sync_data.get(ip, {}).get("photos", []) if p.get("content_id") != cid]
+
+            if remaining:
+                try:
+                    curr = art.get_current()
+                    if isinstance(curr, dict) and curr.get("content_id") == cid:
+                        art.select_image(remaining[0]["content_id"], show=True)
+                except Exception:
+                    pass
+
+            try:
+                art.delete(cid)
+            except Exception as e_del:
+                logging.warning(f"TV delete warning for {cid} on {ip}: {e_del}")
+
+            if ip in sync_data:
+                sync_data[ip]["photos"] = remaining
+                _save_tv_sync_data(sync_data)
+
+            return {"status": "ok", "content_id": cid}
+
+    res = await loop.run_in_executor(None, _delete_sync)
+    return res
+
+
+@app.post("/api/samsung-tvs/select-art")
+async def select_samsung_tv_art(payload: SamsungTvArtActionRequest):
+    """
+    Immediately switches the Samsung Frame TV display to show the specified content_id.
+    """
+    ip = payload.ip.strip()
+    cid = payload.content_id.strip()
+    if not ip or not cid:
+        raise HTTPException(status_code=400, detail="Both IP and content_id are required")
+
+    loop = asyncio.get_running_loop()
+
+    def _select_sync():
+        tv_lock = _get_tv_ws_lock(ip)
+        with tv_lock:
+            tv_client = _get_samsung_tv_client(ip, timeout=10.0)
+            art = tv_client.art()
+            art.select_image(cid, show=True)
+            return {"status": "ok", "content_id": cid}
+
+    res = await loop.run_in_executor(None, _select_sync)
+    return res
+
+
+@app.post("/api/samsung-tvs/art-mode")
+async def set_samsung_tv_art_mode(payload: SamsungTvPowerRequest):
+    """
+    Toggles Samsung Frame TV Art Mode ON or OFF.
+    """
+    ip = payload.ip.strip()
+    mode = payload.mode.strip().lower()
+    if not ip:
+        raise HTTPException(status_code=400, detail="TV IP is required")
+
+    loop = asyncio.get_running_loop()
+
+    def _artmode_sync():
+        tv_lock = _get_tv_ws_lock(ip)
+        with tv_lock:
+            try:
+                tv_client = _get_samsung_tv_client(ip, timeout=5.0)
+                art = tv_client.art()
+                target_val = "on" if mode == "on" else "off"
+                try:
+                    curr = str(art.get_artmode()).lower()
+                    if curr == target_val:
+                        return {"status": "ok", "mode": mode, "already_set": True}
+                except Exception:
+                    pass
+                art.set_artmode(target_val)
+                return {"status": "ok", "mode": mode}
+            except Exception as e:
+                logging.warning(f"Art mode set warning for {ip}: {e}")
+                return {"status": "warning", "message": str(e), "mode": mode}
+
+    res = await loop.run_in_executor(None, _artmode_sync)
+    return res
+
+
+@app.post("/api/samsung-tvs/slideshow")
+async def set_samsung_tv_slideshow(payload: SamsungTvSlideshowRequest):
+    """
+    Configures or toggles the persistent Samsung Frame TV slideshow.
+    """
+    ip = payload.ip.strip()
+    dur = int(payload.duration or 15)
+    status_on = payload.status.strip().lower() == "on"
+
+    loop = asyncio.get_running_loop()
+
+    def _slideshow_sync():
+        tv_lock = _get_tv_ws_lock(ip)
+        with tv_lock:
+            tv_client = _get_samsung_tv_client(ip, timeout=10.0)
+            art = tv_client.art()
+
+            try:
+                art_status = art.get_artmode()
+                if str(art_status).lower() not in ("on", "true", "1"):
+                    art.set_artmode(True)
+                    time.sleep(0.4)
+            except Exception:
+                pass
+
+            cats_to_try = ["MY-C0002", "MY-C0008", "MY-C0004"]
+            last_err = None
+
+            if status_on:
+                success = False
+                for cat in cats_to_try:
+                    try:
+                        art.set_slideshow_status(duration=dur, type=False, category_id=cat)
+                        success = True
+                        break
+                    except Exception as e:
+                        last_err = e
+                if not success and last_err:
+                    logging.warning(f"Error setting slideshow duration={dur} on TV ({ip}): {last_err}")
+                    return {"status": "warning", "message": f"TV slideshow setup: {last_err}", "duration": dur}
+            else:
+                for cat in cats_to_try:
+                    try:
+                        art.set_slideshow_status(duration=0, type=False, category_id=cat)
+                        break
+                    except Exception:
+                        pass
+            return {"status": "ok", "slideshow_status": "on" if status_on else "off", "duration": dur}
+
+    res = await loop.run_in_executor(None, _slideshow_sync)
+    return res
+
+
+@app.post("/api/samsung-tvs/update-art-mat")
+async def update_samsung_tv_art_mat(payload: SamsungTvUpdateMatRequest):
+    """
+    Re-renders a single photo (or all curated photos on the TV) with a new
+    45-degree beveled mat color, single/double mat style, border thickness/placement,
+    window aspect ratio, and crop position, uploads the new 4K plate to the Samsung Frame TV,
+    displays it immediately, and removes the old plate from TV storage.
+    """
+    ip = payload.ip.strip()
+    if not ip:
+        raise HTTPException(status_code=400, detail="TV IP is required")
+
+    loop = asyncio.get_running_loop()
+
+    def _update_mat_worker():
+        tv_lock = _get_tv_ws_lock(ip)
+        with tv_lock:
+            sync_data = _load_tv_sync_data()
+            current_sync_tv = sync_data.setdefault(ip, {"ip": ip, "photos": []})
+            photos_list = current_sync_tv.get("photos", [])
+            if not photos_list:
+                raise RuntimeError("No curated photos registered on this TV.")
+
+            if payload.apply_to_all:
+                targets = list(photos_list)
+            else:
+                targets = [
+                    p for p in photos_list
+                    if (payload.content_id and p.get("content_id") == payload.content_id)
+                    or (payload.file_hash and p.get("file_hash") == payload.file_hash)
+                ]
+                if not targets and payload.content_id:
+                    raise RuntimeError(f"Photo {payload.content_id} not found in TV curation registry.")
+
+            tv_client = _get_samsung_tv_client(ip, timeout=35.0)
+            art = tv_client.art()
+
+            updated_cids = []
+            old_cids_to_delete = []
+
+            for p_rec in targets:
+                f_hash = p_rec.get("file_hash") or ""
+                f_path = p_rec.get("file_path") or ""
+                old_cid = p_rec.get("content_id")
+
+                im_rgb = _load_tv_source_image(f_path, f_hash)
+                if im_rgb is None:
+                    continue
+
+                effective_placement = "none" if payload.mat_mode == "none" else (payload.mat_placement or "slim_optical")
+                tv_4k = generate_fine_art_mat(
+                    im_rgb,
+                    color_hex=payload.mat_color or "#F4EFE6",
+                    placement=effective_placement,
+                    aspect_ratio=payload.mat_aspect or "original",
+                    crop_x=payload.crop_x if payload.crop_x is not None else 0.5,
+                    crop_y=payload.crop_y if payload.crop_y is not None else 0.5,
+                    mat_style=payload.mat_style or "single",
+                    inner_mat_color=payload.inner_mat_color or "#F4EFE6",
+                    canvas_w=3840,
+                    canvas_h=2160,
+                )
+
+                buf = io.BytesIO()
+                tv_4k.save(buf, format="JPEG", quality=94, subsampling=0, progressive=False)
+                new_cid = None
+                for attempt in range(2):
+                    try:
+                        new_cid = art.upload(buf.getvalue(), file_type="JPEG", matte="none")
+                        break
+                    except Exception as e_up:
+                        if attempt == 0:
+                            time.sleep(0.5)
+                            tv_client = _get_samsung_tv_client(ip, timeout=35.0)
+                            art = tv_client.art()
+                        else:
+                            raise e_up
+
+                if new_cid:
+                    if old_cid and old_cid != new_cid:
+                        old_cids_to_delete.append(old_cid)
+                    p_rec["content_id"] = new_cid
+                    p_rec["mat_mode"] = payload.mat_mode
+                    p_rec["mat_color"] = payload.mat_color
+                    p_rec["mat_placement"] = effective_placement
+                    p_rec["mat_aspect"] = payload.mat_aspect or "original"
+                    p_rec["mat_style"] = payload.mat_style or "single"
+                    p_rec["inner_mat_color"] = payload.inner_mat_color or "#F4EFE6"
+                    p_rec["crop_x"] = float(payload.crop_x if payload.crop_x is not None else 0.5)
+                    p_rec["crop_y"] = float(payload.crop_y if payload.crop_y is not None else 0.5)
+                    p_rec["uploaded_at"] = datetime.now().isoformat()
+                    updated_cids.append(new_cid)
+
+            _save_tv_sync_data(sync_data)
+
+            if updated_cids:
+                try:
+                    art.select_image(updated_cids[0], show=True)
+                except Exception as e_sel:
+                    logging.warning(f"Could not select updated TV image {updated_cids[0]}: {e_sel}")
+
+            if old_cids_to_delete:
+                try:
+                    art.delete_list(old_cids_to_delete)
+                except Exception:
+                    for ocid in old_cids_to_delete:
+                        try:
+                            art.delete(ocid)
+                        except Exception:
+                            pass
+
+            return {
+                "status": "ok",
+                "updated_count": len(updated_cids),
+                "new_content_id": updated_cids[0] if updated_cids else None,
+                "photos": current_sync_tv["photos"],
+            }
+
+    res = await loop.run_in_executor(None, _update_mat_worker)
+    return res
+
+
+@app.post("/api/samsung-tvs/sync-collection")
+async def sync_collection_to_samsung_tv(payload: SamsungTvSyncCollectionRequest):
+    """
+    Synchronizes an MR Darkroom Collection (or list of photos) to a Samsung Frame TV.
+    Supports:
+      - mode='additive': Appends photos to the TV alongside existing images.
+      - mode='overwrite': Clears existing photos on the TV, replacing them with the new sequence.
+      - Fine-Art 4K Mat generation with true 45-degree angled bevel, single/double mat, and selectable aspect ratio.
+      - Auto-starts slideshow at specified interval.
+    """
+    ip = payload.ip.strip()
+    if not ip:
+        raise HTTPException(status_code=400, detail="TV IP is required")
+
+    loop = asyncio.get_running_loop()
+
+    def _sync_worker():
+        conn = get_db_connection(DEFAULT_DB_PATH)
+        target_rows = []
+
+        if payload.collection_id is not None:
+            c_id = int(payload.collection_id) if str(payload.collection_id).isdigit() else payload.collection_id
+            c_rows = conn.execute(
+                """
+                SELECT p.* FROM collection_items ci
+                JOIN photo_records p ON ci.photo_id = p.file_hash
+                WHERE ci.collection_id = ?
+                ORDER BY ci.sort_order ASC, ci.added_at ASC
+                """,
+                (c_id,),
+            ).fetchall()
+            target_rows = [dict(r) for r in c_rows]
+        elif payload.photo_ids:
+            placeholders = ",".join("?" for _ in payload.photo_ids)
+            p_rows = conn.execute(
+                f"""
+                SELECT * FROM photo_records
+                WHERE file_hash IN ({placeholders}) OR file_path IN ({placeholders})
+                """,
+                list(payload.photo_ids) + list(payload.photo_ids),
+            ).fetchall()
+            target_rows = [dict(r) for r in p_rows]
+
+        conn.close()
+
+        if not target_rows:
+            raise RuntimeError("No photos found to sync to TV.")
+
+        tv_lock = _get_tv_ws_lock(ip)
+        with tv_lock:
+            tv_client = _get_samsung_tv_client(ip, timeout=35.0)
+            art = tv_client.art()
+
+            sync_data = _load_tv_sync_data()
+            current_sync_tv = sync_data.setdefault(ip, {"ip": ip, "photos": []})
+
+            old_cids_to_delete = []
+            if payload.mode == "overwrite":
+                old_cids_to_delete = [p.get("content_id") for p in current_sync_tv.get("photos", []) if p.get("content_id")]
+                current_sync_tv["photos"] = []
+
+            uploaded_records = []
+            effective_placement = "none" if payload.mat_mode == "none" else (payload.mat_placement or "slim_optical")
+
+            for idx, row in enumerate(target_rows, 1):
+                f_hash = row.get("file_hash") or ""
+                src_path = row.get("file_path")
+                im_rgb = _load_tv_source_image(src_path, f_hash, row.get("catalog_name"))
+                if im_rgb is None:
+                    continue
+
+                tv_4k = generate_fine_art_mat(
+                    im_rgb,
+                    color_hex=payload.mat_color or "#F4EFE6",
+                    placement=effective_placement,
+                    aspect_ratio=payload.mat_aspect or "original",
+                    crop_x=payload.crop_x if payload.crop_x is not None else 0.5,
+                    crop_y=payload.crop_y if payload.crop_y is not None else 0.5,
+                    mat_style=payload.mat_style or "single",
+                    inner_mat_color=payload.inner_mat_color or "#F4EFE6",
+                    canvas_w=3840,
+                    canvas_h=2160,
+                )
+
+                buf = io.BytesIO()
+                tv_4k.save(buf, format="JPEG", quality=94, subsampling=0, progressive=False)
+                cid = art.upload(buf.getvalue(), file_type="JPEG", matte="none")
+
+                if cid:
+                    photo_entry = {
+                        "content_id": cid,
+                        "file_hash": f_hash,
+                        "file_path": row.get("file_path"),
+                        "filename": Path(row.get("file_path") or "photo.jpg").name,
+                        "title": row.get("title") or Path(row.get("file_path") or "photo.jpg").stem,
+                        "shoot_date": row.get("shoot_date") or "",
+                        "star_rating": int(row.get("star_rating") or 0),
+                        "mat_mode": payload.mat_mode,
+                        "mat_color": payload.mat_color,
+                        "mat_placement": effective_placement,
+                        "mat_aspect": payload.mat_aspect or "original",
+                        "mat_style": payload.mat_style or "single",
+                        "inner_mat_color": payload.inner_mat_color or "#F4EFE6",
+                        "crop_x": float(payload.crop_x if payload.crop_x is not None else 0.5),
+                        "crop_y": float(payload.crop_y if payload.crop_y is not None else 0.5),
+                        "thumb_url": f"/previews_1600/{f_hash}.webp" if f_hash else None,
+                        "uploaded_at": datetime.now().isoformat(),
+                    }
+                    uploaded_records.append(photo_entry)
+                    current_sync_tv["photos"].append(photo_entry)
+
+            _save_tv_sync_data(sync_data)
+
+            if uploaded_records:
+                try:
+                    art.select_image(uploaded_records[0]["content_id"], show=True)
+                except Exception as e_sel:
+                    logging.warning(f"Error selecting active TV art: {e_sel}")
+
+                if old_cids_to_delete:
+                    try:
+                        art.delete_list(old_cids_to_delete)
+                    except Exception:
+                        for ocid in old_cids_to_delete:
+                            try:
+                                art.delete(ocid)
+                            except Exception:
+                                pass
+
+                dur_m = int(payload.slideshow_minutes or 15)
+                if len(current_sync_tv["photos"]) > 1 or dur_m > 0:
+                    for cat in ["MY-C0002", "MY-C0008", "MY-C0004"]:
+                        try:
+                            art.set_slideshow_status(duration=dur_m, type=False, category_id=cat)
+                            break
+                        except Exception:
+                            pass
+
+            return {
+                "status": "ok",
+                "uploaded_count": len(uploaded_records),
+                "total_on_tv": len(current_sync_tv["photos"]),
+                "photos": current_sync_tv["photos"],
+            }
+
+    res = await loop.run_in_executor(None, _sync_worker)
+    return res
 
 
 class RevealFolderRequest(BaseModel):
@@ -3888,7 +6001,7 @@ def _extract_all_keywords(record: Dict[str, Any]) -> List[str]:
 
 
 def _embed_metadata_to_jpeg(jpeg_path: Path, record: Dict[str, Any], dpi: int = 180):
-    exiftool_bin = Path("/Users/mitch/MRDarkroom/bin/exiftool")
+    exiftool_bin = PROJECT_ROOT / "bin" / "exiftool"
     if not exiftool_bin.exists():
         exiftool_bin = Path("exiftool")
 
@@ -3952,7 +6065,7 @@ def _resolve_photo_records_by_ids(photo_ids: List[str]) -> List[Dict[str, Any]]:
                    caption, specific_location, sub_location, city, state_region, country,
                    camera_make, camera_model, lens_model, star_rating, exif_time,
                    key_subjects, existing_keywords, hierarchical_keywords, user_taught_tags,
-                   lrcat_keywords, verified_subjects
+                   lrcat_keywords, verified_subjects, catalog_name
             FROM photo_records
             WHERE file_hash IN ({ph}) OR file_path IN ({ph})
         """
@@ -3994,40 +6107,138 @@ def _run_batch_export_worker(
     mode: str = "jpeg",
     folder_name: Optional[str] = None,
     crops: Optional[Dict[str, Dict[str, float]]] = None,
+    custom_long_edge: Optional[int] = None,
+    custom_dpi: Optional[int] = None,
+    target_destination: Optional[str] = "desktop",
+    custom_folder_path: Optional[str] = None,
+    samsung_tv_ip: Optional[str] = None,
+    slideshow_minutes: Optional[int] = 15,
+    mat_mode: Optional[str] = "studio",
+    mat_color: Optional[str] = "#F4EFE6",
+    mat_placement: Optional[str] = "optical_center",
+    mat_aspect: Optional[str] = "original",
+    mat_style: Optional[str] = "single",
+    inner_mat_color: Optional[str] = "#F4EFE6",
 ) -> Dict[str, Any]:
+    import io
     import shutil
     import tempfile
     from PIL import Image, ImageOps
+    Image.MAX_IMAGE_PIXELS = None
 
     total_photos = len(photos_list)
     timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
     if not folder_name or not folder_name.strip():
         if mode == "tv_showcase":
             folder_name = f"TV_Showcase_16x9_{timestamp_str}"
-        elif mode == "original":
-            folder_name = f"Originals_{timestamp_str}"
+        elif mode in ("tiff", "original"):
+            folder_name = f"Archival_TIFFs_{timestamp_str}"
         else:
             folder_name = f"JPEGs_{timestamp_str}"
 
     folder_name = _sanitize_folder_name(folder_name)
-    desktop_root = Path.home() / "Desktop" / "MRDarkroom_Exports"
-    export_dir = desktop_root / folder_name
+
+    dest_str = (target_destination or "desktop").strip().lower()
+    is_samsung_tv = dest_str == "samsung_tv" or dest_str.startswith("samsung_tv:")
+    resolved_tv_ip = (samsung_tv_ip or "").strip()
+    if not resolved_tv_ip and dest_str.startswith("samsung_tv:"):
+        resolved_tv_ip = dest_str.split(":", 1)[1].strip()
+    if is_samsung_tv and not resolved_tv_ip:
+        resolved_tv_ip = "192.168.68.88"
+
+    tv_names = {
+        "tv_1": "TV_1_Main_Gallery",
+        "tv_2": "TV_2_Living_Room",
+        "tv_3": "TV_3_Office",
+    }
+
+    if is_samsung_tv:
+        desktop_base = Path.home() / "Desktop"
+        tv_desktop_root = desktop_base / "TV Folder"
+        tv_desktop_root.mkdir(parents=True, exist_ok=True)
+        export_dir = tv_desktop_root / folder_name
+        dest_label = f"Samsung Frame TV ({resolved_tv_ip})"
+    elif custom_folder_path and Path(custom_folder_path).exists():
+        chosen_root = Path(custom_folder_path)
+        export_dir = chosen_root / folder_name
+        dest_label = f"Finder Folder ({chosen_root.name})"
+    elif dest_str == "icloud":
+        icloud_base = Path.home() / "Library/Mobile Documents/com~apple~CloudDocs"
+        if mode == "tv_showcase":
+            tv_folder_root = icloud_base / "TV Folder"
+            tv_folder_root.mkdir(parents=True, exist_ok=True)
+            export_dir = tv_folder_root / folder_name
+            dest_label = f"iCloud Drive (TV Folder / {folder_name})"
+            try:
+                mirror_parent = icloud_base / "MRDarkroom_Exports"
+                mirror_parent.mkdir(parents=True, exist_ok=True)
+                mirror_link = mirror_parent / "TV Folder"
+                if not mirror_link.exists():
+                    os.symlink(tv_folder_root, mirror_link)
+            except Exception:
+                pass
+        else:
+            icloud_root = icloud_base / "MRDarkroom_Exports"
+            export_dir = icloud_root / folder_name
+            dest_label = "iCloud Drive"
+    elif dest_str.startswith("tv_"):
+        tv_folder = tv_names.get(dest_str, dest_str.upper())
+        # Check for macOS local iCloud Drive
+        icloud_smart_tv = Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/SmartTV" / tv_folder
+        # Check for macOS local Google Drive for Desktop CloudStorage mount
+        gdrive_candidates = list((Path.home() / "Library/CloudStorage").glob("GoogleDrive-*/My Drive/SmartTV"))
+        if not gdrive_candidates:
+            std_gdrive = Path.home() / "Google Drive" / "My Drive" / "SmartTV"
+            if std_gdrive.exists():
+                gdrive_candidates = [std_gdrive]
+
+        if icloud_smart_tv.parent.exists():
+            export_dir = icloud_smart_tv
+            dest_label = f"Smart TV ({tv_folder} via iCloud)"
+        elif gdrive_candidates and gdrive_candidates[0].exists():
+            export_dir = gdrive_candidates[0] / tv_folder
+            dest_label = f"Smart TV ({tv_folder} via Google Drive)"
+        else:
+            export_dir = Path.home() / "Desktop" / "SmartTV_Uploads" / tv_folder
+            dest_label = f"Smart TV ({tv_folder})"
+    else:
+        desktop_base = Path.home() / "Desktop"
+        if mode == "tv_showcase":
+            tv_desktop_root = desktop_base / "TV Folder"
+            tv_desktop_root.mkdir(parents=True, exist_ok=True)
+            export_dir = tv_desktop_root / folder_name
+            dest_label = f"Desktop (TV Folder / {folder_name})"
+            try:
+                mirror_parent = desktop_base / "MRDarkroom_Exports"
+                mirror_parent.mkdir(parents=True, exist_ok=True)
+                mirror_link = mirror_parent / "TV Folder"
+                if not mirror_link.exists():
+                    os.symlink(tv_desktop_root, mirror_link)
+            except Exception:
+                pass
+        else:
+            desktop_root = desktop_base / "MRDarkroom_Exports"
+            export_dir = desktop_root / folder_name
+            dest_label = "Desktop"
+
     export_dir.mkdir(parents=True, exist_ok=True)
 
     mode_label = (
-        "TV Showcase 16:9 JPEGs (180 DPI, 12.5k px)"
+        f"TV Showcase 16:9 JPEGs ({custom_dpi or 180} DPI, {custom_long_edge or 12000}px)"
         if mode == "tv_showcase"
-        else "Original Masters"
-        if mode == "original"
-        else "High-Res JPEGs"
+        else "Archival Master TIFFs (.tif)"
+        if mode in ("tiff", "original")
+        else f"Custom Print JPEGs ({custom_dpi or 300} DPI, {custom_long_edge}px)"
+        if custom_long_edge
+        else "Print JPEGs (300 DPI)"
     )
 
     JOB_MANAGER.start_job(
         task_type="batch_export",
-        title=f"Exporting {total_photos} {mode_label} to Desktop",
+        title=f"Uploading {total_photos} {mode_label} to {dest_label}",
         total=total_photos,
-        phase=f"Exporting {total_photos} photos to ~/Desktop/MRDarkroom_Exports/{folder_name}",
-        extra={"export_dir": str(export_dir), "mode": mode},
+        phase=f"Exporting {total_photos} photos to {export_dir}",
+        extra={"export_dir": str(export_dir), "mode": mode, "target_destination": dest_str},
     )
 
     exported_files: List[Dict[str, Any]] = []
@@ -4045,8 +6256,8 @@ def _run_batch_export_worker(
 
             orig_stem = orig_fp.stem if orig_fp.name else f"photo_{idx}"
 
-            if mode == "original":
-                out_name = f"{idx:02d}_{orig_fp.name}"
+            if mode in ("tiff", "original"):
+                out_name = f"{idx:02d}_{orig_stem}.tif"
                 out_path = export_dir / out_name
             else:
                 out_name = f"{idx:02d}_{orig_stem}.jpg"
@@ -4054,15 +6265,26 @@ def _run_batch_export_worker(
 
             src_to_load = None
             used_source = "master"
+            alt_2tb = Path("/Volumes/2TB_Archive/Aerial Keepers/Keepers Images") / orig_fp.name if orig_fp.name else None
+            p16_cand = Path(p["preview_1600_path"]) if p.get("preview_1600_path") else None
+            if p16_cand and not p16_cand.is_absolute():
+                p16_cand = DATA_VAULT_DIR / p16_cand
+            t36_cand = Path(p["thumb_360_path"]) if p.get("thumb_360_path") else None
+            if t36_cand and not t36_cand.is_absolute():
+                t36_cand = DATA_VAULT_DIR / t36_cand
+
             if orig_fp.exists():
                 src_to_load = orig_fp
             elif p.get("file_path") and Path(p["file_path"]).exists():
                 src_to_load = Path(p["file_path"])
-            elif p.get("preview_1600_path") and Path(p["preview_1600_path"]).exists():
-                src_to_load = Path(p["preview_1600_path"])
+            elif alt_2tb and alt_2tb.exists():
+                src_to_load = alt_2tb
+                used_source = "master_2tb"
+            elif p16_cand and p16_cand.exists():
+                src_to_load = p16_cand
                 used_source = "preview_1600"
-            elif p.get("thumb_360_path") and Path(p["thumb_360_path"]).exists():
-                src_to_load = Path(p["thumb_360_path"])
+            elif t36_cand and t36_cand.exists():
+                src_to_load = t36_cand
                 used_source = "thumb_360"
 
             if not src_to_load or not src_to_load.exists():
@@ -4072,42 +6294,143 @@ def _run_batch_export_worker(
             success = False
             width, height = 0, 0
 
-            if mode == "original":
-                try:
-                    shutil.copy2(src_to_load, out_path)
-                    success = True
-                    for ext_try in [".xmp", ".XMP"]:
-                        xmp_src = src_to_load.with_suffix(ext_try)
-                        if not xmp_src.exists():
-                            xmp_src = Path(str(src_to_load) + ext_try)
-                        if xmp_src.exists() and xmp_src.is_file():
-                            xmp_out = out_path.with_suffix(ext_try)
-                            shutil.copy2(xmp_src, xmp_out)
-                            break
+            # Check for Lightroom Classic Develop edits preview in Previews.lrdata
+            lr_preview_im = None
+            if mode in ("tv_showcase", "jpeg", "tiff", "original"):
+                lr_prev_file, lr_orient = find_lightroom_preview_for_photo(p.get("file_path"), p.get("catalog_name"))
+                if lr_prev_file and lr_prev_file.exists():
                     try:
-                        with Image.open(out_path) as im_chk:
-                            width, height = im_chk.size
+                        res_lr = extract_jpeg_from_lrprev(lr_prev_file, orientation=lr_orient)
+                        if isinstance(res_lr, Image.Image):
+                            lr_preview_im = res_lr
+                        elif isinstance(res_lr, (bytes, bytearray)):
+                            lr_preview_im = Image.open(io.BytesIO(res_lr))
+                        if lr_preview_im is not None:
+                            used_source = "lightroom_preview"
+                    except Exception as e_lr_exp:
+                        logging.warning(f"Failed extracting LR preview for export of {orig_fp}: {e_lr_exp}")
+
+            if mode in ("tiff", "original"):
+                target_dpi = int(custom_dpi) if (custom_dpi and int(custom_dpi) > 0) else 300
+                target_long_edge = int(custom_long_edge) if (custom_long_edge and int(custom_long_edge) > 0) else None
+
+                # Determine full 100% master original resolution (e.g. 11608 x 8708 for Phase One)
+                orig_w = int(p.get("width") or 0)
+                orig_h = int(p.get("height") or 0)
+                if (orig_w <= 0 or orig_h <= 0) and orig_fp and orig_fp.exists():
+                    try:
+                        sips_out = subprocess.check_output(
+                            ["sips", "-g", "pixelWidth", "-g", "pixelHeight", str(orig_fp)],
+                            text=True, timeout=5, stderr=subprocess.DEVNULL
+                        )
+                        for line in sips_out.splitlines():
+                            if "pixelWidth:" in line:
+                                orig_w = int(line.split(":")[-1].strip())
+                            elif "pixelHeight:" in line:
+                                orig_h = int(line.split(":")[-1].strip())
                     except Exception:
                         pass
-                except Exception as e_orig:
-                    logging.warning(f"Failed copying original {src_to_load} to {out_path}: {e_orig}")
+                if (orig_w <= 0 or orig_h <= 0) and src_to_load and src_to_load.exists():
+                    try:
+                        with Image.open(src_to_load) as _chk_im:
+                            orig_w, orig_h = _chk_im.size
+                    except Exception:
+                        pass
+
+                def _save_tiff_from_pil(raw_im: Image.Image) -> Tuple[int, int]:
+                    nonlocal target_dpi, target_long_edge, orig_w, orig_h
+                    img = ImageOps.exif_transpose(raw_im)
+                    if img.mode in ("I;16", "I;16L", "I;16B", "I"):
+                        arr = np.array(img, dtype=np.float32)
+                        max_v = float(np.max(arr)) if arr.size > 0 else 65535.0
+                        if max_v > 255.0:
+                            arr = np.clip((arr / 65535.0) * 255.0, 0, 255).astype(np.uint8)
+                        else:
+                            arr = np.clip(arr, 0, 255).astype(np.uint8)
+                        img = Image.fromarray(arr)
+                    elif img.mode != "RGB":
+                        img = img.convert("RGB")
+
+                    cur_w, cur_h = img.size
+                    master_max = max(orig_w, orig_h)
+                    if target_long_edge and target_long_edge > 0:
+                        if cur_w >= cur_h:
+                            nw = target_long_edge
+                            nh = max(1, int(round(cur_h * (target_long_edge / float(cur_w)))))
+                        else:
+                            nh = target_long_edge
+                            nw = max(1, int(round(cur_w * (target_long_edge / float(cur_h)))))
+                        img = img.resize((nw, nh), resample=Image.Resampling.LANCZOS)
+                    elif master_max > max(cur_w, cur_h):
+                        # Ensure output is 100% of the original master sensor dimensions with edits!
+                        if cur_w >= cur_h:
+                            nw = master_max
+                            nh = max(1, int(round(cur_h * (master_max / float(cur_w)))))
+                        else:
+                            nh = master_max
+                            nw = max(1, int(round(cur_w * (master_max / float(cur_h)))))
+                        img = img.resize((nw, nh), resample=Image.Resampling.LANCZOS)
+
+                    img.save(str(out_path), format="TIFF", compression="tiff_lzw", dpi=(target_dpi, target_dpi))
+                    return img.size
+
+                try:
+                    if lr_preview_im is not None:
+                        width, height = _save_tiff_from_pil(lr_preview_im)
+                        success = True
+                    else:
+                        with Image.open(src_to_load) as im:
+                            width, height = _save_tiff_from_pil(im)
+                            success = True
+                except Exception:
+                    try:
+                        sips_cmd = [
+                            "sips",
+                            "-s", "format", "tiff",
+                            "--matchTo", "/System/Library/ColorSync/Profiles/sRGB Profile.icc",
+                            str(src_to_load),
+                            "--out", str(out_path),
+                        ]
+                        res = subprocess.run(sips_cmd, capture_output=True, text=True, timeout=60, check=False)
+                        if res.returncode == 0 and out_path.exists():
+                            with Image.open(out_path) as check_im:
+                                width, height = check_im.size
+                            success = True
+                    except Exception as e_tif:
+                        logging.warning(f"Failed exporting TIFF {src_to_load} to {out_path}: {e_tif}")
+
+                if success and out_path.exists():
+                    _embed_metadata_to_jpeg(out_path, p, dpi=target_dpi)
 
             elif mode == "tv_showcase":
                 im = None
                 temp_dir = None
                 try:
-                    ext = src_to_load.suffix.lower()
-                    if ext in (".dng", ".cr2", ".nef", ".arw", ".rw2", ".orf"):
-                        temp_dir = tempfile.TemporaryDirectory()
-                        temp_jpg = Path(temp_dir.name) / "temp_raw.jpg"
-                        sips_cmd = [
-                            "sips", "-s", "format", "jpeg", "-s", "formatOptions", "98",
-                            "--matchTo", "/System/Library/ColorSync/Profiles/sRGB Profile.icc",
-                            str(src_to_load), "--out", str(temp_jpg)
-                        ]
-                        res = subprocess.run(sips_cmd, capture_output=True, text=True, timeout=60, check=False)
-                        if res.returncode == 0 and temp_jpg.exists():
-                            im = Image.open(temp_jpg)
+                    # Prioritize _load_tv_source_image so Lightroom Classic crops/panoramas & color grading match 100%
+                    im = _load_tv_source_image(
+                        p.get("file_path") or str(src_to_load),
+                        p.get("file_hash"),
+                        p.get("catalog_name"),
+                    )
+                    if im is not None:
+                        used_source = "lightroom_preview"
+
+                    if im is None and lr_preview_im is not None:
+                        im = lr_preview_im.copy()
+
+                    if im is None:
+                        ext = src_to_load.suffix.lower()
+                        if ext in (".dng", ".cr2", ".nef", ".arw", ".rw2", ".orf"):
+                            temp_dir = tempfile.TemporaryDirectory()
+                            temp_jpg = Path(temp_dir.name) / "temp_raw.jpg"
+                            sips_cmd = [
+                                "sips", "-s", "format", "jpeg", "-s", "formatOptions", "98",
+                                "--matchTo", "/System/Library/ColorSync/Profiles/sRGB Profile.icc",
+                                str(src_to_load), "--out", str(temp_jpg)
+                            ]
+                            res = subprocess.run(sips_cmd, capture_output=True, text=True, timeout=60, check=False)
+                            if res.returncode == 0 and temp_jpg.exists():
+                                im = Image.open(temp_jpg)
 
                     if im is None:
                         try:
@@ -4154,33 +6477,28 @@ def _run_batch_export_worker(
                         norm_y = max(0.0, min(1.0, norm_y))
                         norm_x = max(0.0, min(1.0, norm_x))
 
-                        if cur_ratio > target_ratio:
-                            # Wider than 16:9
-                            new_w = int(round(h * target_ratio))
-                            slack_w = max(0, w - new_w)
-                            left = int(round(slack_w * norm_x))
-                            left = max(0, min(slack_w, left))
-                            im = im.crop((left, 0, left + new_w, h))
-                        elif cur_ratio < target_ratio:
-                            # Taller than 16:9 (common for 3:2, 4:3, Phase One, and portraits)
-                            new_h = int(round(w / target_ratio))
-                            slack_h = max(0, h - new_h)
-                            top = int(round(slack_h * norm_y))
-                            top = max(0, min(slack_h, top))
-                            im = im.crop((0, top, w, top + new_h))
+                        target_long_edge = int(custom_long_edge) if (custom_long_edge and int(custom_long_edge) > 0) else 12000
+                        target_dpi = int(custom_dpi) if (custom_dpi and int(custom_dpi) > 0) else 180
 
-                        # Target sizing: exactly 12,500 px on the long edge
-                        # Landscape 16:9 -> 12,500 × 7,031 px
-                        # Portrait 9:16 -> 7,031 × 12,500 px
-                        if im.width >= im.height:
-                            target_w = 12500
-                            target_h = int(round(12500 * (9.0 / 16.0)))
-                        else:
-                            target_w = int(round(12500 * (9.0 / 16.0)))
-                            target_h = 12500
+                        # Always render 16:9 canvas for TV Showcase (e.g. 12000 x 6750 or 3840 x 2160)
+                        target_w = target_long_edge
+                        target_h = int(round(target_long_edge * (9.0 / 16.0)))
 
-                        im = im.resize((target_w, target_h), resample=Image.Resampling.LANCZOS)
-                        im.save(str(out_path), format="JPEG", quality=96, subsampling=0, optimize=True, dpi=(180, 180))
+                        effective_placement = "none" if mat_mode == "none" else (mat_placement or "optical_center")
+                        im = generate_fine_art_mat(
+                            im,
+                            color_hex=mat_color or "#F4EFE6",
+                            placement=effective_placement,
+                            aspect_ratio=mat_aspect or "original",
+                            crop_x=norm_x,
+                            crop_y=norm_y,
+                            mat_style=mat_style or "single",
+                            inner_mat_color=inner_mat_color or "#F4EFE6",
+                            canvas_w=target_w,
+                            canvas_h=target_h,
+                        )
+
+                        im.save(str(out_path), format="JPEG", quality=96, subsampling=0, optimize=True, dpi=(target_dpi, target_dpi))
                         width, height = im.size
                         success = True
                 except Exception as e_tv:
@@ -4192,26 +6510,47 @@ def _run_batch_export_worker(
                         temp_dir.cleanup()
 
                 if success and out_path.exists():
-                    _embed_metadata_to_jpeg(out_path, p, dpi=180)
+                    _embed_metadata_to_jpeg(out_path, p, dpi=target_dpi)
 
             else:  # mode == "jpeg"
-                try:
-                    with Image.open(src_to_load) as im:
-                        im = ImageOps.exif_transpose(im)
-                        if im.mode in ("I;16", "I;16L", "I;16B", "I"):
-                            arr = np.array(im, dtype=np.float32)
-                            max_v = float(np.max(arr)) if arr.size > 0 else 65535.0
-                            if max_v > 255.0:
-                                arr = np.clip((arr / 65535.0) * 255.0, 0, 255).astype(np.uint8)
-                            else:
-                                arr = np.clip(arr, 0, 255).astype(np.uint8)
-                            im = Image.fromarray(arr)
-                        elif im.mode != "RGB":
-                            im = im.convert("RGB")
+                target_dpi = int(custom_dpi) if (custom_dpi and int(custom_dpi) > 0) else 300
+                target_long_edge = int(custom_long_edge) if (custom_long_edge and int(custom_long_edge) > 0) else None
 
-                        im.save(str(out_path), format="JPEG", quality=96, subsampling=0, optimize=True, dpi=(300, 300))
-                        width, height = im.size
+                def _save_jpeg_from_pil(raw_im: Image.Image) -> Tuple[int, int]:
+                    nonlocal target_dpi, target_long_edge
+                    img = ImageOps.exif_transpose(raw_im)
+                    if img.mode in ("I;16", "I;16L", "I;16B", "I"):
+                        arr = np.array(img, dtype=np.float32)
+                        max_v = float(np.max(arr)) if arr.size > 0 else 65535.0
+                        if max_v > 255.0:
+                            arr = np.clip((arr / 65535.0) * 255.0, 0, 255).astype(np.uint8)
+                        else:
+                            arr = np.clip(arr, 0, 255).astype(np.uint8)
+                        img = Image.fromarray(arr)
+                    elif img.mode != "RGB":
+                        img = img.convert("RGB")
+
+                    if target_long_edge and target_long_edge > 0:
+                        cur_w, cur_h = img.size
+                        if cur_w >= cur_h:
+                            nw = target_long_edge
+                            nh = max(1, int(round(cur_h * (target_long_edge / float(cur_w)))))
+                        else:
+                            nh = target_long_edge
+                            nw = max(1, int(round(cur_w * (target_long_edge / float(cur_h)))))
+                        img = img.resize((nw, nh), resample=Image.Resampling.LANCZOS)
+
+                    img.save(str(out_path), format="JPEG", quality=96, subsampling=0, optimize=True, dpi=(target_dpi, target_dpi))
+                    return img.size
+
+                try:
+                    if lr_preview_im is not None:
+                        width, height = _save_jpeg_from_pil(lr_preview_im)
                         success = True
+                    else:
+                        with Image.open(src_to_load) as im:
+                            width, height = _save_jpeg_from_pil(im)
+                            success = True
                 except Exception:
                     try:
                         sips_cmd = [
@@ -4225,13 +6564,16 @@ def _run_batch_export_worker(
                         res = subprocess.run(sips_cmd, capture_output=True, text=True, timeout=60, check=False)
                         if res.returncode == 0 and out_path.exists():
                             with Image.open(out_path) as check_im:
-                                width, height = check_im.size
+                                if target_long_edge and target_long_edge > 0:
+                                    width, height = _save_jpeg_from_pil(check_im)
+                                else:
+                                    width, height = check_im.size
                             success = True
                     except Exception as e_jpg:
                         logging.warning(f"Failed exporting JPEG {src_to_load} to {out_path}: {e_jpg}")
 
                 if success and out_path.exists():
-                    _embed_metadata_to_jpeg(out_path, p, dpi=300)
+                    _embed_metadata_to_jpeg(out_path, p, dpi=target_dpi)
 
             if success and out_path.exists():
                 exported_files.append({
@@ -4241,35 +6583,145 @@ def _run_batch_export_worker(
                     "width": width,
                     "height": height,
                     "size_mb": round(out_path.stat().st_size / (1024 * 1024), 2),
+                    "photo_record": p,
                 })
 
             JOB_MANAGER.update_progress(
                 processed=idx,
                 total=total_photos,
                 current_file=out_name,
-                phase=f"Exported {len(exported_files)} of {total_photos} to ~/Desktop/MRDarkroom_Exports/{folder_name}",
+                phase=f"Exported {len(exported_files)} of {total_photos} to {export_dir}",
             )
+
+        # If target_destination is Samsung Frame TV, push 4K 16:9 baseline JPEGs over Wi-Fi/Internet & enable persistent slideshow
+        samsung_tv_uploaded_ids: List[str] = []
+        if is_samsung_tv and exported_files and not cancelled_early:
+            try:
+                import re
+                from samsungtvws import SamsungTVWS
+                token_clean = re.sub(r'[^a-zA-Z0-9_\-]', '_', resolved_tv_ip)
+                token_path = str(DATA_VAULT_DIR / f"samsung_tv_{token_clean}_token.txt")
+
+                tv_host = resolved_tv_ip
+                tv_port = 8002
+                if ":" in resolved_tv_ip:
+                    parts = resolved_tv_ip.split(":", 1)
+                    tv_host = parts[0].strip()
+                    try:
+                        tv_port = int(parts[1].strip())
+                    except Exception:
+                        tv_port = 8002
+
+                with _get_tv_ws_lock(tv_host):
+                    tv = SamsungTVWS(host=tv_host, port=tv_port, token_file=token_path, timeout=35, name="MR Darkroom Studio")
+                    art = tv.art()
+                    sync_data = _load_tv_sync_data()
+                    tv_sync_entry = sync_data.setdefault(tv_host, {"ip": tv_host, "photos": []})
+                    if not isinstance(tv_sync_entry.get("photos"), list):
+                        tv_sync_entry["photos"] = []
+
+                    effective_placement = "none" if mat_mode == "none" else (mat_placement or "optical_center")
+
+                    for s_idx, exp_f in enumerate(exported_files, 1):
+                        if not JOB_MANAGER.check_pause_or_cancel():
+                            break
+                        JOB_MANAGER.update_progress(
+                            processed=s_idx,
+                            total=len(exported_files),
+                            current_file=exp_f["filename"],
+                            phase=f"Pushing [{s_idx}/{len(exported_files)}] to Samsung TV ({resolved_tv_ip})...",
+                        )
+                        p_rec = exp_f.get("photo_record") or {}
+                        with Image.open(exp_f["path"]) as tv_im:
+                            tv_im_rgb = tv_im.convert("RGB")
+                            if mode == "tv_showcase":
+                                tv_4k = tv_im_rgb.resize((3840, 2160), resample=Image.Resampling.LANCZOS)
+                            else:
+                                tv_4k = generate_fine_art_mat(
+                                    tv_im_rgb,
+                                    color_hex=mat_color or "#F4EFE6",
+                                    placement=effective_placement,
+                                    aspect_ratio=mat_aspect or "original",
+                                    mat_style=mat_style or "single",
+                                    inner_mat_color=inner_mat_color or "#F4EFE6",
+                                    canvas_w=3840,
+                                    canvas_h=2160,
+                                )
+
+                            buf = io.BytesIO()
+                            tv_4k.save(buf, format="JPEG", quality=94, subsampling=0, progressive=False)
+                            cid = art.upload(buf.getvalue(), file_type="JPEG", matte="none")
+                            if cid:
+                                samsung_tv_uploaded_ids.append(cid)
+                                f_hash = p_rec.get("file_hash")
+                                crop_cfg = (
+                                    (crops or {}).get(f_hash)
+                                    or (crops or {}).get(p_rec.get("file_path"))
+                                    or {}
+                                )
+                                tv_sync_entry["photos"].append({
+                                    "content_id": cid,
+                                    "file_hash": f_hash,
+                                    "file_path": p_rec.get("file_path"),
+                                    "filename": Path(p_rec.get("file_path") or exp_f["filename"]).name,
+                                    "title": p_rec.get("title") or Path(p_rec.get("file_path") or exp_f["filename"]).stem,
+                                    "shoot_date": p_rec.get("exif_time") or "",
+                                    "star_rating": int(p_rec.get("star_rating") or 0),
+                                    "mat_mode": mat_mode or "studio",
+                                    "mat_color": mat_color or "#F4EFE6",
+                                    "mat_placement": effective_placement,
+                                    "mat_aspect": mat_aspect or "original",
+                                    "mat_style": mat_style or "single",
+                                    "inner_mat_color": inner_mat_color or "#F4EFE6",
+                                    "crop_x": float(crop_cfg.get("norm_x", 0.5)),
+                                    "crop_y": float(crop_cfg.get("norm_y", 0.5)),
+                                    "thumb_url": f"/previews_1600/{f_hash}.webp" if f_hash else None,
+                                    "uploaded_at": datetime.now().isoformat(),
+                                })
+
+                    _save_tv_sync_data(sync_data)
+
+                    if samsung_tv_uploaded_ids:
+                        art.select_image(samsung_tv_uploaded_ids[0], show=True)
+                        dur_mins = int(slideshow_minutes) if (slideshow_minutes is not None and int(slideshow_minutes) > 0) else 15
+                        if len(samsung_tv_uploaded_ids) > 1 or dur_mins > 0:
+                            try:
+                                art.set_slideshow_status(duration=dur_mins, type=False, category_id="MY-C0002")
+                            except Exception as e_ss:
+                                logging.warning(f"Samsung TV set_slideshow_status warning: {e_ss}")
+            except Exception as e_sam:
+                logging.error(f"Samsung TV push error ({resolved_tv_ip}): {e_sam}")
+
+        # Strip internal photo_record before returning result_payload
+        clean_exported_files = [
+            {k: v for k, v in ef.items() if k != "photo_record"}
+            for ef in exported_files
+        ]
 
         result_payload = {
             "status": "cancelled" if cancelled_early else "ok",
             "cancelled": cancelled_early,
             "mode": mode,
             "export_dir": str(export_dir),
-            "exported_count": len(exported_files),
+            "exported_count": len(clean_exported_files),
             "total_requested": total_photos,
-            "files": exported_files,
+            "files": clean_exported_files,
+            "samsung_tv_ip": resolved_tv_ip if is_samsung_tv else None,
+            "samsung_tv_uploaded_ids": samsung_tv_uploaded_ids,
         }
 
         JOB_MANAGER.finish_job(
             result=result_payload,
             phase=(
-                f"Cancelled early — kept {len(exported_files)} files in ~/Desktop/MRDarkroom_Exports/{folder_name}"
+                f"Cancelled early — kept {len(clean_exported_files)} files in {export_dir}"
                 if cancelled_early
-                else f"Exported {len(exported_files)} files to ~/Desktop/MRDarkroom_Exports/{folder_name}"
+                else f"Pushed {len(samsung_tv_uploaded_ids)} photos to Samsung TV ({resolved_tv_ip}) & saved in {export_dir}"
+                if is_samsung_tv
+                else f"Exported {len(clean_exported_files)} files to {export_dir}"
             ),
         )
 
-        if exported_files and not cancelled_early:
+        if clean_exported_files and not cancelled_early and not is_samsung_tv:
             try:
                 subprocess.run(["open", str(export_dir)], check=False)
             except Exception:
@@ -4296,36 +6748,113 @@ async def export_photos_batch(payload: BatchExportRequest):
         raise HTTPException(status_code=400, detail="No matching photos found for export")
 
     mode = (payload.mode or "jpeg").lower().strip()
-    if mode not in ("jpeg", "original", "tv_showcase"):
+    if mode not in ("jpeg", "original", "tv_showcase", "tiff"):
         mode = "jpeg"
 
     if payload.async_job:
         threading.Thread(
             target=_run_batch_export_worker,
-            args=(resolved_photos, mode, payload.folder_name, payload.crops),
+            args=(
+                resolved_photos,
+                mode,
+                payload.folder_name,
+                payload.crops,
+                payload.long_edge,
+                payload.dpi,
+                payload.target_destination,
+                payload.custom_folder_path,
+                payload.samsung_tv_ip,
+                payload.slideshow_minutes,
+                payload.mat_mode,
+                payload.mat_color,
+                payload.mat_placement,
+                payload.mat_aspect,
+                payload.mat_style,
+                payload.inner_mat_color,
+            ),
             daemon=True,
         ).start()
         timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
         f_name = payload.folder_name or (
             f"TV_Showcase_16x9_{timestamp_str}"
             if mode == "tv_showcase"
-            else f"Originals_{timestamp_str}"
-            if mode == "original"
-            else f"JPEGs_{timestamp_str}"
+            else f"Archival_TIFFs_{timestamp_str}"
+            if mode in ("tiff", "original")
+            else f"Custom_JPEGs_{timestamp_str}"
+            if payload.long_edge
+            else f"Print_JPEGs_{timestamp_str}"
         )
         f_name = _sanitize_folder_name(f_name)
+        if mode == "tv_showcase":
+            if (payload.target_destination or "").strip().lower() == "icloud":
+                base_dest = Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/TV Folder"
+            elif payload.custom_folder_path and Path(payload.custom_folder_path).exists():
+                base_dest = Path(payload.custom_folder_path)
+            else:
+                base_dest = Path.home() / "Desktop/TV Folder"
+        else:
+            base_dest = (
+                Path(payload.custom_folder_path)
+                if payload.custom_folder_path and Path(payload.custom_folder_path).exists()
+                else (Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/MRDarkroom_Exports")
+                if (payload.target_destination or "").strip().lower() == "icloud"
+                else (Path.home() / "Desktop" / "MRDarkroom_Exports")
+            )
         return {
             "status": "started",
             "mode": mode,
-            "export_dir": str(Path.home() / "Desktop" / "MRDarkroom_Exports" / f_name),
+            "export_dir": str(base_dest / f_name),
             "total": len(resolved_photos),
         }
 
     loop = asyncio.get_running_loop()
     result = await loop.run_in_executor(
-        None, _run_batch_export_worker, resolved_photos, mode, payload.folder_name, payload.crops
+        None,
+        _run_batch_export_worker,
+        resolved_photos,
+        mode,
+        payload.folder_name,
+        payload.crops,
+        payload.long_edge,
+        payload.dpi,
+        payload.target_destination,
+        payload.custom_folder_path,
+        payload.samsung_tv_ip,
+        payload.slideshow_minutes,
+        payload.mat_mode,
+        payload.mat_color,
+        payload.mat_placement,
+        payload.mat_aspect,
+        payload.mat_style,
+        payload.inner_mat_color,
     )
     return result
+
+
+@app.post("/api/system/choose-folder")
+async def choose_folder_dialog():
+    """
+    Opens native macOS Finder folder picker dialog using osascript.
+    Returns the POSIX path of the selected folder.
+    """
+    def _run_osascript():
+        cmd = [
+            "osascript",
+            "-e",
+            'POSIX path of (choose folder with prompt "Select Destination Folder for MRDarkroom Exports:")',
+        ]
+        res = subprocess.run(cmd, capture_output=True, text=True)
+        if res.returncode == 0:
+            p = res.stdout.strip()
+            if p.endswith("/"):
+                p = p[:-1]
+            return p
+        return None
+
+    folder_path = await asyncio.to_thread(_run_osascript)
+    if not folder_path:
+        return {"status": "cancelled", "folder_path": None, "path": None}
+    return {"status": "ok", "folder_path": folder_path, "path": folder_path}
 
 
 @app.post("/api/system/reveal-folder")
@@ -4360,6 +6889,9 @@ async def resume_background_job():
 @app.post("/api/jobs/cancel")
 @app.post("/api/pipeline/cancel")
 async def cancel_background_job():
+    PIPELINE_STATUS["running"] = False
+    PIPELINE_STATUS["cancelled"] = True
+    PIPELINE_STATUS["phase"] = "Cancelled early — kept completed photos"
     return JOB_MANAGER.cancel()
 
 
@@ -4373,6 +6905,7 @@ class RunPipelineRequest(BaseModel):
     ai_mode: str = "fast_vectors"  # "fast_vectors" (fast 5-facet OpenCLIP + GPS + Ontology) or "deep_vlm"
     extract_sharpness: bool = True
     fast_only: Optional[bool] = None
+    only_catalog_matched: bool = False
     split_by_subfolder: bool = False
     selected_subfolders: Optional[List[str]] = None
 
@@ -4408,12 +6941,20 @@ async def trigger_pipeline_run(payload: RunPipelineRequest, background_tasks: Ba
             conn_reg.commit()
             conn_reg.close()
 
-    def _progress_cb(processed: int, total: int, current_file: str, phase: str = "Processing..."):
+    def _progress_cb(processed: int, total: int, current_file: str, phase: str = "Processing...", extra: Optional[Dict[str, Any]] = None):
         PIPELINE_STATUS["processed"] = processed
         PIPELINE_STATUS["total"] = total
         PIPELINE_STATUS["current_file"] = current_file
         PIPELINE_STATUS["phase"] = phase
-        JOB_MANAGER.update_progress(processed=processed, total=total, current_file=current_file, phase=phase)
+        if extra:
+            PIPELINE_STATUS.update(extra)
+        JOB_MANAGER.update_progress(
+            processed=processed,
+            total=total,
+            current_file=current_file,
+            phase=phase,
+            extra=extra or {"overall_pct": PIPELINE_STATUS.get("overall_pct", 0)},
+        )
         return JOB_MANAGER.check_pause_or_cancel()
 
     def _worker(
@@ -4423,21 +6964,26 @@ async def trigger_pipeline_run(payload: RunPipelineRequest, background_tasks: Ba
         ai_mode: str,
         extract_sharpness: bool,
         fast_only: Optional[bool],
+        only_catalog_matched: bool = False,
         split_by_subfolder: bool = False,
         selected_subfolders: Optional[List[str]] = None,
         explicit_root_path: Optional[Path] = None,
     ):
         global PIPELINE_STATUS, VECTORS_MTIME, CROP_VECTORS_MTIME, COLOR_SIGS_MTIME
+        total_phases = 3 if (stage in (0, 1) and (stage == 0 or run_ai_tagging)) else 1
         initial_phase = (
-            "Step 1: Importing Photos, Extracting GPS & Building Previews..."
-            if stage in (0, 1)
-            else "Step 2: AI Visual Tagging & Scene Analysis..."
+            "Phase 1/3: Ingesting Photos, Extracting GPS & Building Previews..."
+            if total_phases == 3
+            else ("Phase 1/1: Building Previews & Fast Index..." if stage in (0, 1) else "Phase 1/1: AI Visual Tagging & Scene Analysis...")
         )
         PIPELINE_STATUS = {
             "running": True,
             "catalog_name": catalog_name,
             "stage": stage,
             "phase": initial_phase,
+            "phase_index": 1,
+            "phase_total": total_phases,
+            "overall_pct": 0,
             "processed": 0,
             "total": 0,
             "current_file": None,
@@ -4450,7 +6996,14 @@ async def trigger_pipeline_run(payload: RunPipelineRequest, background_tasks: Ba
             title=f"Import & AI Tag ({catalog_name})" if stage == 0 or run_ai_tagging else f"Catalog Scan ({catalog_name}) — Stage {stage}",
             total=0,
             phase=initial_phase,
-            extra={"catalog_name": catalog_name, "stage": stage, "split_by_subfolder": split_by_subfolder},
+            extra={
+                "catalog_name": catalog_name,
+                "stage": stage,
+                "split_by_subfolder": split_by_subfolder,
+                "phase_index": 1,
+                "phase_total": total_phases,
+                "overall_pct": 0,
+            },
         )
         try:
             if stage in (0, 1):
@@ -4526,8 +7079,19 @@ async def trigger_pipeline_run(payload: RunPipelineRequest, background_tasks: Ba
                     conn_sub.commit()
                     conn_sub.close()
 
-                    def _sub_progress_cb(processed: int, total: int, current_file: str, phase: str = "Processing..."):
-                        return _progress_cb(processed, total, current_file, f"{cat_prefix}{phase}")
+                    def _sub_stage1_cb(processed: int, total: int, current_file: str, phase: str = "Processing..."):
+                        eff_tot = max(1, total)
+                        frac = min(1.0, processed / float(eff_tot))
+                        if total_phases == 3:
+                            overall_pct = min(49, int(frac * 50.0))
+                            phase_lbl = f"[1/3 Previews: {processed}/{eff_tot}] {cat_prefix}{phase}"
+                        else:
+                            overall_pct = min(100, int(frac * 100.0))
+                            phase_lbl = f"{cat_prefix}{phase}"
+                        return _progress_cb(
+                            processed, total, current_file, phase_lbl,
+                            extra={"phase_index": 1, "phase_total": total_phases, "overall_pct": overall_pct}
+                        )
 
                     run_stage1_pipeline(
                         source_dir=sub_cat_root,
@@ -4536,8 +7100,9 @@ async def trigger_pipeline_run(payload: RunPipelineRequest, background_tasks: Ba
                         vectors_path=DEFAULT_VECTORS_PATH,
                         thumbs_360_dir=DEFAULT_THUMBS_360_DIR,
                         previews_1600_dir=DEFAULT_PREVIEWS_1600_DIR,
-                        progress_callback=_sub_progress_cb,
+                        progress_callback=_sub_stage1_cb,
                         fast_only=use_fast_only,
+                        only_catalog_matched=only_catalog_matched,
                     )
 
                     # Invalidate in-memory vector & color signature caches so newly ingested rows are immediately available
@@ -4551,11 +7116,31 @@ async def trigger_pipeline_run(payload: RunPipelineRequest, background_tasks: Ba
                             raise RuntimeError("Import cancelled by user")
 
                         # Invariant 2: Level 1 4-Pass Cascade runs automatically on every folder import
-                        PIPELINE_STATUS["phase"] = f"{cat_prefix}Building multi-crop visual vectors on Apple Metal GPU..."
+                        _progress_cb(
+                            1, 1, "Apple Metal GPU Tensors",
+                            f"[2/3 Metal GPU Vectors] {cat_prefix}Building multi-crop visual vectors on Apple Metal GPU...",
+                            extra={"phase_index": 2, "phase_total": 3, "overall_pct": 55}
+                        )
                         try:
                             build_or_update_crop_vectors_mps(db_path=DEFAULT_DB_PATH)
                         except Exception as exc:
                             logger.warning(f"build_or_update_crop_vectors_mps warning: {exc}")
+
+                        _progress_cb(
+                            1, 1, "Apple Metal GPU Tensors",
+                            f"[2/3 Metal GPU Vectors] {cat_prefix}Apple Metal GPU tensor embeddings indexed",
+                            extra={"phase_index": 2, "phase_total": 3, "overall_pct": 74}
+                        )
+
+                        def _sub_stage3_cb(processed: int, total: int, current_file: str, phase: str = "Tagging..."):
+                            eff_tot = max(1, total)
+                            frac = min(1.0, processed / float(eff_tot))
+                            overall_pct = min(99, 75 + int(frac * 24.0))
+                            phase_lbl = f"[3/3 AI Tagging & GPS Sync: {processed}/{eff_tot}] {cat_prefix}{phase}"
+                            return _progress_cb(
+                                processed, total, current_file, phase_lbl,
+                                extra={"phase_index": 3, "phase_total": 3, "overall_pct": overall_pct}
+                            )
 
                         mode_norm = (ai_mode or "fast_vectors").strip().lower()
                         if mode_norm == "deep_vlm":
@@ -4565,44 +7150,65 @@ async def trigger_pipeline_run(payload: RunPipelineRequest, background_tasks: Ba
                                 photo_ids=None,
                                 catalog_name=sub_cat_name,
                                 encode_text_batch_fn=encode_text_batch,
-                                progress_cb=_sub_progress_cb,
+                                progress_cb=_sub_stage3_cb,
                                 run_clustering=True,
                             )
-                            PIPELINE_STATUS["phase"] = f"{cat_prefix}Step 2: Deep AI Vision Scene Analysis..."
+                            _progress_cb(
+                                1, 1, "Deep VLM Engine",
+                                f"[3/3 Deep AI Scene Analysis] {cat_prefix}Qwen2.5-VL scene comprehension...",
+                                extra={"phase_index": 3, "phase_total": 3, "overall_pct": 88}
+                            )
                             run_stage2_vlm(
                                 db_path=DEFAULT_DB_PATH,
                                 catalog_name=sub_cat_name,
-                                progress_callback=_sub_progress_cb,
+                                progress_callback=_sub_stage3_cb,
                             )
                         else:
-                            PIPELINE_STATUS["phase"] = f"{cat_prefix}Step 2: AI Visual Tagging, GPS Ground-Truth & Location Sync..."
                             reassess_records_fast(
                                 db_path=DEFAULT_DB_PATH,
                                 vectors_path=DEFAULT_VECTORS_PATH,
                                 photo_ids=None,
                                 catalog_name=sub_cat_name,
                                 encode_text_batch_fn=encode_text_batch,
-                                progress_cb=_sub_progress_cb,
+                                progress_cb=_sub_stage3_cb,
                                 run_clustering=True,
                             )
             elif stage == 2:
-                PIPELINE_STATUS["phase"] = "Step 2: AI Visual Tagging & Scene Analysis..."
+                def _stage2_standalone_cb(processed: int, total: int, current_file: str, phase: str = "Processing..."):
+                    eff_tot = max(1, total)
+                    frac = min(1.0, processed / float(eff_tot))
+                    overall_pct = min(99, int(frac * 100.0))
+                    return _progress_cb(
+                        processed, total, current_file, f"Phase 1/1: {phase}",
+                        extra={"phase_index": 1, "phase_total": 1, "overall_pct": overall_pct}
+                    )
                 run_stage2_vlm(
                     db_path=DEFAULT_DB_PATH,
                     catalog_name=catalog_name,
-                    progress_callback=_progress_cb,
+                    progress_callback=_stage2_standalone_cb,
                 )
             invalidate_search_index_cache()
+            PIPELINE_STATUS["overall_pct"] = 100
+            PIPELINE_STATUS["phase_index"] = total_phases
+            PIPELINE_STATUS["phase_total"] = total_phases
             PIPELINE_STATUS["running"] = False
             PIPELINE_STATUS["phase"] = "Completed"
             PIPELINE_STATUS["completed_at"] = datetime.now().isoformat()
-            JOB_MANAGER.finish_job(phase="Completed")
+            JOB_MANAGER.finish_job(phase="Completed", result={"overall_pct": 100})
         except Exception as exc:
-            logging.error(f"Pipeline error: {exc}")
-            PIPELINE_STATUS["running"] = False
-            PIPELINE_STATUS["phase"] = "Error"
-            PIPELINE_STATUS["error"] = str(exc)
-            JOB_MANAGER.finish_job(error=str(exc), phase="Error")
+            is_cancel = JOB_MANAGER.is_cancelled() or "cancel" in str(exc).lower()
+            if is_cancel:
+                logging.info(f"Pipeline import stopped cleanly by user: {exc}")
+                PIPELINE_STATUS["running"] = False
+                PIPELINE_STATUS["cancelled"] = True
+                PIPELINE_STATUS["phase"] = "Cancelled early — kept completed photos"
+                JOB_MANAGER.finish_job(phase="Cancelled early — kept completed photos")
+            else:
+                logging.error(f"Pipeline error: {exc}")
+                PIPELINE_STATUS["running"] = False
+                PIPELINE_STATUS["phase"] = "Error"
+                PIPELINE_STATUS["error"] = str(exc)
+                JOB_MANAGER.finish_job(error=str(exc), phase="Error")
 
     threading.Thread(
         target=_worker,
@@ -4613,6 +7219,7 @@ async def trigger_pipeline_run(payload: RunPipelineRequest, background_tasks: Ba
             payload.ai_mode,
             payload.extract_sharpness,
             payload.fast_only,
+            payload.only_catalog_matched,
             payload.split_by_subfolder,
             payload.selected_subfolders,
             p_exp,
@@ -4660,6 +7267,7 @@ async def get_pipeline_status():
 class ReassessRequest(BaseModel):
     photo_ids: Optional[List[str]] = None
     trip_id: Optional[str] = None
+    shoot_date: Optional[str] = None
     catalog_name: Optional[str] = None
     mode: str = "fast_vectors"  # "fast_vectors" (<1s) or "deep_vlm" (~3s/photo)
     skip_undo: bool = False
@@ -4669,6 +7277,23 @@ class ReassessRequest(BaseModel):
 @app.post("/api/reassess")
 async def trigger_reassess(payload: ReassessRequest):
     target_ids: Optional[List[str]] = payload.photo_ids
+
+    # If shoot_date is provided and no specific photo_ids, resolve all photos matching shoot_date
+    if payload.shoot_date and not target_ids:
+        conn = get_db_connection(DEFAULT_DB_PATH)
+        cursor = conn.cursor()
+        if payload.catalog_name and payload.catalog_name not in ("All Catalogs", "ALL"):
+            rows = cursor.execute(
+                "SELECT file_hash, file_path FROM photo_records WHERE shoot_date = ? AND catalog_name = ? AND status != 'failed'",
+                (payload.shoot_date, payload.catalog_name),
+            ).fetchall()
+        else:
+            rows = cursor.execute(
+                "SELECT file_hash, file_path FROM photo_records WHERE shoot_date = ? AND status != 'failed'",
+                (payload.shoot_date,),
+            ).fetchall()
+        target_ids = [r["file_hash"] or r["file_path"] for r in rows if r["file_hash"] or r["file_path"]]
+        conn.close()
 
     # If trip_id is provided, resolve its member file_hashes
     if payload.trip_id and not target_ids:
@@ -4702,7 +7327,20 @@ async def trigger_reassess(payload: ReassessRequest):
         target_ids = list(dict.fromkeys(str(tid).strip() for tid in target_ids if tid))
 
     mode = (payload.mode or "fast_vectors").strip().lower()
-    total_est = len(target_ids) if target_ids else 849
+
+    if target_ids:
+        total_est = len(target_ids)
+    else:
+        conn_cnt = get_db_connection(DEFAULT_DB_PATH)
+        if payload.catalog_name and payload.catalog_name not in ("All Catalogs", "ALL"):
+            cnt_row = conn_cnt.execute(
+                "SELECT COUNT(*) as c FROM photo_records WHERE status != 'failed' AND catalog_name = ?",
+                (payload.catalog_name,),
+            ).fetchone()
+        else:
+            cnt_row = conn_cnt.execute("SELECT COUNT(*) as c FROM photo_records WHERE status != 'failed'").fetchone()
+        total_est = cnt_row["c"] if cnt_row else 100
+        conn_cnt.close()
 
     if not payload.skip_undo and target_ids:
         action_label = "Deep VLM" if mode == "deep_vlm" else "Basic Tag"
@@ -6760,9 +9398,13 @@ async def trigger_das_backup():
 # ==============================================================================
 def _run_git_cmd(args: List[str], timeout: float = 3.0) -> Tuple[int, str, str]:
     try:
+        git_env = os.environ.copy()
+        git_env["GIT_TERMINAL_PROMPT"] = "0"
+        git_env["GIT_SSH_COMMAND"] = "ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new"
         res = subprocess.run(
             ["git"] + args,
             cwd=str(PROJECT_ROOT),
+            env=git_env,
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -6870,6 +9512,37 @@ async def apply_system_update():
             )
         except Exception as exc:
             logging.warning(f"Dependency update skipped/warning: {exc}")
+
+    # Keep sibling local installation (~/MRDarkroom <-> ~/Library/Application Support/MRDarkroom/Engine) in sync
+    try:
+        alt_roots = [
+            Path.home() / "MRDarkroom",
+            Path.home() / "Library" / "Application Support" / "MRDarkroom" / "Engine",
+        ]
+        for alt in alt_roots:
+            if alt.exists() and alt.resolve() != PROJECT_ROOT.resolve():
+                subprocess.run(
+                    [
+                        "rsync",
+                        "-a",
+                        "--exclude=/.venv",
+                        "--exclude=/Python3",
+                        "--exclude=/data",
+                        "--exclude=/logs",
+                        "--exclude=/*.db",
+                        "--exclude=/*.db-*",
+                        "--exclude=._*",
+                        "--exclude=/ui/node_modules",
+                        "--exclude=/Setup_Tailscale_Remote_Bridge.command",
+                        "--exclude=/HANDOVER",
+                        f"{PROJECT_ROOT}/",
+                        f"{alt}/",
+                    ],
+                    timeout=20.0,
+                    capture_output=True,
+                )
+    except Exception as exc:
+        logging.warning(f"Mirror sync during update warning: {exc}")
 
     def _delayed_restart():
         time.sleep(0.9)

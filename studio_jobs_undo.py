@@ -508,6 +508,7 @@ def record_undo_snapshot(
     description: str = "AI Teach Update",
     photo_ids: Optional[List[str]] = None,
     collection_id: Optional[int] = None,
+    collection_ids: Optional[Any] = None,
     create_vault_backup: bool = False,
     max_history: int = 35,
 ) -> Optional[int]:
@@ -548,15 +549,22 @@ def record_undo_snapshot(
                         photo_rows.append(rd)
 
     collection_snapshot: Optional[Dict[str, Any]] = None
-    if collection_id is not None:
+    target_col_id = collection_id
+    if target_col_id is None and collection_ids:
+        if isinstance(collection_ids, (list, tuple)) and len(collection_ids) > 0:
+            target_col_id = collection_ids[0]
+        elif isinstance(collection_ids, (int, str)):
+            target_col_id = collection_ids
+
+    if target_col_id is not None:
         col_row = cursor.execute(
             "SELECT id, name, description, cover_photo_id FROM collections WHERE id = ?",
-            (int(collection_id),),
+            (int(target_col_id),),
         ).fetchone()
         if col_row:
             item_rows = cursor.execute(
                 "SELECT collection_id, photo_id, sort_order, added_at FROM collection_items WHERE collection_id = ? ORDER BY sort_order ASC",
-                (int(collection_id),),
+                (int(target_col_id),),
             ).fetchall()
             collection_snapshot = {
                 "collection": dict(col_row),

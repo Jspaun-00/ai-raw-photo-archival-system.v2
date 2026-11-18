@@ -9,10 +9,16 @@ export default function CollectionPopover({
   onCreateCollectionWithPhoto,
   onCreateAndAdd,
   onClose,
+  onOpenChange,
   compact = false,
+  dropUp = false,
   anchorStyle = {},
 }) {
   const [isOpen, setIsOpen] = useState(false);
+
+  useEffect(() => {
+    if (onOpenChange) onOpenChange(isOpen);
+  }, [isOpen, onOpenChange]);
   const [newName, setNewName] = useState('');
   const [newDesc, setNewDesc] = useState('');
   const [busyId, setBusyId] = useState(null);
@@ -105,7 +111,7 @@ export default function CollectionPopover({
     <div
       ref={containerRef}
       onClick={(e) => e.stopPropagation()}
-      style={{ position: 'relative', display: 'inline-block' }}
+      style={{ position: 'relative', display: 'inline-block', zIndex: isOpen ? 100 : 'auto' }}
     >
       {/* Trigger Button */}
       <button
@@ -116,41 +122,41 @@ export default function CollectionPopover({
         }}
         title={
           inAnyCollection
-            ? `In ${memberIds.size} Book/Collection(s) — Click to manage`
-            : 'Add to Book or Curated Collection'
+            ? `In ${memberIds.size} Collection(s) — Click to manage`
+            : 'Add to Curated Collection'
         }
         style={
           compact
             ? {
-                padding: '3px 7px',
+                padding: '4px 9px',
                 borderRadius: '6px',
-                fontSize: '11px',
+                fontSize: '12px',
                 fontWeight: 700,
                 cursor: 'pointer',
                 border: inAnyCollection
                   ? '1px solid rgba(245, 158, 11, 0.8)'
-                  : '1px solid rgba(255, 255, 255, 0.2)',
+                  : '1px solid rgba(255, 255, 255, 0.24)',
                 background: inAnyCollection
                   ? 'rgba(245, 158, 11, 0.88)'
-                  : 'rgba(9, 11, 16, 0.78)',
+                  : 'rgba(20, 24, 34, 0.88)',
                 color: inAnyCollection ? '#090b10' : '#f8fafc',
                 backdropFilter: 'blur(6px)',
                 display: 'inline-flex',
                 alignItems: 'center',
-                gap: '3px',
+                gap: '4px',
                 lineHeight: 1.2,
               }
             : {
-                padding: '6px 12px',
-                borderRadius: '7px',
-                fontSize: '13px',
+                padding: '7px 14px',
+                borderRadius: '8px',
+                fontSize: '13.5px',
                 fontWeight: 700,
                 cursor: 'pointer',
                 border: inAnyCollection
-                  ? '1px solid #f59e0b'
-                  : '1px solid #334155',
+                  ? '1.5px solid #f59e0b'
+                  : '1px solid #3f4a5a',
                 background: inAnyCollection
-                  ? 'rgba(245, 158, 11, 0.2)'
+                  ? 'rgba(245, 158, 11, 0.22)'
                   : '#1e293b',
                 color: inAnyCollection ? '#fbbf24' : '#f1f5f9',
                 display: 'inline-flex',
@@ -159,7 +165,7 @@ export default function CollectionPopover({
               }
         }
       >
-        <span>{compact ? (inAnyCollection ? `📚✓${memberIds.size}` : '+📚') : '📚 Add to Book'}</span>
+        <span>{compact ? (inAnyCollection ? `📚✓${memberIds.size}` : '+📚') : '📚 Add to Collection'}</span>
         {!compact && inAnyCollection && (
           <span
             style={{
@@ -183,9 +189,11 @@ export default function CollectionPopover({
           onKeyDown={(e) => e.stopPropagation()}
           style={{
             position: 'absolute',
-            top: 'calc(100% + 6px)',
+            ...(dropUp
+              ? { bottom: 'calc(100% + 8px)', top: 'auto' }
+              : { top: 'calc(100% + 6px)', bottom: 'auto' }),
             right: 0,
-            zIndex: 350,
+            zIndex: 9999,
             width: '320px',
             background: '#11141d',
             border: '1.5px solid #334155',
@@ -208,7 +216,7 @@ export default function CollectionPopover({
             }}
           >
             <span style={{ fontSize: '14px', fontWeight: 800, color: '#fbbf24' }}>
-              📚 Add to Book / Collection
+              📚 Add to Collection
             </span>
             <button
               type="button"
@@ -255,7 +263,7 @@ export default function CollectionPopover({
                   marginBottom: '4px',
                 }}
               >
-                Book or Collection Name
+                Collection Name
               </label>
               <input
                 type="text"
@@ -324,13 +332,13 @@ export default function CollectionPopover({
                 cursor: newName.trim() ? 'pointer' : 'not-allowed',
               }}
             >
-              {creating ? 'Creating...' : '+ Create New Book / Collection'}
+              {creating ? 'Creating...' : '+ Create New Collection'}
             </button>
           </form>
 
-          {/* Existing Books / Collections List */}
+          {/* Existing Collections List */}
           <div style={{ fontSize: '11px', fontWeight: 700, color: '#94a3b8', marginBottom: '6px' }}>
-            EXISTING BOOKS & COLLECTIONS ({collections.length})
+            COLLECTIONS ({collections.length})
           </div>
           <div
             style={{

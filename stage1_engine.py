@@ -405,6 +405,7 @@ def extract_fullres_and_generate_webps(
     lrprev_orientation: Optional[str] = None,
     fast_only: bool = False,
     force_regenerate: bool = False,
+    prefer_lrprev: bool = False,
 ) -> Optional[Dict[str, Any]]:
     """
     0. If persistent thumbs_360/{file_hash}.webp and previews_1600/{file_hash}.webp already exist
@@ -441,7 +442,7 @@ def extract_fullres_and_generate_webps(
                 reused_cached_webps = False
 
         # 1. FAST PATH: Use Lightroom .lrprev pyramid if available (<5ms over SMB)
-        if not force_regenerate and pil_full is None and lrprev_path is not None:
+        if (prefer_lrprev or not force_regenerate) and pil_full is None and lrprev_path is not None:
             pil_full = extract_jpeg_from_lrprev(Path(lrprev_path), lrprev_orientation)
 
         if pil_full is None:
@@ -475,8 +476,8 @@ def extract_fullres_and_generate_webps(
             except Exception:
                 pass
 
-            # Fast Tier B: Large files (>50MB, TIFF, DNG, PSD, RAW) use fast embedded/strip preview extraction
-            if ext_low in {".tif", ".tiff", ".dng", ".psd"} or file_sz > 50 * 1024 * 1024:
+            # Fast Tier B: Large files or RAWs (TIFF, DNG, PSD, IIQ, CR2, NEF, ARW, etc.) use fast embedded preview extraction
+            if ext_low in {".tif", ".tiff", ".dng", ".psd", ".iiq", ".cr2", ".cr3", ".nef", ".arw", ".raf", ".rw2", ".orf"} or file_sz > 30 * 1024 * 1024:
                 pil_full = fast_extract_large_preview(valid_source, max_dim=1600)
 
             # Direct PIL open for standard smaller web/raster images (<50MB)
@@ -1493,8 +1494,9 @@ def run_stage1_pipeline(
     sharpness_threshold: float = 3.5,
     force_rescan: bool = False,
     max_items: Optional[int] = None,
-    progress_callback: Optional[Callable[[int, int, str, str], None]] = None,
+    progress_callback: Optional[Callable[[int, int, str, str], Any]] = None,
     fast_only: bool = False,
+    only_catalog_matched: bool = False,
 ) -> Dict[str, Any]:
     """
     Runs the complete Stage 1 Fast Pipeline on a catalog directory:
@@ -1560,6 +1562,13 @@ def run_stage1_pipeline(
             return (has_prev, -kw_len, -stars, it["primary"].name)
         pending_items.sort(key=_lrcat_priority)
 
+        # Senior-friendly option: Skip uncataloged orphan RAWs that take long to demosaic
+        if only_catalog_matched:
+            pending_items = [
+                it for it in pending_items
+                if (it["primary"].stem.lower() in by_stem_lookup or it["primary"].stem.lower().strip() in by_stem_lookup)
+            ]
+
     # When fast_only=True on a network volume WITH a .lrcat catalog, prioritize captures with existing WebP or .lrprev
     # Never drop pending_items for standalone folders (no .lrcat) or local drives!
     use_fast_lrcat_pass = bool(fast_only and lrcat_files and str(source_dir).startswith("/Volumes/"))
@@ -1584,7 +1593,8 @@ def run_stage1_pipeline(
 
     total_pending = len(pending_items)
     if progress_callback:
-        progress_callback(0, total_pending, str(source_dir.name), "Harvesting .lrcat & EXIF metadata")
+        if progress_callback(0, total_pending, str(source_dir.name), "Harvesting .lrcat & EXIF metadata") is False:
+            raise RuntimeError("Import cancelled by user")
 
     # 2. Batch harvest omni-field ExifTool + sidecars (+ offline GPS Geolocation)
     harvested_records: List[Dict[str, Any]] = []
@@ -1594,12 +1604,13 @@ def run_stage1_pipeline(
             for i in range(0, len(pending_items), batch_sz):
                 batch = pending_items[i : i + batch_sz]
                 if progress_callback:
-                    progress_callback(
+                    if progress_callback(
                         len(harvested_records),
                         total_pending,
                         batch[0]["primary"].name,
                         "Harvesting .lrcat Metadata (Fast Pass)",
-                    )
+                    ) is False:
+                        raise RuntimeError("Import cancelled by user")
                 harvested_records.extend(
                     harvest_omni_metadata_batch(batch, lrcat_data=lrcat_merged, et_helper=None, db_path=db_path, fast_only=True)
                 )
@@ -1612,12 +1623,13 @@ def run_stage1_pipeline(
                 for i in range(0, len(pending_items), batch_sz):
                     batch = pending_items[i : i + batch_sz]
                     if progress_callback:
-                        progress_callback(
+                        if progress_callback(
                             len(harvested_records),
                             total_pending,
                             batch[0]["primary"].name,
                             "Harvesting EXIF, GPS & Sidecars",
-                        )
+                        ) is False:
+                            raise RuntimeError("Import cancelled by user")
                     harvested_records.extend(
                         harvest_omni_metadata_batch(batch, lrcat_data=lrcat_merged, et_helper=et, db_path=db_path, fast_only=False)
                     )
@@ -1626,7 +1638,8 @@ def run_stage1_pipeline(
     preview_results: Dict[str, Optional[Dict[str, Any]]] = {}
     if harvested_records:
         if progress_callback:
-            progress_callback(0, total_pending, harvested_records[0]["file_path"].split("/")[-1], "Extracting Previews & Sharpness")
+            if progress_callback(0, total_pending, harvested_records[0]["file_path"].split("/")[-1], "Extracting Previews & Sharpness") is False:
+                raise RuntimeError("Import cancelled by user")
         completed_previews = 0
         with ThreadPoolExecutor(max_workers=hw["extractor_workers"]) as pool:
             fut_to_fp = {
@@ -1653,12 +1666,15 @@ def run_stage1_pipeline(
                     log_ingestion_error(db_path, fp, "stage1_preview", type(exc).__name__, str(exc))
                     preview_results[fp] = None
                 if progress_callback:
-                    progress_callback(
+                    if progress_callback(
                         completed_previews,
                         total_pending,
                         Path(fp).name,
                         "Extracting Previews & Sharpness",
-                    )
+                    ) is False:
+                        for pending_fut in fut_to_fp:
+                            pending_fut.cancel()
+                        raise RuntimeError("Import cancelled by user")
 
     # 4. Batched Apple Silicon MPS OpenCLIP (ViT-L-14) + LAION Aesthetic V2 MLP
     valid_records_for_clip: List[Dict[str, Any]] = []
@@ -1673,12 +1689,13 @@ def run_stage1_pipeline(
     laion_scores = np.zeros((0,), dtype=np.float32)
     if preview_paths_for_clip:
         if progress_callback:
-            progress_callback(
+            if progress_callback(
                 len(preview_paths_for_clip),
                 total_pending,
                 preview_paths_for_clip[0].name,
                 "Computing OpenCLIP Vectors & LAION Aesthetics",
-            )
+            ) is False:
+                raise RuntimeError("Import cancelled by user")
         vec_engine = VectorAestheticEngine(device=hw["device"])
         embeddings_f16, laion_scores = vec_engine.encode_images_and_score(preview_paths_for_clip)
 
@@ -1917,7 +1934,8 @@ def run_stage1_pipeline(
 
     # 5b. Batched Apple Silicon Metal (mps) 4-Crop Saliency Scanner (v4.0 Invariant 1 & 3)
     if progress_callback:
-        progress_callback(total_pending, total_pending, catalog_name, "Indexing 4-Crop Saliency Vectors on GPU (mps)")
+        if progress_callback(total_pending, total_pending, catalog_name, "Indexing 4-Crop Saliency Vectors on GPU (mps)") is False:
+            raise RuntimeError("Import cancelled by user")
     crop_summary = build_or_update_crop_vectors_mps(
         db_path=db_path,
         vectors_path=vectors_path,
@@ -1927,7 +1945,8 @@ def run_stage1_pipeline(
 
     # 6. Offline GPS Reverse-Geocoding Backfill & Same-Day Camera Bridging + Keepers Calibration + Sequences
     if progress_callback:
-        progress_callback(total_pending, total_pending, catalog_name, "Bridging Same-Day GPS & Calibrating Aesthetics")
+        if progress_callback(total_pending, total_pending, catalog_name, "Bridging Same-Day GPS & Calibrating Aesthetics") is False:
+            raise RuntimeError("Import cancelled by user")
     gps_bridge_summary = bridge_same_day_gps_locations(db_path=db_path, catalog_name=catalog_name)
     keepers_summary = link_keepers_across_catalogs(db_path=db_path)
     calibration_summary = calibrate_keepers_taste_and_aesthetics(db_path=db_path, vectors_path=vectors_path)

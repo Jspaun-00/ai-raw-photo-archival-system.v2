@@ -11,8 +11,17 @@ import {
   Layers,
   Sliders,
   Download,
-  Info
+  Info,
+  Folder,
+  Cloud,
+  Monitor,
+  ChevronDown,
+  Palette,
+  Globe,
+  Plus,
+  Maximize2
 } from 'lucide-react';
+import MatColorPicker, { ARCHIVAL_MAT_TONES, findMatTone } from './MatColorPicker';
 
 /**
  * TvShowcaseCropModal.jsx
@@ -20,12 +29,13 @@ import {
  * Interactive 16:9 crop framing modal for 65" TV Showcase JPEG exports.
  * Allows choosing where the 16:9 crop is placed (Sky/Top, Golden Horizon, Center, Ground/Bottom, or custom drag).
  * Previews every photo in selection, supports per-photo adjustment or "Apply to all",
- * and exports exact 12,500 px (12,500 × 7,031 px) JPEGs at 180 DPI with full IPTC/XMP tags embedded.
+ * and exports exact 12,000 px (12,000 × 6,750 px) JPEGs at 180 DPI with full IPTC/XMP tags embedded.
  */
 export default function TvShowcaseCropModal({
   isOpen,
   onClose,
   photos = [],
+  collectionName = null,
   onConfirmExport,
   isBusy = false,
 }) {
@@ -43,6 +53,124 @@ export default function TvShowcaseCropModal({
   const [initialNormX, setInitialNormX] = useState(0.5);
   const [imageNaturalDim, setImageNaturalDim] = useState({ width: 0, height: 0 });
   const [appliedToAllNotice, setAppliedToAllNotice] = useState(false);
+  const [targetDestination, setTargetDestination] = useState('desktop'); // 'desktop' | 'icloud' | 'custom' | 'samsung_tv'
+  const [customFolderPath, setCustomFolderPath] = useState('');
+  const [isPickingFolder, setIsPickingFolder] = useState(false);
+  const [destMenuOpen, setDestMenuOpen] = useState(false);
+  const destMenuRef = useRef(null);
+
+  // Samsung Frame TV discovery & direct Wi-Fi push state
+  const [samsungTvs, setSamsungTvs] = useState([
+    { name: 'TV1', ip: '192.168.68.88', model: 'QN55LS03HEFXZA', online: true },
+  ]);
+  const [selectedTvIp, setSelectedTvIp] = useState('192.168.68.88');
+  const [slideshowMinutes, setSlideshowMinutes] = useState(15);
+  const [isDiscoveringTvs, setIsDiscoveringTvs] = useState(false);
+
+  // Fine-Art Matting & Depth options (Samsung Frame TV Style)
+  const [matMode, setMatMode] = useState('studio'); // 'studio' | 'none'
+  const [matPlacement, setMatPlacement] = useState('slim_optical'); // 'slim_optical' | 'modern_thin' | 'optical_center' | 'exact_center' | 'modern_wide' | 'grand_exhibition'
+  const [matAspect, setMatAspect] = useState('original'); // 'original' | '16:9' | '3:1' | '2:1' | '3:2' | '4:3' | '5:4' | '1:1'
+  const [matStyle, setMatStyle] = useState('single'); // 'single' | 'double'
+  const [matColor, setMatColor] = useState('#F4EFE6'); // Warm Cotton
+  const [innerMatColor, setInnerMatColor] = useState('#F4EFE6');
+
+  // Add Remote TV dialog state (Internet / Tailscale / DynDNS)
+  const [showAddRemoteModal, setShowAddRemoteModal] = useState(false);
+  const [remoteHostInput, setRemoteHostInput] = useState('');
+  const [remoteNameInput, setRemoteNameInput] = useState('');
+  const [isAddingRemote, setIsAddingRemote] = useState(false);
+  const [remoteAddError, setRemoteAddError] = useState('');
+
+  const MAT_COLORS = ARCHIVAL_MAT_TONES;
+
+  const MAT_ASPECT_RATIOS = [
+    { id: 'original', label: 'Original Ratio (No Crop)', ratio: null, desc: 'Uncropped native Lightroom photo proportions' },
+    { id: '16:9', label: '16:9 Crop + Mat', ratio: 16 / 9, desc: '16:9 widescreen crop inside beveled mat (drag photo to pan)' },
+    { id: '3:1', label: '3:1 Pano', ratio: 3 / 1, desc: 'Ultra-wide 3:1 panoramic crop inside mat' },
+    { id: '2:1', label: '2:1 Pano', ratio: 2 / 1, desc: 'Panoramic 2:1 crop inside mat' },
+    { id: '3:2', label: '3:2', ratio: 3 / 2, desc: 'Classic 35mm Full Frame' },
+    { id: '4:3', label: '4:3', ratio: 4 / 3, desc: 'Medium Format (Phase One)' },
+    { id: '5:4', label: '5:4', ratio: 5 / 4, desc: 'Large Format 4×5 / 8×10' },
+    { id: '1:1', label: '1:1 Square', ratio: 1, desc: 'Square Format' },
+  ];
+
+  const MAT_PLACEMENTS = [
+    { id: 'slim_optical', label: 'Slim Optical ★', desc: '88% window • slim border with optical vertical center (Best for Panos)', icon: '📐' },
+    { id: 'modern_thin', label: 'Slim Centered', desc: '88% window • slim border with 50/50 exact center', icon: '📏' },
+    { id: 'optical_center', label: 'Medium Optical', desc: '78% window • classic gallery border with optical center', icon: '🏛️' },
+    { id: 'exact_center', label: 'Medium Centered', desc: '78% window • classic gallery border with 50/50 center', icon: '⚖️' },
+    { id: 'modern_wide', label: 'Wide Exhibition', desc: '64% window • generous museum mat border', icon: '🖼️' },
+    { id: 'grand_exhibition', label: 'Extra-Large Mat', desc: '52% window • deep architectural gallery mat', icon: '✨' },
+  ];
+
+  const shadeHexColor = (hex, pct) => {
+    const clean = String(hex || '#F4EFE6').replace('#', '').trim();
+    const num = parseInt(clean.length === 3 ? clean.split('').map((c) => c + c).join('') : clean, 16);
+    if (Number.isNaN(num)) return '#F4EFE6';
+    let r = (num >> 16) & 255;
+    let g = (num >> 8) & 255;
+    let b = num & 255;
+    if (pct < 0) {
+      const f = 1 + pct;
+      r = Math.round(r * f);
+      g = Math.round(g * f);
+      b = Math.round(b * f);
+    } else {
+      r = Math.round(r + (255 - r) * pct);
+      g = Math.round(g + (255 - g) * pct);
+      b = Math.round(b + (255 - b) * pct);
+    }
+    r = Math.max(0, Math.min(255, r));
+    g = Math.max(0, Math.min(255, g));
+    b = Math.max(0, Math.min(255, b));
+    return `#${((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1)}`;
+  };
+
+  useEffect(() => {
+    if (!isOpen) return;
+    fetch('/api/samsung-tvs?rescan=false')
+      .then((r) => r.json())
+      .then((data) => {
+        if (data && Array.isArray(data.tvs) && data.tvs.length > 0) {
+          setSamsungTvs(data.tvs);
+          setSelectedTvIp((prev) => prev || data.tvs[0].ip);
+        }
+      })
+      .catch(() => {});
+  }, [isOpen]);
+
+  const handleDiscoverSamsungTvs = async () => {
+    setIsDiscoveringTvs(true);
+    try {
+      const res = await fetch('/api/samsung-tvs/discover', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rescan: true }),
+      });
+      const data = await res.json();
+      if (data && Array.isArray(data.tvs) && data.tvs.length > 0) {
+        setSamsungTvs(data.tvs);
+        if (!data.tvs.some((t) => t.ip === selectedTvIp)) {
+          setSelectedTvIp(data.tvs[0].ip);
+        }
+      }
+    } catch (err) {
+      console.error('Samsung TV discovery error:', err);
+    } finally {
+      setIsDiscoveringTvs(false);
+    }
+  };
+
+  useEffect(() => {
+    const handleOutside = (e) => {
+      if (destMenuRef.current && !destMenuRef.current.contains(e.target)) {
+        setDestMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleOutside);
+    return () => document.removeEventListener('mousedown', handleOutside);
+  }, []);
 
   const containerRef = useRef(null);
   const imageRef = useRef(null);
@@ -115,21 +243,27 @@ export default function TvShowcaseCropModal({
 
   const previewSrc = getPreviewUrl(currentPhoto);
 
-  // Aspect ratio calculation
-  const targetRatio = 16.0 / 9.0; // 1.777778
+  // Aspect ratio calculation (Full 16:9 Bleed vs Fine-Art Mat Window Aspect Ratio)
+  const bleedRatio = 16.0 / 9.0; // 1.777778
   const naturalAspect =
     imageNaturalDim.width && imageNaturalDim.height
       ? imageNaturalDim.width / imageNaturalDim.height
-      : targetRatio;
+      : 4.0 / 3.0;
 
-  // Is image taller than 16:9? (e.g. 3:2, 4:3, Phase One, portrait) -> vertical crop adjustment
-  // Is image wider than 16:9? (e.g. panoramic) -> horizontal crop adjustment
-  const isTaller = naturalAspect < targetRatio;
-  const isWider = naturalAspect > targetRatio;
+  const selectedMatAspectObj = MAT_ASPECT_RATIOS.find((a) => a.id === matAspect);
+  const targetRatio =
+    matMode === 'none'
+      ? bleedRatio
+      : selectedMatAspectObj && selectedMatAspectObj.ratio
+      ? selectedMatAspectObj.ratio
+      : naturalAspect;
 
-  // Crop box percentage sizing
-  // If taller: width is 100%, height is (naturalAspect / targetRatio) * 100%
-  // If wider: height is 100%, width is (targetRatio / naturalAspect) * 100%
+  // Is image taller than target window aspect? -> vertical crop adjustment
+  // Is image wider than target window aspect? -> horizontal crop adjustment
+  const isTaller = naturalAspect < targetRatio - 0.005;
+  const isWider = naturalAspect > targetRatio + 0.005;
+
+  // Crop box percentage sizing (used in Full 16:9 Bleed mode and for drag sensitivity)
   let boxWidthPct = 100;
   let boxHeightPct = 100;
   let topPct = 0;
@@ -145,7 +279,7 @@ export default function TvShowcaseCropModal({
     leftPct = normX * slackWidthPct;
   }
 
-  // Mouse drag handlers for direct viewport dragging
+  // Mouse drag handlers for direct viewport dragging (both Full Bleed & Cropped Mat Window)
   const handleMouseDown = (e) => {
     e.preventDefault();
     setIsDragging(true);
@@ -157,20 +291,29 @@ export default function TvShowcaseCropModal({
 
   const handleMouseMove = useCallback(
     (e) => {
-      if (!isDragging || !containerRef.current) return;
-      const rect = containerRef.current.getBoundingClientRect();
-
+      if (!isDragging) return;
+      const sign = matMode === 'studio' ? -1 : 1;
       if (isTaller) {
-        const slackHeightPx = rect.height * ((100 - boxHeightPct) / 100);
+        const refEl = containerRef.current;
+        const rectH = refEl ? refEl.getBoundingClientRect().height : 320;
+        const slackHeightPx =
+          matMode === 'studio'
+            ? Math.max(120, rectH * 0.65)
+            : rectH * ((100 - boxHeightPct) / 100);
         if (slackHeightPx > 0) {
-          const deltaY = e.clientY - dragStartY;
+          const deltaY = (e.clientY - dragStartY) * sign;
           const deltaNormY = deltaY / slackHeightPx;
           updateCrop(initialNormY + deltaNormY, normX);
         }
       } else if (isWider) {
-        const slackWidthPx = rect.width * ((100 - boxWidthPct) / 100);
+        const refEl = containerRef.current;
+        const rectW = refEl ? refEl.getBoundingClientRect().width : 480;
+        const slackWidthPx =
+          matMode === 'studio'
+            ? Math.max(140, rectW * 0.65)
+            : rectW * ((100 - boxWidthPct) / 100);
         if (slackWidthPx > 0) {
-          const deltaX = e.clientX - dragStartX;
+          const deltaX = (e.clientX - dragStartX) * sign;
           const deltaNormX = deltaX / slackWidthPx;
           updateCrop(normY, initialNormX + deltaNormX);
         }
@@ -178,6 +321,7 @@ export default function TvShowcaseCropModal({
     },
     [
       isDragging,
+      matMode,
       isTaller,
       isWider,
       boxHeightPct,
@@ -221,9 +365,77 @@ export default function TvShowcaseCropModal({
     { label: 'Right', value: 1.0, icon: '▶️' },
   ];
 
-  const handleConfirm = () => {
+  const handleAddRemoteTv = async (e) => {
+    if (e && e.preventDefault) e.preventDefault();
+    if (!remoteHostInput.trim()) return;
+    setIsAddingRemote(true);
+    setRemoteAddError('');
+    try {
+      const res = await fetch('/api/samsung-tvs/add-remote', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          host: remoteHostInput.trim(),
+          name: remoteNameInput.trim() || undefined,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.detail || 'Failed to add remote TV');
+      }
+      if (data.tvs && Array.isArray(data.tvs)) {
+        setSamsungTvs(data.tvs);
+        const added = data.added_tv?.ip || remoteHostInput.trim();
+        setSelectedTvIp(added);
+      }
+      setShowAddRemoteModal(false);
+      setRemoteHostInput('');
+      setRemoteNameInput('');
+    } catch (err) {
+      setRemoteAddError(err.message || 'Error connecting to remote TV');
+    } finally {
+      setIsAddingRemote(false);
+    }
+  };
+
+  const triggerExportWithDestination = (dest, folderPath = null, extraOptions = {}) => {
+    try {
+      localStorage.setItem('mrdarkroom_export_destination', dest);
+      if (folderPath) {
+        localStorage.setItem('mrdarkroom_export_custom_path', folderPath);
+      }
+    } catch (_) {}
+    setTargetDestination(dest);
+    if (folderPath) setCustomFolderPath(folderPath);
+    setDestMenuOpen(false);
     if (onConfirmExport) {
-      onConfirmExport(crops);
+      onConfirmExport(crops, dest, folderPath, {
+        samsung_tv_ip: selectedTvIp,
+        slideshow_minutes: slideshowMinutes,
+        mat_mode: matMode,
+        mat_color: matColor,
+        mat_placement: matPlacement,
+        mat_aspect: matAspect,
+        mat_style: matStyle,
+        inner_mat_color: innerMatColor,
+        ...extraOptions,
+      });
+    }
+  };
+
+  const handlePickFolderAndExport = async () => {
+    setIsPickingFolder(true);
+    try {
+      const res = await fetch('/api/system/choose-folder', { method: 'POST' });
+      const data = await res.json();
+      const chosenPath = data.folder_path || data.path;
+      if (chosenPath) {
+        triggerExportWithDestination('custom', chosenPath);
+      }
+    } catch (err) {
+      console.error('Folder picker error:', err);
+    } finally {
+      setIsPickingFolder(false);
     }
   };
 
@@ -238,7 +450,7 @@ export default function TvShowcaseCropModal({
         inset: 0,
         backgroundColor: 'rgba(5, 8, 15, 0.88)',
         backdropFilter: 'blur(16px)',
-        zIndex: 9999,
+        zIndex: 10100,
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
@@ -294,6 +506,21 @@ export default function TvShowcaseCropModal({
             <div>
               <div style={{ fontSize: '16px', fontWeight: 800, color: '#f8fafc', display: 'flex', alignItems: 'center', gap: '8px' }}>
                 <span>65" TV Showcase 16:9 Crop Placement</span>
+                {collectionName && (
+                  <span
+                    style={{
+                      fontSize: '11px',
+                      fontWeight: 800,
+                      padding: '2px 8px',
+                      borderRadius: '6px',
+                      background: 'rgba(245, 158, 11, 0.2)',
+                      color: '#fbbf24',
+                      border: '1px solid rgba(245, 158, 11, 0.4)',
+                    }}
+                  >
+                    📁 {collectionName}
+                  </span>
+                )}
                 <span
                   style={{
                     fontSize: '11px',
@@ -305,7 +532,7 @@ export default function TvShowcaseCropModal({
                     border: '1px solid rgba(52, 211, 153, 0.35)',
                   }}
                 >
-                  12,500 × 7,031 px • 180 DPI
+                  12,000 × 6,750 px • 180 DPI
                 </span>
               </div>
               <div style={{ fontSize: '12px', color: '#94a3b8', marginTop: '2px' }}>
@@ -333,6 +560,80 @@ export default function TvShowcaseCropModal({
           >
             <X style={{ width: '18px', height: '18px' }} />
           </button>
+        </div>
+
+        {/* ========================================================================= */}
+        {/* PRESENTATION MODE BAR: FINE-ART MAT vs FULL 16:9 BLEED CROP               */}
+        {/* ========================================================================= */}
+        <div
+          style={{
+            padding: '10px 20px',
+            borderBottom: '1px solid rgba(255, 255, 255, 0.08)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            background: '#0a0e19',
+            flexWrap: 'wrap',
+            gap: '10px',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <span style={{ fontSize: '11px', fontWeight: 800, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+              Framing & Mat:
+            </span>
+            <button
+              type="button"
+              onClick={() => setMatMode('studio')}
+              style={{
+                padding: '6px 13px',
+                borderRadius: '8px',
+                fontSize: '12px',
+                fontWeight: matMode === 'studio' ? 800 : 600,
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+                background: matMode === 'studio' ? 'rgba(245, 158, 11, 0.22)' : 'rgba(255, 255, 255, 0.04)',
+                border: matMode === 'studio' ? '1.5px solid #f59e0b' : '1px solid rgba(255, 255, 255, 0.12)',
+                color: matMode === 'studio' ? '#fbbf24' : '#cbd5e1',
+                boxShadow: matMode === 'studio' ? '0 0 16px rgba(245, 158, 11, 0.18)' : 'none',
+              }}
+            >
+              <Palette style={{ width: '14px', height: '14px' }} />
+              <span>Fine-Art Mat (Depth & Bevel)</span>
+              <span style={{ fontSize: '10px', padding: '1px 6px', borderRadius: '4px', background: 'rgba(245, 158, 11, 0.35)', color: '#fef3c7' }}>
+                Samsung Frame
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setMatMode('none')}
+              style={{
+                padding: '6px 13px',
+                borderRadius: '8px',
+                fontSize: '12px',
+                fontWeight: matMode === 'none' ? 800 : 600,
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+                background: matMode === 'none' ? 'rgba(16, 185, 129, 0.22)' : 'rgba(255, 255, 255, 0.04)',
+                border: matMode === 'none' ? '1.5px solid #10b981' : '1px solid rgba(255, 255, 255, 0.12)',
+                color: matMode === 'none' ? '#34d399' : '#cbd5e1',
+                boxShadow: matMode === 'none' ? '0 0 16px rgba(16, 185, 129, 0.18)' : 'none',
+              }}
+            >
+              <Crop style={{ width: '14px', height: '14px' }} />
+              <span>Full 16:9 Bleed Crop</span>
+            </button>
+          </div>
+
+          {matMode === 'studio' && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '11px', color: '#94a3b8' }}>
+              <Sparkles style={{ width: '13px', height: '13px', color: '#f59e0b' }} />
+              <span>True 45° Angled Chamfer Bevel Cut • Natural or Custom Window Aspect Ratio</span>
+            </div>
+          )}
         </div>
 
         {/* ========================================================================= */}
@@ -416,231 +717,683 @@ export default function TvShowcaseCropModal({
             )}
           </div>
 
-          {/* Interactive Crop Viewport Area */}
-          <div
-            style={{
-              position: 'relative',
-              width: '100%',
-              height: '460px',
-              backgroundColor: '#05070d',
-              borderRadius: '12px',
-              border: '1px solid rgba(255, 255, 255, 0.08)',
-              overflow: 'hidden',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              userSelect: 'none',
-            }}
-          >
-            {/* The Image Container with Crop Overlays */}
+          {/* VIEWPORT AREA: FINE-ART MAT VIEWPORT vs FULL 16:9 CROP VIEWPORT */}
+          {matMode === 'studio' ? (
+            /* ========================================================================= */
+            /* FINE-ART MAT 16:9 CANVAS VIEWPORT                                         */
+            /* ========================================================================= */
             <div
-              ref={containerRef}
               style={{
                 position: 'relative',
-                maxHeight: '100%',
-                maxWidth: '100%',
-                display: 'inline-flex',
+                width: '100%',
+                height: '440px',
+                backgroundColor: '#05070d',
+                borderRadius: '12px',
+                border: '1px solid rgba(255, 255, 255, 0.08)',
+                overflow: 'hidden',
+                display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
+                userSelect: 'none',
+                padding: '14px',
+                boxSizing: 'border-box',
               }}
             >
-              <img
-                ref={imageRef}
-                src={previewSrc}
-                alt={photoTitle}
-                onLoad={(e) => {
-                  setImageNaturalDim({
-                    width: e.target.naturalWidth,
-                    height: e.target.naturalHeight,
-                  });
-                }}
-                style={{
-                  maxHeight: '460px',
-                  maxWidth: '100%',
-                  objectFit: 'contain',
-                  display: 'block',
-                  pointerEvents: 'none',
-                }}
-              />
+              {/* 16:9 Mat Canvas with Natural/Selected Aspect Ratio & Soft 3/4 45° Angled Trapezoidal Bevel */}
+              {(() => {
+                const cW = 1600;
+                const cH = 900;
+                const winAspect = targetRatio;
+                let maxWF = 0.78;
+                let maxHF = 0.76;
+                if (matPlacement === 'grand_exhibition') {
+                  maxWF = 0.52;
+                  maxHF = 0.52;
+                } else if (matPlacement === 'modern_wide') {
+                  maxWF = 0.64;
+                  maxHF = 0.64;
+                } else if (matPlacement === 'modern_thin' || matPlacement === 'slim_optical') {
+                  maxWF = 0.88;
+                  maxHF = 0.86;
+                }
+                const maxW = cW * maxWF;
+                const maxH = cH * maxHF;
+                let wW = maxW;
+                let wH = maxH;
+                if (maxW / maxH > winAspect) {
+                  wH = maxH;
+                  wW = Math.round(wH * winAspect);
+                } else {
+                  wW = maxW;
+                  wH = Math.round(wW / winAspect);
+                }
+                const x0 = Math.round((cW - wW) / 2);
+                let y0 = Math.round((cH - wH) / 2);
+                if (matPlacement === 'slim_optical') {
+                  y0 = Math.round((cH - wH) * 0.44);
+                } else if (matPlacement === 'optical_center') {
+                  y0 = Math.round((cH - wH) * 0.45);
+                } else if (matPlacement === 'modern_wide' || matPlacement === 'grand_exhibition') {
+                  y0 = Math.round((cH - wH) * 0.46);
+                }
+                const x1 = x0 + wW;
+                const y1 = y0 + wH;
+                const B = 10;
+                const ox0 = x0 - B;
+                const oy0 = y0 - B;
+                const ox1 = x1 + B;
+                const oy1 = y1 + B;
 
-              {/* 16:9 Viewport Crop Box Overlay */}
+                const isDouble = matStyle === 'double';
+                const reveal = Math.max(10, Math.round(B * 2.1));
+                const BOut = Math.max(6, Math.round(B * 0.88));
+                const mx0 = ox0 - reveal;
+                const my0 = oy0 - reveal;
+                const mx1 = ox1 + reveal;
+                const my1 = oy1 + reveal;
+                const obx0 = mx0 - BOut;
+                const oby0 = my0 - BOut;
+                const obx1 = mx1 + BOut;
+                const oby1 = my1 + BOut;
+
+                const canPanMat = matAspect !== 'original' && (isTaller || isWider);
+                const objPosition = `${(normX * 100).toFixed(1)}% ${(normY * 100).toFixed(1)}%`;
+
+                return (
+                  <div
+                    ref={containerRef}
+                    onMouseDown={canPanMat ? handleMouseDown : undefined}
+                    style={{
+                      position: 'relative',
+                      width: '100%',
+                      maxWidth: '720px',
+                      aspectRatio: '16 / 9',
+                      backgroundColor: matColor,
+                      borderRadius: '4px',
+                      boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.85), 0 0 0 1px rgba(255, 255, 255, 0.08)',
+                      overflow: 'hidden',
+                      transition: 'background-color 0.2s ease',
+                      cursor: canPanMat ? (isDragging ? 'grabbing' : 'grab') : 'default',
+                    }}
+                  >
+                    <div
+                      style={{
+                        position: 'absolute',
+                        left: `${(x0 / cW) * 100}%`,
+                        top: `${(y0 / cH) * 100}%`,
+                        width: `${(wW / cW) * 100}%`,
+                        height: `${(wH / cH) * 100}%`,
+                        overflow: 'hidden',
+                        backgroundColor: '#0c0e14',
+                      }}
+                    >
+                      <img
+                        ref={imageRef}
+                        src={previewSrc}
+                        alt={photoTitle}
+                        onLoad={(e) => {
+                          setImageNaturalDim({
+                            width: e.target.naturalWidth,
+                            height: e.target.naturalHeight,
+                          });
+                        }}
+                        style={{
+                          width: '100%',
+                          height: '100%',
+                          objectFit: 'cover',
+                          objectPosition: objPosition,
+                          display: 'block',
+                          pointerEvents: 'none',
+                        }}
+                      />
+                    </div>
+
+                    {/* Soft Samsung Frame 45-Degree Angled Bevel Cut SVG (Single or Double Mat) */}
+                    <svg
+                      viewBox={`0 0 ${cW} ${cH}`}
+                      preserveAspectRatio="none"
+                      style={{
+                        position: 'absolute',
+                        inset: 0,
+                        width: '100%',
+                        height: '100%',
+                        pointerEvents: 'none',
+                      }}
+                    >
+                      <defs>
+                        <linearGradient id="tvsc-top-bevel" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="0%" stopColor="#c4beaf" />
+                          <stop offset="100%" stopColor="#ada697" />
+                        </linearGradient>
+                        <linearGradient id="tvsc-bot-bevel" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="0%" stopColor="#eee9de" />
+                          <stop offset="100%" stopColor="#f8f6f0" />
+                        </linearGradient>
+                        <linearGradient id="tvsc-left-bevel" x1="0" y1="0" x2="1" y2="0">
+                          <stop offset="0%" stopColor="#d2ccbe" />
+                          <stop offset="100%" stopColor="#c0baab" />
+                        </linearGradient>
+                        <linearGradient id="tvsc-right-bevel" x1="0" y1="0" x2="1" y2="0">
+                          <stop offset="0%" stopColor="#e6e1d5" />
+                          <stop offset="100%" stopColor="#f0ebe0" />
+                        </linearGradient>
+                      </defs>
+
+                      {isDouble && (
+                        <g>
+                          <rect x={mx0} y={my0} width={mx1 - mx0} height={oy0 - my0} fill={innerMatColor || '#F4EFE6'} />
+                          <rect x={mx0} y={oy1} width={mx1 - mx0} height={my1 - oy1} fill={innerMatColor || '#F4EFE6'} />
+                          <rect x={mx0} y={oy0} width={ox0 - mx0} height={oy1 - oy0} fill={innerMatColor || '#F4EFE6'} />
+                          <rect x={ox1} y={oy0} width={mx1 - ox1} height={oy1 - oy0} fill={innerMatColor || '#F4EFE6'} />
+
+                          <polygon points={`${obx0},${oby0} ${obx1},${oby0} ${mx1},${my0} ${mx0},${my0}`} fill="url(#tvsc-top-bevel)" />
+                          <polygon points={`${mx0},${my1} ${mx1},${my1} ${obx1},${oby1} ${obx0},${oby1}`} fill="url(#tvsc-bot-bevel)" />
+                          <polygon points={`${obx0},${oby0} ${mx0},${my0} ${mx0},${my1} ${obx0},${oby1}`} fill="url(#tvsc-left-bevel)" />
+                          <polygon points={`${mx1},${my0} ${obx1},${oby0} ${obx1},${oby1} ${mx1},${my1}`} fill="url(#tvsc-right-bevel)" />
+
+                          <line x1={obx0} y1={oby0} x2={mx0} y2={my0} stroke="#beb8ae" strokeWidth="1.1" />
+                          <line x1={obx1} y1={oby0} x2={mx1} y2={my0} stroke="#c8c2b8" strokeWidth="1.1" />
+                          <line x1={obx0} y1={oby1} x2={mx0} y2={my1} stroke="#d0cac0" strokeWidth="1.1" />
+                          <line x1={obx1} y1={oby1} x2={mx1} y2={my1} stroke="#dcd7cd" strokeWidth="1.1" />
+                          <rect x={mx0} y={my0} width={mx1 - mx0} height={my1 - my0} fill="none" stroke="rgba(60,56,50,0.28)" strokeWidth="0.9" />
+                        </g>
+                      )}
+
+                      {/* 4 Trapezoidal 45-Degree Angled Bevel Planes */}
+                      <polygon points={`${ox0},${oy0} ${ox1},${oy0} ${x1},${y0} ${x0},${y0}`} fill="url(#tvsc-top-bevel)" />
+                      <polygon points={`${x0},${y1} ${x1},${y1} ${ox1},${oy1} ${ox0},${oy1}`} fill="url(#tvsc-bot-bevel)" />
+                      <polygon points={`${ox0},${oy0} ${x0},${y0} ${x0},${y1} ${ox0},${oy1}`} fill="url(#tvsc-left-bevel)" />
+                      <polygon points={`${x1},${y0} ${ox1},${oy0} ${ox1},${oy1} ${x1},${y1}`} fill="url(#tvsc-right-bevel)" />
+
+                      {/* Subtle 45-Degree Diagonal Corner Miter Seams */}
+                      <line x1={ox0} y1={oy0} x2={x0} y2={y0} stroke="#a29c90" strokeWidth="1.1" />
+                      <line x1={ox1} y1={oy0} x2={x1} y2={y0} stroke="#aea89c" strokeWidth="1.1" />
+                      <line x1={ox0} y1={oy1} x2={x0} y2={y1} stroke="#bab4a8" strokeWidth="1.1" />
+                      <line x1={ox1} y1={oy1} x2={x1} y2={y1} stroke="#cecac0" strokeWidth="1.1" />
+
+                      {/* Subtle Inner Bevel-to-Print Contact Line & Top Shadow Crease */}
+                      <rect x={x0} y={y0} width={wW} height={wH} fill="none" stroke="rgba(60,56,50,0.48)" strokeWidth="1.0" />
+                      <line x1={x0} y1={y0} x2={x1} y2={y0} stroke="rgba(40,36,30,0.32)" strokeWidth="1.2" />
+                    </svg>
+
+                    {canPanMat && (
+                      <div
+                        style={{
+                          position: 'absolute',
+                          top: '10px',
+                          left: '50%',
+                          transform: 'translateX(-50%)',
+                          background: 'rgba(15, 23, 42, 0.78)',
+                          backdropFilter: 'blur(6px)',
+                          border: '1px solid rgba(245, 158, 11, 0.45)',
+                          padding: '3px 10px',
+                          borderRadius: '999px',
+                          fontSize: '10px',
+                          fontWeight: 700,
+                          color: '#fbbf24',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '5px',
+                          pointerEvents: 'none',
+                        }}
+                      >
+                        <Move style={{ width: '11px', height: '11px' }} />
+                        <span>Drag photo inside {matAspect} mat window to adjust crop</span>
+                      </div>
+                    )}
+
+                    {/* Mat Watermark / Spec Badge */}
+                    <div
+                      style={{
+                        position: 'absolute',
+                        bottom: '10px',
+                        right: '12px',
+                        background: 'rgba(0, 0, 0, 0.62)',
+                        backdropFilter: 'blur(6px)',
+                        padding: '3px 8px',
+                        borderRadius: '5px',
+                        fontSize: '10px',
+                        fontWeight: 700,
+                        color: '#f8fafc',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '5px',
+                        pointerEvents: 'none',
+                        border: '1px solid rgba(255, 255, 255, 0.1)',
+                      }}
+                    >
+                      <span>🏛️ {matAspect === 'original' ? 'Natural Ratio' : `${matAspect} Window`}</span>
+                      <span>•</span>
+                      <span style={{ color: '#fbbf24' }}>
+                        {MAT_COLORS.find((c) => c.hex.toLowerCase() === matColor.toLowerCase())?.name || matColor}
+                      </span>
+                      <span>•</span>
+                      <span>{isDouble ? 'Double Mat (2× Bevel)' : 'Soft 45° Bevel'}</span>
+                    </div>
+                  </div>
+                );
+              })()}
+            </div>
+          ) : (
+            /* ========================================================================= */
+            /* FULL 16:9 BLEED CROP VIEWPORT                                             */
+            /* ========================================================================= */
+            <div
+              style={{
+                position: 'relative',
+                width: '100%',
+                height: '440px',
+                backgroundColor: '#05070d',
+                borderRadius: '12px',
+                border: '1px solid rgba(255, 255, 255, 0.08)',
+                overflow: 'hidden',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                userSelect: 'none',
+              }}
+            >
+              {/* The Image Container with Crop Overlays */}
               <div
-                onMouseDown={handleMouseDown}
+                ref={containerRef}
                 style={{
-                  position: 'absolute',
-                  top: `${topPct}%`,
-                  left: `${leftPct}%`,
-                  width: `${boxWidthPct}%`,
-                  height: `${boxHeightPct}%`,
-                  border: '2px solid #10b981',
-                  boxShadow: '0 0 0 9999px rgba(0, 0, 0, 0.65)',
-                  cursor: isDragging ? 'grabbing' : isTaller ? 'ns-resize' : isWider ? 'ew-resize' : 'move',
-                  zIndex: 20,
-                  boxSizing: 'border-box',
-                  pointerEvents: 'auto',
+                  position: 'relative',
+                  maxHeight: '100%',
+                  maxWidth: '100%',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
                 }}
               >
-                {/* Rule of Thirds Grid Lines */}
-                <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none' }}>
-                  <div
-                    style={{
-                      position: 'absolute',
-                      top: '33.333%',
-                      left: 0,
-                      right: 0,
-                      height: '1px',
-                      borderTop: '1px dashed rgba(255, 255, 255, 0.28)',
-                    }}
-                  />
-                  <div
-                    style={{
-                      position: 'absolute',
-                      top: '66.666%',
-                      left: 0,
-                      right: 0,
-                      height: '1px',
-                      borderTop: '1px dashed rgba(255, 255, 255, 0.28)',
-                    }}
-                  />
-                  <div
-                    style={{
-                      position: 'absolute',
-                      left: '33.333%',
-                      top: 0,
-                      bottom: 0,
-                      width: '1px',
-                      borderLeft: '1px dashed rgba(255, 255, 255, 0.28)',
-                    }}
-                  />
-                  <div
-                    style={{
-                      position: 'absolute',
-                      left: '66.666%',
-                      top: 0,
-                      bottom: 0,
-                      width: '1px',
-                      borderLeft: '1px dashed rgba(255, 255, 255, 0.28)',
-                    }}
-                  />
-                </div>
+                <img
+                  ref={imageRef}
+                  src={previewSrc}
+                  alt={photoTitle}
+                  onLoad={(e) => {
+                    setImageNaturalDim({
+                      width: e.target.naturalWidth,
+                      height: e.target.naturalHeight,
+                    });
+                  }}
+                  style={{
+                    maxHeight: '440px',
+                    maxWidth: '100%',
+                    objectFit: 'contain',
+                    display: 'block',
+                    pointerEvents: 'none',
+                  }}
+                />
 
-                {/* Floating "Drag to position" badge */}
+                {/* 16:9 Viewport Crop Box Overlay */}
                 <div
+                  onMouseDown={handleMouseDown}
                   style={{
                     position: 'absolute',
-                    top: '8px',
-                    left: '50%',
-                    transform: 'translateX(-50%)',
-                    background: 'rgba(15, 23, 42, 0.82)',
-                    backdropFilter: 'blur(8px)',
-                    border: '1px solid rgba(52, 211, 153, 0.45)',
-                    padding: '3px 10px',
-                    borderRadius: '999px',
-                    fontSize: '11px',
-                    fontWeight: 700,
-                    color: '#6ee7b7',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '5px',
-                    pointerEvents: 'none',
-                    boxShadow: '0 4px 12px rgba(0,0,0,0.5)',
+                    top: `${topPct}%`,
+                    left: `${leftPct}%`,
+                    width: `${boxWidthPct}%`,
+                    height: `${boxHeightPct}%`,
+                    border: '2px solid #10b981',
+                    boxShadow: '0 0 0 9999px rgba(0, 0, 0, 0.65)',
+                    cursor: isDragging ? 'grabbing' : isTaller ? 'ns-resize' : isWider ? 'ew-resize' : 'move',
+                    zIndex: 20,
+                    boxSizing: 'border-box',
+                    pointerEvents: 'auto',
                   }}
                 >
-                  <Move style={{ width: '12px', height: '12px' }} />
-                  <span>
-                    {isTaller ? 'DRAG UP/DOWN TO FRAME' : isWider ? 'DRAG LEFT/RIGHT TO FRAME' : '16:9 VIEWPORT'}
-                  </span>
-                </div>
+                  {/* Rule of Thirds Grid Lines */}
+                  <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none' }}>
+                    <div
+                      style={{
+                        position: 'absolute',
+                        top: '33.333%',
+                        left: 0,
+                        right: 0,
+                        height: '1px',
+                        borderTop: '1px dashed rgba(255, 255, 255, 0.28)',
+                      }}
+                    />
+                    <div
+                      style={{
+                        position: 'absolute',
+                        top: '66.666%',
+                        left: 0,
+                        right: 0,
+                        height: '1px',
+                        borderTop: '1px dashed rgba(255, 255, 255, 0.28)',
+                      }}
+                    />
+                    <div
+                      style={{
+                        position: 'absolute',
+                        left: '33.333%',
+                        top: 0,
+                        bottom: 0,
+                        width: '1px',
+                        borderLeft: '1px dashed rgba(255, 255, 255, 0.28)',
+                      }}
+                    />
+                    <div
+                      style={{
+                        position: 'absolute',
+                        left: '66.666%',
+                        top: 0,
+                        bottom: 0,
+                        width: '1px',
+                        borderLeft: '1px dashed rgba(255, 255, 255, 0.28)',
+                      }}
+                    />
+                  </div>
 
-                {/* Corner Accents */}
-                <div style={{ position: 'absolute', top: -3, left: -3, width: 10, height: 10, borderTop: '3px solid #34d399', borderLeft: '3px solid #34d399' }} />
-                <div style={{ position: 'absolute', top: -3, right: -3, width: 10, height: 10, borderTop: '3px solid #34d399', borderRight: '3px solid #34d399' }} />
-                <div style={{ position: 'absolute', bottom: -3, left: -3, width: 10, height: 10, borderBottom: '3px solid #34d399', borderLeft: '3px solid #34d399' }} />
-                <div style={{ position: 'absolute', bottom: -3, right: -3, width: 10, height: 10, borderBottom: '3px solid #34d399', borderRight: '3px solid #34d399' }} />
-              </div>
-            </div>
-          </div>
-
-          {/* Controls Bar: Presets & Precision Slider */}
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              flexWrap: 'wrap',
-              gap: '12px',
-              padding: '12px 14px',
-              background: 'rgba(255, 255, 255, 0.03)',
-              borderRadius: '10px',
-              border: '1px solid rgba(255, 255, 255, 0.07)',
-            }}
-          >
-            {/* Presets */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-              <span style={{ fontSize: '12px', fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-                Placement Presets:
-              </span>
-              {(isTaller ? presetsY : presetsX).map((p) => {
-                const isActive = isTaller
-                  ? Math.abs(normY - p.value) < 0.04
-                  : Math.abs(normX - p.value) < 0.04;
-                return (
-                  <button
-                    key={p.label}
-                    type="button"
-                    onClick={() => {
-                      if (isTaller) updateCrop(p.value, normX);
-                      else updateCrop(normY, p.value);
-                    }}
+                  {/* Floating "Drag to position" badge */}
+                  <div
                     style={{
-                      padding: '5px 11px',
-                      borderRadius: '7px',
-                      fontSize: '12px',
-                      fontWeight: isActive ? 700 : 500,
-                      border: isActive ? '1px solid #10b981' : '1px solid rgba(255, 255, 255, 0.12)',
-                      background: isActive ? 'rgba(16, 185, 129, 0.22)' : 'rgba(255, 255, 255, 0.05)',
-                      color: isActive ? '#6ee7b7' : '#e2e8f0',
-                      cursor: 'pointer',
+                      position: 'absolute',
+                      top: '8px',
+                      left: '50%',
+                      transform: 'translateX(-50%)',
+                      background: 'rgba(15, 23, 42, 0.82)',
+                      backdropFilter: 'blur(8px)',
+                      border: '1px solid rgba(52, 211, 153, 0.45)',
+                      padding: '3px 10px',
+                      borderRadius: '999px',
+                      fontSize: '11px',
+                      fontWeight: 700,
+                      color: '#6ee7b7',
                       display: 'flex',
                       alignItems: 'center',
                       gap: '5px',
-                      transition: 'all 0.15s ease',
+                      pointerEvents: 'none',
+                      boxShadow: '0 4px 12px rgba(0,0,0,0.5)',
                     }}
                   >
-                    <span>{p.icon}</span>
-                    <span>{p.label}</span>
-                  </button>
-                );
-              })}
-            </div>
+                    <Move style={{ width: '12px', height: '12px' }} />
+                    <span>
+                      {isTaller ? 'DRAG UP/DOWN TO FRAME' : isWider ? 'DRAG LEFT/RIGHT TO FRAME' : '16:9 VIEWPORT'}
+                    </span>
+                  </div>
 
-            {/* Precision Slider */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-              <Sliders style={{ width: '14px', height: '14px', color: '#94a3b8' }} />
-              <span style={{ fontSize: '12px', color: '#94a3b8', fontWeight: 600 }}>
-                {isTaller ? 'Vertical Offset:' : 'Horizontal Offset:'}
-              </span>
-              <input
-                type="range"
-                min="0"
-                max="100"
-                value={Math.round((isTaller ? normY : normX) * 100)}
-                onChange={(e) => {
-                  const val = parseFloat(e.target.value) / 100.0;
-                  if (isTaller) updateCrop(val, normX);
-                  else updateCrop(normY, val);
-                }}
-                style={{
-                  width: '130px',
-                  accentColor: '#10b981',
-                  cursor: 'pointer',
-                }}
-              />
-              <span style={{ fontSize: '12px', fontVariantNumeric: 'tabular-nums', color: '#34d399', fontWeight: 700, width: '36px' }}>
-                {Math.round((isTaller ? normY : normX) * 100)}%
-              </span>
+                  {/* Corner Accents */}
+                  <div style={{ position: 'absolute', top: -3, left: -3, width: 10, height: 10, borderTop: '3px solid #34d399', borderLeft: '3px solid #34d399' }} />
+                  <div style={{ position: 'absolute', top: -3, right: -3, width: 10, height: 10, borderTop: '3px solid #34d399', borderRight: '3px solid #34d399' }} />
+                  <div style={{ position: 'absolute', bottom: -3, left: -3, width: 10, height: 10, borderBottom: '3px solid #34d399', borderLeft: '3px solid #34d399' }} />
+                  <div style={{ position: 'absolute', bottom: -3, right: -3, width: 10, height: 10, borderBottom: '3px solid #34d399', borderRight: '3px solid #34d399' }} />
+                </div>
+              </div>
             </div>
-          </div>
+          )}
+
+          {/* CONTROLS BAR: MAT CONTROLS vs FULL BLEED CROP PRESETS */}
+          {matMode === 'studio' ? (
+            /* ========================================================================= */
+            /* FINE-ART MAT CONTROLS (ASPECT RATIO + BORDER/PLACEMENT + COLOR PALETTE)   */
+            /* ========================================================================= */
+            <div
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '10px',
+                padding: '12px 14px',
+                background: 'rgba(255, 255, 255, 0.03)',
+                borderRadius: '10px',
+                border: '1px solid rgba(255, 255, 255, 0.07)',
+              }}
+            >
+              {/* Row 1: Window Aspect Ratio Selector (Original Natural vs 4:3, 3:2, 16:9, 5:4, 2:1, 1:1) */}
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: '12px', fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                    Aspect Ratio:
+                  </span>
+                  {MAT_ASPECT_RATIOS.map((ar) => {
+                    const isActive = matAspect === ar.id;
+                    return (
+                      <button
+                        key={ar.id}
+                        type="button"
+                        onClick={() => setMatAspect(ar.id)}
+                        title={ar.desc}
+                        style={{
+                          padding: '5px 11px',
+                          borderRadius: '7px',
+                          fontSize: '12px',
+                          fontWeight: isActive ? 800 : 500,
+                          border: isActive ? '1.5px solid #34d399' : '1px solid rgba(255, 255, 255, 0.12)',
+                          background: isActive ? 'rgba(16, 185, 129, 0.22)' : 'rgba(255, 255, 255, 0.05)',
+                          color: isActive ? '#6ee7b7' : '#e2e8f0',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '5px',
+                          transition: 'all 0.15s ease',
+                        }}
+                      >
+                        <span>{ar.id === 'original' ? '✨' : '📐'}</span>
+                        <span>{ar.label}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {/* Inline Crop Framing Controls when a cropped aspect ratio is active */}
+                {matAspect !== 'original' && (isTaller || isWider) ? (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                    {(isTaller ? presetsY : presetsX).map((p) => {
+                      const isPresetActive = isTaller
+                        ? Math.abs(normY - p.value) < 0.04
+                        : Math.abs(normX - p.value) < 0.04;
+                      return (
+                        <button
+                          key={p.label}
+                          type="button"
+                          onClick={() => {
+                            if (isTaller) updateCrop(p.value, normX);
+                            else updateCrop(normY, p.value);
+                          }}
+                          style={{
+                            padding: '3px 8px',
+                            borderRadius: '6px',
+                            fontSize: '11px',
+                            fontWeight: isPresetActive ? 700 : 500,
+                            border: isPresetActive ? '1px solid #38bdf8' : '1px solid rgba(255, 255, 255, 0.12)',
+                            background: isPresetActive ? 'rgba(56, 189, 248, 0.2)' : 'rgba(255, 255, 255, 0.04)',
+                            color: isPresetActive ? '#7dd3fc' : '#cbd5e1',
+                            cursor: 'pointer',
+                          }}
+                        >
+                          {p.icon} {p.label}
+                        </button>
+                      );
+                    })}
+                    <input
+                      type="range"
+                      min="0"
+                      max="100"
+                      value={Math.round((isTaller ? normY : normX) * 100)}
+                      onChange={(e) => {
+                        const val = parseFloat(e.target.value) / 100.0;
+                        if (isTaller) updateCrop(val, normX);
+                        else updateCrop(normY, val);
+                      }}
+                      style={{ width: '95px', accentColor: '#38bdf8', cursor: 'pointer' }}
+                      title="Fine-tune crop offset inside mat opening"
+                    />
+                  </div>
+                ) : (
+                  <div style={{ fontSize: '11px', color: '#64748b', fontStyle: 'italic' }}>
+                    {selectedMatAspectObj?.desc || 'Uncropped native photo proportions'}
+                  </div>
+                )}
+              </div>
+
+              {/* Row 2: Border & Placement Selector + Single/Double Mat Toggle */}
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px', paddingTop: '4px', borderTop: '1px solid rgba(255, 255, 255, 0.05)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: '12px', fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                    Border & Placement:
+                  </span>
+                  {MAT_PLACEMENTS.map((pl) => {
+                    const isActive = matPlacement === pl.id;
+                    return (
+                      <button
+                        key={pl.id}
+                        type="button"
+                        onClick={() => setMatPlacement(pl.id)}
+                        title={pl.desc}
+                        style={{
+                          padding: '5px 10px',
+                          borderRadius: '7px',
+                          fontSize: '11.5px',
+                          fontWeight: isActive ? 800 : 500,
+                          border: isActive ? '1px solid #f59e0b' : '1px solid rgba(255, 255, 255, 0.12)',
+                          background: isActive ? 'rgba(245, 158, 11, 0.22)' : 'rgba(255, 255, 255, 0.05)',
+                          color: isActive ? '#fbbf24' : '#e2e8f0',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '5px',
+                          transition: 'all 0.15s ease',
+                        }}
+                      >
+                        <span>{pl.icon}</span>
+                        <span>{pl.label}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <button
+                    type="button"
+                    onClick={() => setMatStyle('single')}
+                    style={{
+                      padding: '4px 10px',
+                      borderRadius: '6px',
+                      fontSize: '11px',
+                      fontWeight: matStyle === 'single' ? 800 : 500,
+                      border: matStyle === 'single' ? '1px solid #fbbf24' : '1px solid rgba(255, 255, 255, 0.12)',
+                      background: matStyle === 'single' ? 'rgba(245, 158, 11, 0.25)' : 'rgba(255, 255, 255, 0.04)',
+                      color: matStyle === 'single' ? '#fbbf24' : '#cbd5e1',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    Single Mat (1 Bevel)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setMatStyle('double')}
+                    style={{
+                      padding: '4px 10px',
+                      borderRadius: '6px',
+                      fontSize: '11px',
+                      fontWeight: matStyle === 'double' ? 800 : 500,
+                      border: matStyle === 'double' ? '1px solid #fbbf24' : '1px solid rgba(255, 255, 255, 0.12)',
+                      background: matStyle === 'double' ? 'rgba(245, 158, 11, 0.25)' : 'rgba(255, 255, 255, 0.04)',
+                      color: matStyle === 'double' ? '#fbbf24' : '#cbd5e1',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    Double Mat (2 Bevels)
+                  </button>
+                </div>
+              </div>
+
+              {/* Row 3: Redesigned Archival Mat Color Studio (20 Tones & Spectrum Checkerboard) */}
+              <div style={{ paddingTop: '8px', borderTop: '1px solid rgba(255, 255, 255, 0.08)' }}>
+                <MatColorPicker
+                  color={matColor}
+                  onChange={setMatColor}
+                  isDoubleMat={matStyle === 'double'}
+                  innerColor={innerMatColor}
+                  onInnerChange={setInnerMatColor}
+                  compact={false}
+                />
+              </div>
+            </div>
+          ) : (
+            /* ========================================================================= */
+            /* FULL BLEED CROP CONTROLS (PRESETS + PRECISION SLIDER)                     */
+            /* ========================================================================= */
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                flexWrap: 'wrap',
+                gap: '12px',
+                padding: '12px 14px',
+                background: 'rgba(255, 255, 255, 0.03)',
+                borderRadius: '10px',
+                border: '1px solid rgba(255, 255, 255, 0.07)',
+              }}
+            >
+              {/* Presets */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                <span style={{ fontSize: '12px', fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                  Placement Presets:
+                </span>
+                {(isTaller ? presetsY : presetsX).map((p) => {
+                  const isActive = isTaller
+                    ? Math.abs(normY - p.value) < 0.04
+                    : Math.abs(normX - p.value) < 0.04;
+                  return (
+                    <button
+                      key={p.label}
+                      type="button"
+                      onClick={() => {
+                        if (isTaller) updateCrop(p.value, normX);
+                        else updateCrop(normY, p.value);
+                      }}
+                      style={{
+                        padding: '5px 11px',
+                        borderRadius: '7px',
+                        fontSize: '12px',
+                        fontWeight: isActive ? 700 : 500,
+                        border: isActive ? '1px solid #10b981' : '1px solid rgba(255, 255, 255, 0.12)',
+                        background: isActive ? 'rgba(16, 185, 129, 0.22)' : 'rgba(255, 255, 255, 0.05)',
+                        color: isActive ? '#6ee7b7' : '#e2e8f0',
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '5px',
+                        transition: 'all 0.15s ease',
+                      }}
+                    >
+                      <span>{p.icon}</span>
+                      <span>{p.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* Precision Slider */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <Sliders style={{ width: '14px', height: '14px', color: '#94a3b8' }} />
+                <span style={{ fontSize: '12px', color: '#94a3b8', fontWeight: 600 }}>
+                  {isTaller ? 'Vertical Offset:' : 'Horizontal Offset:'}
+                </span>
+                <input
+                  type="range"
+                  min="0"
+                  max="100"
+                  value={Math.round((isTaller ? normY : normX) * 100)}
+                  onChange={(e) => {
+                    const val = parseFloat(e.target.value) / 100.0;
+                    if (isTaller) updateCrop(val, normX);
+                    else updateCrop(normY, val);
+                  }}
+                  style={{
+                    width: '130px',
+                    accentColor: '#10b981',
+                    cursor: 'pointer',
+                  }}
+                />
+                <span style={{ fontSize: '12px', fontVariantNumeric: 'tabular-nums', color: '#34d399', fontWeight: 700, width: '36px' }}>
+                  {Math.round((isTaller ? normY : normX) * 100)}%
+                </span>
+              </div>
+            </div>
+          )}
 
           {/* Filmstrip / Thumbnail Stepper if multiple photos */}
           {photos.length > 1 && (
@@ -726,24 +1479,26 @@ export default function TvShowcaseCropModal({
             alignItems: 'center',
             justifyContent: 'space-between',
             background: '#090d17',
+            flexWrap: 'wrap',
+            gap: '12px',
           }}
         >
           {/* Tech Specs Banner */}
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', color: '#94a3b8' }}>
             <Sparkles style={{ width: '15px', height: '15px', color: '#34d399' }} />
             <span>
-              Target: <strong style={{ color: '#f8fafc' }}>12,500 × 7,031 px</strong> • <strong style={{ color: '#f8fafc' }}>180 DPI</strong> • sRGB Quality 96 • <span style={{ color: '#34d399' }}>Embedded IPTC/XMP Tags &amp; Location</span>
+              Target: <strong style={{ color: '#f8fafc' }}>12,000 × 6,750 px</strong> • <strong style={{ color: '#f8fafc' }}>180 DPI</strong> • sRGB Quality 96 • <span style={{ color: '#34d399' }}>Embedded IPTC/XMP Metadata</span>
             </span>
           </div>
 
-          {/* Action Buttons */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+          {/* Action Buttons: Cancel + Direct 1-Click Export Destinations (Desktop, iCloud, Choose Folder, Samsung TV) */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
             <button
               type="button"
               onClick={onClose}
               disabled={isBusy}
               style={{
-                padding: '9px 16px',
+                padding: '10px 16px',
                 borderRadius: '8px',
                 border: '1px solid rgba(255, 255, 255, 0.15)',
                 background: 'rgba(255, 255, 255, 0.05)',
@@ -756,35 +1511,339 @@ export default function TvShowcaseCropModal({
               Cancel
             </button>
 
+            {/* 1. EXPORT TO DESKTOP */}
             <button
               type="button"
-              onClick={handleConfirm}
+              onClick={() => triggerExportWithDestination('desktop')}
               disabled={isBusy}
+              title={`Export 12K TV Showcase JPEGs directly to ~/Desktop/TV Folder/${collectionName || 'TV_Showcase'}`}
               style={{
-                padding: '9px 20px',
+                padding: '10px 16px',
                 borderRadius: '8px',
-                border: '1px solid rgba(52, 211, 153, 0.6)',
-                background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
-                color: '#ffffff',
+                border: '1.5px solid #10b981',
+                background: 'linear-gradient(135deg, rgba(16, 185, 129, 0.28) 0%, rgba(5, 150, 105, 0.42) 100%)',
+                color: '#34d399',
                 fontSize: '13px',
-                fontWeight: 700,
+                fontWeight: 800,
                 cursor: isBusy ? 'wait' : 'pointer',
                 display: 'flex',
                 alignItems: 'center',
-                gap: '8px',
-                boxShadow: '0 4px 16px rgba(16, 185, 129, 0.35)',
+                gap: '7px',
+                boxShadow: '0 4px 16px rgba(16, 185, 129, 0.25)',
               }}
             >
-              <Download style={{ width: '16px', height: '16px' }} />
-              <span>
-                {isBusy
-                  ? 'Exporting...'
-                  : `Export ${photos.length.toLocaleString()} 12.5k TV Showcase JPEG${photos.length > 1 ? 's' : ''}`}
-              </span>
+              <span style={{ fontSize: '15px' }}>🖥️</span>
+              <span>{isBusy ? 'Exporting...' : 'Export to Desktop'}</span>
             </button>
+
+            {/* 2. EXPORT TO ICLOUD DRIVE */}
+            <button
+              type="button"
+              onClick={() => triggerExportWithDestination('icloud')}
+              disabled={isBusy}
+              title={`Export to iCloud Drive: TV Folder/${collectionName || 'TV_Showcase'} (Automatically syncs to Apple TV)`}
+              style={{
+                padding: '10px 16px',
+                borderRadius: '8px',
+                border: '1.5px solid #38bdf8',
+                background: 'linear-gradient(135deg, rgba(56, 189, 248, 0.25) 0%, rgba(2, 132, 199, 0.4) 100%)',
+                color: '#7dd3fc',
+                fontSize: '13px',
+                fontWeight: 800,
+                cursor: isBusy ? 'wait' : 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '7px',
+                boxShadow: '0 4px 16px rgba(56, 189, 248, 0.22)',
+              }}
+            >
+              <span style={{ fontSize: '15px' }}>☁️</span>
+              <span>{isBusy ? 'Exporting...' : 'Export to iCloud'}</span>
+            </button>
+
+            {/* 3. CHOOSE FOLDER IN FINDER */}
+            <button
+              type="button"
+              onClick={handlePickFolderAndExport}
+              disabled={isBusy || isPickingFolder}
+              title="Choose any specific local, GDrive, or network folder in macOS Finder"
+              style={{
+                padding: '10px 16px',
+                borderRadius: '8px',
+                border: '1.5px solid #a855f7',
+                background: 'linear-gradient(135deg, rgba(168, 85, 247, 0.25) 0%, rgba(126, 34, 206, 0.4) 100%)',
+                color: '#d8b4fe',
+                fontSize: '13px',
+                fontWeight: 800,
+                cursor: (isBusy || isPickingFolder) ? 'wait' : 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '7px',
+                boxShadow: '0 4px 16px rgba(168, 85, 247, 0.22)',
+              }}
+            >
+              <span style={{ fontSize: '15px' }}>📁</span>
+              <span>{isPickingFolder ? 'Opening Finder...' : 'Choose Folder...'}</span>
+            </button>
+
+            {/* 4. PUSH DIRECTLY TO SAMSUNG TV + DISCOVER MORE */}
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+                padding: '4px 6px',
+                borderRadius: '10px',
+                background: 'rgba(245, 158, 11, 0.08)',
+                border: '1px solid rgba(245, 158, 11, 0.35)',
+              }}
+            >
+              <select
+                value={selectedTvIp}
+                onChange={(e) => setSelectedTvIp(e.target.value)}
+                disabled={isBusy}
+                title="Select target Samsung Frame TV on Wi-Fi"
+                style={{
+                  padding: '6px 10px',
+                  borderRadius: '6px',
+                  background: '#161616',
+                  border: '1px solid rgba(245, 158, 11, 0.4)',
+                  color: '#fbbf24',
+                  fontSize: '13px',
+                  fontWeight: 700,
+                  cursor: 'pointer',
+                }}
+              >
+                {samsungTvs.map((tv) => (
+                  <option key={tv.ip} value={tv.ip}>
+                    📺 {tv.name} ({tv.ip})
+                  </option>
+                ))}
+              </select>
+
+              <button
+                type="button"
+                onClick={handleDiscoverSamsungTvs}
+                disabled={isBusy || isDiscoveringTvs}
+                title="Scan Wi-Fi network to discover additional Samsung TVs"
+                style={{
+                  padding: '6px 10px',
+                  borderRadius: '6px',
+                  background: 'rgba(255, 255, 255, 0.07)',
+                  border: '1px solid rgba(255, 255, 255, 0.18)',
+                  color: '#e2e8f0',
+                  fontSize: '12px',
+                  fontWeight: 700,
+                  cursor: (isBusy || isDiscoveringTvs) ? 'wait' : 'pointer',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {isDiscoveringTvs ? 'Scanning...' : '🔍 Discover'}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setShowAddRemoteModal(true)}
+                disabled={isBusy}
+                title="Add a remote Samsung TV by IP address or hostname over the Internet (Tailscale, DynDNS, Port Forward)"
+                style={{
+                  padding: '6px 10px',
+                  borderRadius: '6px',
+                  background: 'rgba(56, 189, 248, 0.12)',
+                  border: '1px solid rgba(56, 189, 248, 0.35)',
+                  color: '#38bdf8',
+                  fontSize: '12px',
+                  fontWeight: 700,
+                  cursor: isBusy ? 'wait' : 'pointer',
+                  whiteSpace: 'nowrap',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '4px',
+                }}
+              >
+                <Globe style={{ width: '13px', height: '13px' }} />
+                <span>+ Remote IP / Host</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() =>
+                  triggerExportWithDestination('samsung_tv', null, {
+                    samsung_tv_ip: selectedTvIp,
+                    slideshow_minutes: slideshowMinutes,
+                  })
+                }
+                disabled={isBusy}
+                title={`Push cropped 16:9 slideshow directly to Samsung TV (${selectedTvIp}) — persists even when Mac is turned off`}
+                style={{
+                  padding: '8px 16px',
+                  borderRadius: '7px',
+                  border: '1.5px solid #f59e0b',
+                  background: '#f59e0b',
+                  color: '#000000',
+                  fontSize: '13px',
+                  fontWeight: 800,
+                  cursor: isBusy ? 'wait' : 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  boxShadow: '0 4px 16px rgba(245, 158, 11, 0.35)',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                <span style={{ fontSize: '15px' }}>📺</span>
+                <span>{isBusy ? 'Pushing...' : 'Push to Samsung TV'}</span>
+              </button>
+            </div>
           </div>
         </div>
       </div>
+
+      {/* Remote Samsung TV Connection Modal (Over Internet / VPN / Tailscale) */}
+      {showAddRemoteModal && (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            backgroundColor: 'rgba(2, 6, 23, 0.85)',
+            backdropFilter: 'blur(12px)',
+            zIndex: 10200,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '20px',
+          }}
+        >
+          <div
+            style={{
+              width: '100%',
+              maxWidth: '480px',
+              backgroundColor: '#0c101c',
+              border: '1.5px solid #38bdf8',
+              borderRadius: '14px',
+              boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.95), 0 0 35px rgba(56, 189, 248, 0.2)',
+              padding: '20px',
+              color: '#f8fafc',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '14px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <Globe style={{ width: '18px', height: '18px', color: '#38bdf8' }} />
+                <span style={{ fontSize: '15px', fontWeight: 800 }}>Connect Remote Samsung TV</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowAddRemoteModal(false)}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  color: '#94a3b8',
+                  cursor: 'pointer',
+                  padding: '4px',
+                }}
+              >
+                <X style={{ width: '16px', height: '16px' }} />
+              </button>
+            </div>
+
+            <div style={{ fontSize: '12px', color: '#94a3b8', marginBottom: '16px', lineHeight: '1.5' }}>
+              Send photos directly to remote Frame TVs outside your local Wi-Fi via <strong>Tailscale</strong>, <strong>WireGuard</strong>, <strong>Dynamic DNS</strong>, or public router IP with port 8002 forwarded.
+            </div>
+
+            <form onSubmit={handleAddRemoteTv} style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+              <div>
+                <label style={{ display: 'block', fontSize: '11px', fontWeight: 700, color: '#cbd5e1', marginBottom: '4px', textTransform: 'uppercase' }}>
+                  TV IP Address or Hostname (Required)
+                </label>
+                <input
+                  type="text"
+                  placeholder="e.g. 100.82.14.22 or cabin-frame.dyndns.org:8002"
+                  value={remoteHostInput}
+                  onChange={(e) => setRemoteHostInput(e.target.value)}
+                  autoFocus
+                  required
+                  style={{
+                    width: '100%',
+                    padding: '8px 12px',
+                    borderRadius: '7px',
+                    backgroundColor: '#161d2f',
+                    border: '1px solid rgba(255, 255, 255, 0.15)',
+                    color: '#f8fafc',
+                    fontSize: '13px',
+                    boxSizing: 'border-box',
+                    outline: 'none',
+                  }}
+                />
+              </div>
+
+              <div>
+                <label style={{ display: 'block', fontSize: '11px', fontWeight: 700, color: '#cbd5e1', marginBottom: '4px', textTransform: 'uppercase' }}>
+                  Friendly Name (Optional)
+                </label>
+                <input
+                  type="text"
+                  placeholder="e.g. Studio 75'' Frame TV"
+                  value={remoteNameInput}
+                  onChange={(e) => setRemoteNameInput(e.target.value)}
+                  style={{
+                    width: '100%',
+                    padding: '8px 12px',
+                    borderRadius: '7px',
+                    backgroundColor: '#161d2f',
+                    border: '1px solid rgba(255, 255, 255, 0.15)',
+                    color: '#f8fafc',
+                    fontSize: '13px',
+                    boxSizing: 'border-box',
+                    outline: 'none',
+                  }}
+                />
+              </div>
+
+              {remoteAddError && (
+                <div style={{ fontSize: '12px', color: '#f87171', padding: '6px 10px', borderRadius: '6px', background: 'rgba(239, 68, 68, 0.12)', border: '1px solid rgba(239, 68, 68, 0.25)' }}>
+                  {remoteAddError}
+                </div>
+              )}
+
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: '8px', marginTop: '6px' }}>
+                <button
+                  type="button"
+                  onClick={() => setShowAddRemoteModal(false)}
+                  disabled={isAddingRemote}
+                  style={{
+                    padding: '8px 14px',
+                    borderRadius: '7px',
+                    border: '1px solid rgba(255, 255, 255, 0.12)',
+                    background: 'rgba(255, 255, 255, 0.05)',
+                    color: '#cbd5e1',
+                    fontSize: '12px',
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                  }}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isAddingRemote || !remoteHostInput.trim()}
+                  style={{
+                    padding: '8px 16px',
+                    borderRadius: '7px',
+                    border: '1.5px solid #38bdf8',
+                    background: '#0284c7',
+                    color: '#ffffff',
+                    fontSize: '12px',
+                    fontWeight: 800,
+                    cursor: isAddingRemote ? 'wait' : 'pointer',
+                  }}
+                >
+                  {isAddingRemote ? 'Testing Connection...' : 'Save & Select Remote TV'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

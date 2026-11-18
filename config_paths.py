@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """
 Centralized Data Vault & Path Configuration (config_paths.py)
-MR Darkroom — Standalone macOS Application & Remote Git Auto-Update Architecture
+MR Darkroom — Dual-Mode Architecture (Portable External SSD + Local Mac Hard Drive)
 
-Resolves all persistent database, vector matrix, WebP preview, model, and settings paths
-to the user's macOS Application Support vault:
-    ~/Library/Application Support/MRDarkroom/
+Resolves all persistent database, vector matrix, WebP preview, model, and settings paths:
+1. If `MRDARKROOM_VAULT_DIR` is set in the environment -> uses that directory (e.g. on the 2TB SSD).
+2. Else if `./Data_Vault` or `../Data_Vault` exists next to the engine -> uses Portable SSD mode.
+3. Else defaults to `~/Library/Application Support/MRDarkroom/` (Installed Mac Hard Drive mode).
 
-Automatically performs a zero-downtime migration from `./data/` into the external Data Vault
-and maintains `./data` as a transparent symlink so legacy relative paths continue to work
-seamlessly while Git updates (`git pull` / `git reset`) never touch user data.
+Also configures offline model caches (`HF_HOME` for OpenCLIP and `OLLAMA_MODELS` for Ollama VLM)
+when present inside `Data_Vault/models/` so 100% of AI features work offline on any Mac.
 """
 
 import json
@@ -21,10 +21,30 @@ from pathlib import Path
 from typing import Any, Dict
 
 APP_NAME = "MR Darkroom"
-APP_VERSION = "4.0.0"
+APP_VERSION = "4.5.0"
 
 PROJECT_ROOT = Path(__file__).resolve().parent
-DATA_VAULT_DIR = Path.home() / "Library" / "Application Support" / "MRDarkroom"
+
+
+def _resolve_data_vault_dir() -> Path:
+    env_vault = os.environ.get("MRDARKROOM_VAULT_DIR", "").strip()
+    if env_vault:
+        return Path(env_vault).expanduser().resolve()
+
+    # Portable SSD mode: if Data_Vault sits inside or beside PROJECT_ROOT
+    local_vault = PROJECT_ROOT / "Data_Vault"
+    if local_vault.is_dir() and (local_vault / "photo_archive.db").exists():
+        return local_vault.resolve()
+
+    parent_vault = PROJECT_ROOT.parent / "Data_Vault"
+    if parent_vault.is_dir() and (parent_vault / "photo_archive.db").exists():
+        return parent_vault.resolve()
+
+    # Standard installed Mac mode
+    return Path.home() / "Library" / "Application Support" / "MRDarkroom"
+
+
+DATA_VAULT_DIR = _resolve_data_vault_dir()
 LEGACY_DATA_DIR = PROJECT_ROOT / "data"
 
 DEFAULT_DB_PATH = DATA_VAULT_DIR / "photo_archive.db"
@@ -37,6 +57,15 @@ DEFAULT_PREVIEWS_1600_DIR = DATA_VAULT_DIR / "previews" / "previews_1600"
 DEFAULT_MODELS_DIR = DATA_VAULT_DIR / "models"
 DEFAULT_SETTINGS_PATH = DATA_VAULT_DIR / "settings.yaml"
 VERSION_FILE_PATH = PROJECT_ROOT / "version.json"
+
+# Point HuggingFace / OpenCLIP and Ollama to portable Vault model caches if present
+_hf_cache = DEFAULT_MODELS_DIR / "huggingface"
+if _hf_cache.is_dir():
+    os.environ.setdefault("HF_HOME", str(_hf_cache))
+
+_ollama_cache = DEFAULT_MODELS_DIR / "ollama"
+if _ollama_cache.is_dir():
+    os.environ.setdefault("OLLAMA_MODELS", str(_ollama_cache))
 
 
 def _merge_move_tree(src: Path, dst: Path) -> None:
@@ -52,7 +81,6 @@ def _merge_move_tree(src: Path, dst: Path) -> None:
     else:
         dst.parent.mkdir(parents=True, exist_ok=True)
         if dst.exists():
-            # Keep whichever file is larger or newer
             try:
                 if src.stat().st_mtime >= dst.stat().st_mtime or src.stat().st_size > dst.stat().st_size:
                     shutil.move(str(src), str(dst))
@@ -66,13 +94,17 @@ def _merge_move_tree(src: Path, dst: Path) -> None:
 
 def ensure_data_vault_migrated() -> Path:
     """
-    Ensures `~/Library/Application Support/MRDarkroom/` exists, migrates any existing
-    files from `./data/` into the external vault, and replaces `./data` with a symlink.
+    Ensures `DATA_VAULT_DIR` exists, migrates any existing files from `./data/`
+    into the vault, and attempts to create a `./data` symlink (ignoring ExFAT symlink limits).
     """
     DATA_VAULT_DIR.mkdir(parents=True, exist_ok=True)
 
-    # 1. If ./data is a physical directory (not yet a symlink), migrate its contents
-    if LEGACY_DATA_DIR.exists() and not LEGACY_DATA_DIR.is_symlink():
+    # 1. If ./data is a physical directory (not a symlink and not DATA_VAULT_DIR itself), migrate
+    if (
+        LEGACY_DATA_DIR.exists()
+        and not LEGACY_DATA_DIR.is_symlink()
+        and LEGACY_DATA_DIR.resolve() != DATA_VAULT_DIR.resolve()
+    ):
         legacy_db = LEGACY_DATA_DIR / "photo_archive.db"
         if legacy_db.exists():
             try:
@@ -90,12 +122,13 @@ def ensure_data_vault_migrated() -> Path:
         except Exception as exc:
             logging.warning(f"Could not remove legacy data dir cleanly: {exc}")
 
-    # 2. Ensure ./data symlink points to ~/Library/Application Support/MRDarkroom
+    # 2. Ensure ./data symlink points to DATA_VAULT_DIR when supported by filesystem (APFS/HFS+)
     if not LEGACY_DATA_DIR.exists() and not LEGACY_DATA_DIR.is_symlink():
         try:
             LEGACY_DATA_DIR.symlink_to(DATA_VAULT_DIR, target_is_directory=True)
-        except Exception as exc:
-            logging.warning(f"Could not create ./data symlink to Data Vault: {exc}")
+        except Exception:
+            # ExFAT volumes do not support POSIX symlinks; all code uses config_paths constants directly
+            pass
 
     # 3. Ensure required subdirectories exist inside Data Vault
     DEFAULT_THUMBS_360_DIR.mkdir(parents=True, exist_ok=True)
@@ -133,4 +166,3 @@ def get_version_info() -> Dict[str, Any]:
 
 # Run migration check automatically on import
 ensure_data_vault_migrated()
-

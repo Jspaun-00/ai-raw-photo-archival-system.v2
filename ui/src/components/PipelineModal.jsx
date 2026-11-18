@@ -41,7 +41,7 @@ export default function PipelineModal({
   const [newCatalogName, setNewCatalogName] = useState('');
   const [autoFilledName, setAutoFilledName] = useState('');
   const [selectedExistingCatalog, setSelectedExistingCatalog] = useState(
-    catalogs?.[0]?.catalog_name || catalogs?.[0]?.name || 'Keepers'
+    catalogs?.[0]?.catalog_name || catalogs?.[0]?.name || 'All Catalogs'
   );
 
   // Source folder + Live Pre-scan state
@@ -57,6 +57,7 @@ export default function PipelineModal({
   // 1-Click AI Tagging options
   const [runAiTagging, setRunAiTagging] = useState(true);
   const [aiMode, setAiMode] = useState('fast_vectors'); // 'fast_vectors' | 'deep_vlm'
+  const [onlyCatalogMatched, setOnlyCatalogMatched] = useState(false);
 
   // Pipeline execution & live progress state
   const [pipelineStatus, setPipelineStatus] = useState(null);
@@ -299,6 +300,7 @@ export default function PipelineModal({
           ai_mode: aiMode,
           extract_sharpness: true,
           fast_only: false,
+          only_catalog_matched: onlyCatalogMatched,
           split_by_subfolder: isSplitting,
           selected_subfolders: isSplitting ? selectedSubfolders : undefined,
         }),
@@ -331,8 +333,12 @@ export default function PipelineModal({
   };
 
   const handleCancelJob = async () => {
-    await fetch('/api/jobs/cancel', { method: 'POST' }).catch(() => {});
+    await Promise.allSettled([
+      fetch('/api/jobs/cancel', { method: 'POST' }),
+      fetch('/api/pipeline/cancel', { method: 'POST' }),
+    ]);
     fetchPipelineStatus();
+    if (onRefreshCatalogs) onRefreshCatalogs();
   };
 
   const handleSaveCatalogOnly = async (e) => {
@@ -450,11 +456,15 @@ export default function PipelineModal({
   const processedCount = pipelineStatus?.processed || 0;
   const totalCount = pipelineStatus?.total || 0;
   const progressPct =
-    totalCount > 0
+    typeof pipelineStatus?.overall_pct === 'number'
+      ? pipelineStatus.overall_pct
+      : totalCount > 0
       ? Math.min(100, Math.round((processedCount / totalCount) * 100))
       : isRunning
       ? 12
       : 0;
+  const phaseIndex = Number(pipelineStatus?.phase_index || 1);
+  const phaseTotal = Number(pipelineStatus?.phase_total || 3);
   const elapsedSec = pipelineStatus?.elapsed_seconds ?? pipelineStatus?.job?.elapsed_seconds;
   const etaSec = pipelineStatus?.eta_seconds ?? pipelineStatus?.job?.eta_seconds;
 
@@ -845,6 +855,18 @@ export default function PipelineModal({
                       />
                       <span>Run Stage 2 AI Tagging automatically</span>
                     </label>
+                    <label
+                      className="flex items-center gap-2 text-amber-200 cursor-pointer text-[11px]"
+                      title="Skips uncataloged orphan RAWs that lack Lightroom previews to prevent slow sensor demosaicing"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={onlyCatalogMatched}
+                        onChange={(e) => setOnlyCatalogMatched(e.target.checked)}
+                        className="accent-amber-500"
+                      />
+                      <span>Skip uncataloged orphan RAWs (Fastest Import)</span>
+                    </label>
                     {runAiTagging && (
                       <select
                         value={aiMode}
@@ -970,16 +992,58 @@ export default function PipelineModal({
                 </div>
 
                 {pipelineStatus && (isRunning || totalCount > 0) && (
-                  <div className="space-y-1.5 pt-1">
+                  <div className="space-y-2 pt-1">
+                    {/* 3-Step Multi-Phase Progress Indicator */}
+                    {phaseTotal >= 3 && (
+                      <div className="grid grid-cols-3 gap-1.5 text-[10.5px] font-mono">
+                        <div
+                          className={`py-1 px-2 rounded border text-center transition-all ${
+                            phaseIndex > 1
+                              ? 'bg-emerald-950/40 border-emerald-500/40 text-emerald-300'
+                              : phaseIndex === 1 && isRunning
+                              ? 'bg-blue-950/60 border-blue-400 text-blue-200 shadow-[0_0_10px_rgba(59,130,246,0.25)]'
+                              : 'bg-studio-panel/50 border-studio-border text-studio-textDim'
+                          }`}
+                        >
+                          <span className="font-bold">1. Previews</span>{' '}
+                          <span className="text-[9.5px] opacity-80">{phaseIndex > 1 ? '✓' : phaseIndex === 1 && isRunning ? `${progressPct}%` : 'Pending'}</span>
+                        </div>
+                        <div
+                          className={`py-1 px-2 rounded border text-center transition-all ${
+                            phaseIndex > 2
+                              ? 'bg-emerald-950/40 border-emerald-500/40 text-emerald-300'
+                              : phaseIndex === 2 && isRunning
+                              ? 'bg-amber-950/60 border-amber-400 text-amber-200 shadow-[0_0_10px_rgba(245,158,11,0.25)]'
+                              : 'bg-studio-panel/50 border-studio-border text-studio-textDim'
+                          }`}
+                        >
+                          <span className="font-bold">2. Metal GPU</span>{' '}
+                          <span className="text-[9.5px] opacity-80">{phaseIndex > 2 ? '✓' : phaseIndex === 2 && isRunning ? `${progressPct}%` : 'Pending'}</span>
+                        </div>
+                        <div
+                          className={`py-1 px-2 rounded border text-center transition-all ${
+                            progressPct >= 100 || (!isRunning && !pipelineStatus.error)
+                              ? 'bg-emerald-950/40 border-emerald-500/40 text-emerald-300'
+                              : phaseIndex === 3 && isRunning
+                              ? 'bg-purple-950/60 border-purple-400 text-purple-200 shadow-[0_0_10px_rgba(168,85,247,0.25)]'
+                              : 'bg-studio-panel/50 border-studio-border text-studio-textDim'
+                          }`}
+                        >
+                          <span className="font-bold">3. AI &amp; GPS</span>{' '}
+                          <span className="text-[9.5px] opacity-80">{progressPct >= 100 ? '✓' : phaseIndex === 3 && isRunning ? `${progressPct}%` : 'Pending'}</span>
+                        </div>
+                      </div>
+                    )}
+
                     <div className="flex items-center justify-between text-[11px] text-studio-textMuted">
-                      <span>{pipelineStatus.phase || 'Processing...'}</span>
-                      <span>
-                        {processedCount} / {totalCount} photos ({progressPct}%)
+                      <span className="font-medium text-studio-text">{pipelineStatus.phase || 'Processing...'}</span>
+                      <span className="font-mono font-semibold text-studio-accent">
+                        {progressPct}% {totalCount > 0 ? `(${processedCount}/${totalCount})` : ''}
                       </span>
                     </div>
-                    <div className="w-full h-2 bg-studio-panel border border-studio-border rounded-sm overflow-hidden">
+                    <div className="w-full h-2.5 bg-studio-panel border border-studio-border rounded overflow-hidden">
                       <div
-                        className="h-full bg-gradient-to-r from-blue-500 to-emerald-400 transition-all duration-300"
+                        className="h-full bg-gradient-to-r from-blue-500 via-amber-400 to-emerald-400 transition-all duration-300"
                         style={{ width: `${progressPct}%` }}
                       />
                     </div>

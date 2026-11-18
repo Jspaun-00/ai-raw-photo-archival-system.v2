@@ -19,22 +19,32 @@ ui/node_modules/
 !ui/dist/
 !ui/dist/**
 
-# Heavy local binaries (installed via install_tools.sh)
+# Heavy local binaries & standalone Python framework (installed locally / on SSD)
 bin/ollama
 bin/exiftool
 bin/lib/
 bin/
+Python3/
 
-# Local databases, caches & logs (stored in ~/Library/Application Support/MRDarkroom)
+# Private remote bridge scripts & local handover notes (never commit auth keys)
+Setup_Tailscale_Remote_Bridge.command
+HANDOVER/
+*tailscale*
+*.pkg
+
+# Local databases, TV sync state, caches & logs (stored in ~/Library/Application Support/MRDarkroom)
 data
 data/
 data/*.db*
 *.db
 *.db-shm
 *.db-wal
+samsung_tvs.json
+tv_displays_sync.json
 cache/
 logs/
 *.log
+._*
 
 # Personal reference photos & faces
 reference_faces/*

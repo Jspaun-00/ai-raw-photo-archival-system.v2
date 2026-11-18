@@ -1,10 +1,13 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { Star, Layers, CheckCircle2, Image as ImageIcon } from 'lucide-react';
 import CollectionPopover from './CollectionPopover.jsx';
 
-export default function PhotoCard({
+const loadedThumbnails = new Set();
+
+function PhotoCard({
   photo,
   onClick,
+  onDoubleClick,
   onOpenSequence,
   onUpdateStar,
   onTagClick,
@@ -15,12 +18,25 @@ export default function PhotoCard({
   isSelected = false,
   onToggleSelect,
 }) {
-  const [imgLoaded, setImgLoaded] = useState(false);
+  const cardRef = useRef(null);
+  const thumbUrl = photo?.thumb_url || (photo?.thumb_360_path ? `/previews/thumbs_360/${photo.thumb_360_path.split('/').pop()}` : (photo?.file_hash ? `/previews/thumbs_360/${photo.file_hash}.webp` : null));
+  const [imgLoaded, setImgLoaded] = useState(() => Boolean(thumbUrl && loadedThumbnails.has(thumbUrl)));
   const [imgError, setImgError] = useState(false);
+  const [collectionPopoverOpen, setCollectionPopoverOpen] = useState(false);
   const [hoverRating, setHoverRating] = useState(null);
 
-  const thumbUrl = photo.thumb_url || (photo.thumb_360_path ? `/previews/thumbs_360/${photo.thumb_360_path.split('/').pop()}` : null);
-  const isKeeper = photo.in_keepers === 1 || photo.star_rating >= 4;
+  const handleCollectionOpenChange = (open) => {
+    setCollectionPopoverOpen(open);
+    if (cardRef.current) {
+      const row = cardRef.current.closest('[data-virtual-row]');
+      if (row) {
+        row.style.zIndex = open ? '999' : '';
+      }
+    }
+  };
+
+  // Only 5-star photos are Keepers (Smart 5-star Hub)
+  const isKeeper = Number(photo?.star_rating || 0) === 5;
   const isSequenceStack = (photo.sequence_length || 0) > 1;
   const hasSibling = Boolean(photo.sibling_path);
   const currentStars = photo.star_rating || 0;
@@ -90,6 +106,7 @@ export default function PhotoCard({
     const tl = String(tag || '').trim().toLowerCase();
     if (!tl || tl.length <= 1) return true;
     if (tl === 'mitch rouse (subject)' || tl === 'identity|mitch rouse' || tl === 'mitch shooting') return false;
+    if (tl.startsWith('folder:') || tl.includes('keepers')) return true;
     if (BOILERPLATE_CARD_TAGS.has(tl)) return true;
     if (tl.includes('mitch rouse aerials') || tl.includes('mitch_rouse_aerials') || tl.includes('west coast imaging')) return true;
     return false;
@@ -111,6 +128,7 @@ export default function PhotoCard({
 
   return (
     <div
+      ref={cardRef}
       onClick={(e) => {
         if ((e.shiftKey || e.metaKey || e.ctrlKey) && onToggleSelect) {
           e.preventDefault();
@@ -118,17 +136,30 @@ export default function PhotoCard({
           onToggleSelect(photo, e);
           return;
         }
-        onClick(photo);
+        if (onClick) {
+          onClick(photo, e);
+        }
       }}
-      className={`group relative flex flex-col bg-studio-card border rounded-sm overflow-hidden cursor-pointer transition-all duration-150 select-none shadow-sm hover:shadow-md ${
+      onDoubleClick={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (onDoubleClick) {
+          onDoubleClick(photo, e);
+        }
+      }}
+      data-photo-key={photo.file_hash || photo.file_path}
+      style={{
+        zIndex: collectionPopoverOpen ? 100 : (isSelected ? 10 : undefined),
+      }}
+      className={`group relative flex flex-col bg-studio-card border rounded-sm overflow-visible cursor-pointer transition-all duration-150 select-none shadow-sm hover:shadow-md hover:z-20 ${
         isSelected
-          ? 'border-amber-400 ring-2 ring-amber-400/60'
+          ? 'border-amber-400 ring-4 ring-amber-400 shadow-[0_0_22px_rgba(245,158,11,0.65)] z-20 scale-[1.01]'
           : 'border-studio-border hover:border-studio-accent/70'
       }`}
     >
-      {/* Thumbnail Aspect Ratio Box (Locked dimensions so thumbnails never expand or bleed on re-render) */}
+      {/* Thumbnail Aspect Ratio Box (Centered container showing 100% uncropped full image frame) */}
       <div
-        className="relative aspect-[4/3] bg-studio-bg overflow-hidden flex items-center justify-center"
+        className="relative aspect-[4/3] bg-[#090c13] overflow-hidden flex items-center justify-center"
         style={{
           position: 'relative',
           width: '100%',
@@ -138,11 +169,12 @@ export default function PhotoCard({
           maxHeight: '210px',
           overflow: 'hidden',
           flexShrink: 0,
+          background: '#090c13',
         }}
       >
         {/* Placeholder shimmer */}
         {!imgLoaded && !imgError && (
-          <div className="absolute inset-0 bg-studio-panel animate-pulse flex items-center justify-center">
+          <div className="absolute inset-0 bg-studio-panel flex items-center justify-center">
             <ImageIcon className="w-6 h-6 text-studio-border" />
           </div>
         )}
@@ -152,9 +184,12 @@ export default function PhotoCard({
             src={thumbUrl}
             alt={filename}
             loading="lazy"
-            onLoad={() => setImgLoaded(true)}
+            onLoad={() => {
+              if (thumbUrl) loadedThumbnails.add(thumbUrl);
+              setImgLoaded(true);
+            }}
             onError={() => setImgError(true)}
-            className={`w-full h-full object-cover transition-opacity duration-200 group-hover:scale-[1.02] ${
+            className={`w-full h-full object-contain transition-opacity duration-200 ${
               imgLoaded ? 'opacity-100' : 'opacity-0'
             }`}
             style={{
@@ -164,7 +199,7 @@ export default function PhotoCard({
               height: '100%',
               maxWidth: '100%',
               maxHeight: '100%',
-              objectFit: 'cover',
+              objectFit: 'contain',
               display: 'block',
             }}
           />
@@ -175,27 +210,10 @@ export default function PhotoCard({
           </div>
         )}
 
-        {/* Multi-Photo Selection Checkbox + Minimal Subtle Status Badges */}
-        <div className="absolute top-1.5 left-1.5 flex items-center gap-1.5 z-10">
-          {onToggleSelect && (
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                onToggleSelect(photo, e);
-              }}
-              title="Select photo (Shift+Click to select a range)"
-              className={`w-5 h-5 rounded flex items-center justify-center border transition-all cursor-pointer shadow ${
-                isSelected
-                  ? 'bg-amber-500 border-amber-400 text-zinc-950 opacity-100 scale-105'
-                  : 'bg-black/75 hover:bg-black/90 border-white/40 text-transparent opacity-0 group-hover:opacity-100'
-              }`}
-            >
-              <span className="text-[11px] font-black leading-none">{isSelected ? '✓' : ''}</span>
-            </button>
-          )}
+        {/* Selected Plate Badge & Status Indicators (Clean fine-art thumbnail with pure yellow highlight border - no checkbox) */}
+        <div className="absolute top-1.5 left-1.5 flex items-center gap-1.5 z-10 pointer-events-none">
           {isKeeper && (
-            <span className="px-1.5 py-0.5 bg-black/75 backdrop-blur-sm text-studio-gold text-[10px] font-mono tracking-wider font-semibold border border-studio-gold/30 rounded-sm flex items-center gap-1 shadow-sm pointer-events-none">
+            <span className="px-1.5 py-0.5 bg-black/75 backdrop-blur-sm text-studio-gold text-[10px] font-mono tracking-wider font-semibold border border-studio-gold/30 rounded-sm flex items-center gap-1 shadow-sm">
               👑 KEEPERS
             </span>
           )}
@@ -225,16 +243,16 @@ export default function PhotoCard({
       </div>
 
       {/* Clean Bottom Info Strip */}
-      <div className="p-2 bg-studio-panel border-t border-studio-border/70 flex flex-col gap-1">
+      <div className="p-2.5 bg-studio-panel border-t border-studio-border/70 flex flex-col gap-1.5">
         {/* Row 1: Filename & Location */}
-        <div className="flex items-center justify-between text-xs font-mono">
+        <div className="flex items-center justify-between text-[13px] font-mono">
           <span
-            className="truncate text-studio-text hover:text-white font-medium max-w-[70%]"
+            className="truncate text-studio-text hover:text-white font-semibold max-w-[70%]"
             title={photo.file_path}
           >
             {filename}
           </span>
-          <span className="text-[10px] text-studio-textDim truncate max-w-[28%] text-right">
+          <span className="text-[11px] text-studio-textDim truncate max-w-[28%] text-right">
             {photo.sub_location || photo.city || photo.camera_model || ''}
           </span>
         </div>
@@ -243,7 +261,7 @@ export default function PhotoCard({
         <div className="flex items-center justify-between mt-0.5">
           {/* Subtle Star Rating (Clickable, instant DB update) */}
           <div
-            className="flex items-center gap-0.5"
+            className="flex items-center gap-1"
             onMouseLeave={() => setHoverRating(null)}
           >
             {[1, 2, 3, 4, 5].map((starVal) => {
@@ -258,7 +276,7 @@ export default function PhotoCard({
                   title={`Set rating to ${starVal} star${starVal > 1 ? 's' : ''}`}
                 >
                   <Star
-                    className={`w-3 h-3 ${
+                    className={`w-3.5 h-3.5 ${
                       active
                         ? 'text-studio-gold fill-studio-gold'
                         : 'text-studio-borderLight hover:text-studio-gold/60'
@@ -270,9 +288,9 @@ export default function PhotoCard({
           </div>
 
           {/* Exposure specs + Add to Collection/Book button */}
-          <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-2">
             {exposureLine && (
-              <span className="text-[9px] font-mono text-studio-textDim tracking-tight hidden xl:inline">
+              <span className="text-[11px] font-mono text-studio-textDim tracking-tight hidden xl:inline">
                 {exposureLine}
               </span>
             )}
@@ -283,13 +301,15 @@ export default function PhotoCard({
               onCreateCollectionWithPhoto={onCreateCollectionWithPhoto}
               onOpenCollectionsModal={onOpenCollectionsModal}
               compact={true}
+              dropUp={true}
+              onOpenChange={handleCollectionOpenChange}
             />
           </div>
         </div>
 
         {/* Row 3: Harvested (.lrcat / IPTC / XMP / VLM) Tag Pills */}
         {topCardTags.length > 0 && (
-          <div className="flex flex-wrap items-center gap-1 pt-1 border-t border-studio-border/40">
+          <div className="flex flex-wrap items-center gap-1.5 pt-1 border-t border-studio-border/40">
             {topCardTags.map((tag, idx) => (
               <button
                 type="button"
@@ -298,14 +318,14 @@ export default function PhotoCard({
                   e.stopPropagation();
                   if (onTagClick) onTagClick(tag);
                 }}
-                className="px-1.5 py-0.5 bg-studio-bg border border-studio-border hover:border-studio-accent hover:text-studio-accent text-studio-textMuted text-[9px] font-mono rounded-sm truncate max-w-[110px] transition-colors cursor-pointer"
+                className="px-2 py-0.5 bg-studio-bg border border-studio-border hover:border-studio-accent hover:text-studio-accent text-studio-textMuted text-[11px] font-mono rounded-sm truncate max-w-[125px] transition-colors cursor-pointer"
                 title={`Filter archive by tag: ${tag}`}
               >
                 {tag}
               </button>
             ))}
             {extraTagCount > 0 && (
-              <span className="text-[9px] font-mono text-studio-textDim px-1">
+              <span className="text-[11px] font-mono text-studio-textDim px-1">
                 +{extraTagCount}
               </span>
             )}
@@ -315,4 +335,12 @@ export default function PhotoCard({
     </div>
   );
 }
+
+export default React.memo(PhotoCard, (prev, next) => {
+  return (
+    prev.photo === next.photo &&
+    prev.isSelected === next.isSelected &&
+    prev.collections?.length === next.collections?.length
+  );
+});
 

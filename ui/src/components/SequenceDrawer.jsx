@@ -85,12 +85,12 @@ export default function SequenceDrawer({
                     }`}
                   >
                     {/* Thumbnail */}
-                    <div className="relative aspect-[4/3] bg-studio-bg overflow-hidden">
+                    <div className="relative aspect-[4/3] bg-[#090c13] overflow-hidden flex items-center justify-center">
                       {thumb ? (
                         <img
                           src={thumb}
                           alt={fname}
-                          className="w-full h-full object-cover group-hover:scale-105 transition-transform"
+                          className="w-full h-full object-contain"
                         />
                       ) : (
                         <div className="w-full h-full flex items-center justify-center">

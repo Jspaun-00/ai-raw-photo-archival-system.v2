@@ -32,7 +32,16 @@ export default function LiveProgressDock({
 
   const processed = Number(jobStatus.processed || 0)
   const total = Number(jobStatus.total || 0)
-  const pct = total > 0 ? Math.min(100, Math.round((processed / total) * 100)) : isRunning ? 15 : 100
+  const pct =
+    typeof jobStatus.overall_pct === 'number'
+      ? jobStatus.overall_pct
+      : typeof jobStatus.extra?.overall_pct === 'number'
+      ? jobStatus.extra.overall_pct
+      : total > 0
+      ? Math.min(100, Math.round((processed / total) * 100))
+      : isRunning
+      ? 15
+      : 100
   const elapsedStr = formatSeconds(jobStatus.elapsed_seconds)
   const etaStr = formatSeconds(jobStatus.eta_seconds)
 
