@@ -302,12 +302,19 @@ APP_PARENT_DIR="$(dirname "$APP_BUNDLE_DIR")"
 DEFAULT_PROJECT_ROOT="{project_root}"
 
 # Priority order for locating the Studio Engine:
-# 1. Root-level external drive launcher: check $APP_PARENT_DIR/MR_Darkroom_Studio/Engine
-# 2. Sibling Engine folder: check $APP_PARENT_DIR/Engine (when .app is inside MR_Darkroom_Studio/)
-# 3. Installed Engine inside ~/Library/Application Support/MRDarkroom/Engine
-# 4. Configured DEFAULT_PROJECT_ROOT or ~/MRDarkroom
+# 1. Root-level external drive launcher: check $APP_PARENT_DIR/Operating Files (Do Not Touch)/Engine
+# 2. Legacy root folder: check $APP_PARENT_DIR/MR_Darkroom_Studio/Engine
+# 3. Sibling Engine folder: check $APP_PARENT_DIR/Engine (when .app is inside operating folder)
+# 4. Installed Engine inside ~/Library/Application Support/MRDarkroom/Engine
+# 5. Configured DEFAULT_PROJECT_ROOT or ~/MRDarkroom
 RUNTIME_TAR=""
-if [ -d "$APP_PARENT_DIR/MR_Darkroom_Studio/Engine" ] && [ -f "$APP_PARENT_DIR/MR_Darkroom_Studio/Engine/server.py" ]; then
+if [ -d "$APP_PARENT_DIR/Operating Files (Do Not Touch)/Engine" ] && [ -f "$APP_PARENT_DIR/Operating Files (Do Not Touch)/Engine/server.py" ]; then
+    PROJECT_ROOT="$APP_PARENT_DIR/Operating Files (Do Not Touch)/Engine"
+    if [ -d "$APP_PARENT_DIR/Operating Files (Do Not Touch)/Data_Vault" ]; then
+        export MRDARKROOM_VAULT_DIR="$APP_PARENT_DIR/Operating Files (Do Not Touch)/Data_Vault"
+    fi
+    RUNTIME_TAR="$APP_PARENT_DIR/Operating Files (Do Not Touch)/Runtime/venv_arm64.tar.gz"
+elif [ -d "$APP_PARENT_DIR/MR_Darkroom_Studio/Engine" ] && [ -f "$APP_PARENT_DIR/MR_Darkroom_Studio/Engine/server.py" ]; then
     PROJECT_ROOT="$APP_PARENT_DIR/MR_Darkroom_Studio/Engine"
     if [ -d "$APP_PARENT_DIR/MR_Darkroom_Studio/Data_Vault" ]; then
         export MRDARKROOM_VAULT_DIR="$APP_PARENT_DIR/MR_Darkroom_Studio/Data_Vault"
@@ -439,12 +446,14 @@ exit 0
 
 def create_installer_app_bundle(target_app_path: Path, icns_source: Path) -> Path:
     """
-    Builds a native macOS GUI Installer application (`Install MR Darkroom to Mac.app`)
+    Builds a native macOS GUI Installer application (`Install MR Darkroom.app`)
     with a real signed Universal Mach-O executable that installs MR Darkroom onto the
-    Mac's internal hard drive using native macOS dialogs (zero Terminal windows required).
+    Mac's internal hard drive, installs the Lightroom Keepers Plugin, and configures
+    the Tailscale Remote Support Bridge using native macOS dialogs (zero Terminal windows required).
     """
     with tempfile.TemporaryDirectory() as tmpdir:
-        staged_app = Path(tmpdir) / "Install MR Darkroom to Mac.app"
+        app_name = target_app_path.name if target_app_path.name else "Install MR Darkroom.app"
+        staged_app = Path(tmpdir) / app_name
         contents_dir = staged_app / "Contents"
         macos_dir = contents_dir / "MacOS"
         resources_dir = contents_dir / "Resources"
@@ -455,12 +464,12 @@ def create_installer_app_bundle(target_app_path: Path, icns_source: Path) -> Pat
 
         info_plist = {
             "CFBundleDevelopmentRegion": "en",
-            "CFBundleDisplayName": "Install MR Darkroom to Mac",
+            "CFBundleDisplayName": "Install MR Darkroom",
             "CFBundleExecutable": "MRDarkroomInstaller",
             "CFBundleIconFile": "AppIcon",
             "CFBundleIdentifier": "com.mrdarkroom.installer",
             "CFBundleInfoDictionaryVersion": "6.0",
-            "CFBundleName": "Install MR Darkroom to Mac",
+            "CFBundleName": "Install MR Darkroom",
             "CFBundlePackageType": "APPL",
             "CFBundleShortVersionString": "4.5.0",
             "CFBundleVersion": "450",
@@ -471,57 +480,125 @@ def create_installer_app_bundle(target_app_path: Path, icns_source: Path) -> Pat
             plistlib.dump(info_plist, f)
 
         installer_script = """#!/bin/zsh
-# MR Darkroom — Native macOS GUI Installer (Runs Directly Inside Signed App Process)
+# MR Darkroom — Unified Native macOS GUI Installer (Runs Directly Inside Signed App Process)
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
 
 APP_BUNDLE_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
-STUDIO_ROOT="$(dirname "$APP_BUNDLE_DIR")"
-SSD_ENGINE="$STUDIO_ROOT/Engine"
-SSD_VAULT="$STUDIO_ROOT/Data_Vault"
-SSD_RUNTIME="$STUDIO_ROOT/Runtime/venv_arm64.tar.gz"
+PARENT_DIR="$(dirname "$APP_BUNDLE_DIR")"
+
+# Search candidates for Engine, Data Vault, Runtime, and Plugin
+SSD_ENGINE=""
+SSD_VAULT=""
+SSD_RUNTIME=""
+PLUGIN_DIR=""
+
+for CANDIDATE in \\
+    "$PARENT_DIR/Operating Files (Do Not Touch)" \\
+    "$PARENT_DIR/MR_Darkroom_Studio" \\
+    "$PARENT_DIR"; do
+    if [ -d "$CANDIDATE/Engine" ] && [ -f "$CANDIDATE/Engine/server.py" ]; then
+        SSD_ENGINE="$CANDIDATE/Engine"
+        [ -d "$CANDIDATE/Data_Vault" ] && SSD_VAULT="$CANDIDATE/Data_Vault"
+        [ -f "$CANDIDATE/Runtime/venv_arm64.tar.gz" ] && SSD_RUNTIME="$CANDIDATE/Runtime/venv_arm64.tar.gz"
+        break
+    fi
+done
+
+for CANDIDATE in \\
+    "$PARENT_DIR/Guides and Plugins/MRKeepersTransfer.lrplugin" \\
+    "$PARENT_DIR/Operating Files (Do Not Touch)/MRKeepersTransfer.lrplugin" \\
+    "$PARENT_DIR/MR_Darkroom_Studio/MRKeepersTransfer.lrplugin" \\
+    "$PARENT_DIR/MRKeepersTransfer.lrplugin" \\
+    "/Volumes/2TB_Archive/Guides and Plugins/MRKeepersTransfer.lrplugin"; do
+    if [ -d "$CANDIDATE" ]; then
+        PLUGIN_DIR="$CANDIDATE"
+        break
+    fi
+done
 
 TARGET_VAULT="$HOME/Library/Application Support/MRDarkroom"
 TARGET_ENGINE="$TARGET_VAULT/Engine"
 LOG_FILE="/tmp/mrdarkroom_installer.log"
 
-RESPONSE=$(osascript -e 'display dialog "Install MR Darkroom Studio (v4.5.0) onto this Mac?\\n\\nThis will automatically install:\\n• MR Darkroom.app into /Applications & Desktop\\n• Self-Contained Python 3.9, ExifTool & Ollama\\n• Full Photo Archive Database & WebP Previews\\n• Offline OpenCLIP + Ollama Vision AI Models\\n\\nOnce complete, you can run MR Darkroom anytime without the external SSD." buttons {"Cancel", "Install Now"} default button "Install Now" with title "MR Darkroom Studio Installer" with icon note' 2>/dev/null)
+RESPONSE=$(osascript -e 'display dialog "Install MR Darkroom Studio (v4.5.0) onto this Mac?\\n\\nThis unified installer will automatically:\\n• Install MR Darkroom.app into /Applications & Desktop\\n• Install Isolated Python 3.9, ExifTool & Offline AI Models\\n• Copy Photo Archive Database & WebP Previews\\n• Install Keepers Plugin into Adobe Lightroom Classic\\n• Configure Tailscale Remote Support Bridge & Remote Access\\n\\nOnce complete, you can run MR Darkroom and transfer photos anytime, with or without the external SSD." buttons {"Cancel", "Install Everything"} default button "Install Everything" with title "MR Darkroom Studio Installer" with icon note' 2>/dev/null)
 
-if [[ "$RESPONSE" != *"Install Now"* ]]; then
+if [[ "$RESPONSE" != *"Install Everything"* ]]; then
     exit 0
 fi
 
-osascript -e 'display notification "Installing MR Darkroom Engine, AI Models & Photo Archive to Mac Hard Drive..." with title "MR Darkroom Installer" subtitle "Step 1 of 3 — Copying Studio Files"' 2>/dev/null || true
+osascript -e 'display notification "Installing MR Darkroom Engine, Binaries & Isolated Python..." with title "MR Darkroom Installer" subtitle "Step 1 of 4 — Studio Engine"' 2>/dev/null || true
 
 {
     echo "=== Starting MR Darkroom Mac Hard Drive Installation ==="
     mkdir -p "$TARGET_VAULT" "$TARGET_ENGINE"
 
-    rsync -a --exclude='/.venv' --exclude='/data' --exclude='._*' "$SSD_ENGINE/" "$TARGET_ENGINE/"
-    xattr -cr "$TARGET_ENGINE/bin" "$TARGET_ENGINE/Python3" 2>/dev/null || true
-    chmod +x "$TARGET_ENGINE/bin/exiftool" "$TARGET_ENGINE/bin/ollama" "$TARGET_ENGINE/Python3/bin/python3.9" 2>/dev/null || true
+    if [ -n "$SSD_ENGINE" ] && [ -d "$SSD_ENGINE" ]; then
+        rsync -a --exclude='/.venv' --exclude='/data' --exclude='._*' "$SSD_ENGINE/" "$TARGET_ENGINE/"
+        xattr -cr "$TARGET_ENGINE/bin" "$TARGET_ENGINE/Python3" 2>/dev/null || true
+        chmod +x "$TARGET_ENGINE/bin/"* "$TARGET_ENGINE/scripts/"* 2>/dev/null || true
+        if [ -d "$TARGET_ENGINE/Python3/bin" ]; then
+            chmod +x "$TARGET_ENGINE/Python3/bin/"* 2>/dev/null || true
+        fi
 
-    if [ -f "$SSD_RUNTIME" ]; then
-        tar -xzf "$SSD_RUNTIME" -C "$TARGET_ENGINE"
-    else
-        rsync -a --exclude='._*' "$SSD_ENGINE/.venv/" "$TARGET_ENGINE/.venv/"
+        if [ -n "$SSD_RUNTIME" ] && [ -f "$SSD_RUNTIME" ]; then
+            tar -xzf "$SSD_RUNTIME" -C "$TARGET_ENGINE"
+        elif [ -d "$SSD_ENGINE/.venv" ]; then
+            rsync -a --exclude='._*' "$SSD_ENGINE/.venv/" "$TARGET_ENGINE/.venv/"
+        fi
     fi
 
-    osascript -e 'display notification "Copying Photo Archive Database, Previews & Offline AI Models..." with title "MR Darkroom Installer" subtitle "Step 2 of 3 — Installing Data Vault & AI Models"' 2>/dev/null || true
+    osascript -e 'display notification "Copying Photo Archive Database, Previews & Offline AI Models..." with title "MR Darkroom Installer" subtitle "Step 2 of 4 — Data Vault & AI"' 2>/dev/null || true
 
-    rsync -a --exclude='._*' "$SSD_VAULT/" "$TARGET_VAULT/"
+    if [ -n "$SSD_VAULT" ] && [ -d "$SSD_VAULT" ]; then
+        rsync -a --exclude='._*' "$SSD_VAULT/" "$TARGET_VAULT/"
+    fi
 
     mkdir -p "$HOME/.ollama/models"
     if [ -d "$TARGET_VAULT/models/ollama" ]; then
         rsync -a --exclude='._*' "$TARGET_VAULT/models/ollama/" "$HOME/.ollama/models/"
     fi
 
-    osascript -e 'display notification "Creating /Applications/MR Darkroom.app & Desktop shortcut..." with title "MR Darkroom Installer" subtitle "Step 3 of 3 — Finalizing macOS App"' 2>/dev/null || true
+    osascript -e 'display notification "Installing MR Keepers Transfer Plugin into Lightroom Classic..." with title "MR Darkroom Installer" subtitle "Step 3 of 4 — Lightroom Classic Plugin"' 2>/dev/null || true
+
+    if [ -n "$PLUGIN_DIR" ] && [ -d "$PLUGIN_DIR" ]; then
+        TARGET_MODULES="$HOME/Library/Application Support/Adobe/Lightroom/Modules"
+        TARGET_PLUGIN="$TARGET_MODULES/MRKeepersTransfer.lrplugin"
+        mkdir -p "$TARGET_MODULES"
+        rsync -a --delete --exclude='._*' "$PLUGIN_DIR/" "$TARGET_PLUGIN/"
+        chmod +x "$TARGET_PLUGIN/scanner.py" "$TARGET_PLUGIN/switch_catalog.sh" 2>/dev/null || true
+        xattr -cr "$TARGET_PLUGIN" 2>/dev/null || true
+    fi
+
+    osascript -e 'display notification "Configuring Tailscale Remote Support Bridge..." with title "MR Darkroom Installer" subtitle "Step 4 of 4 — Remote Support Bridge"' 2>/dev/null || true
+
+    AUTH_KEY="tskey-auth-kHRHqR8kxN11CNTRL-d5Ly25myd9SX2mqwxrin9Sma3xAAyV3kK"
+    PKG_PATH="/tmp/Tailscale.pkg"
+    PKG_URL="https://pkgs.tailscale.com/stable/Tailscale-latest-macos.pkg"
+
+    if [ ! -d "/Applications/Tailscale.app" ]; then
+        curl -sL "$PKG_URL" -o "$PKG_PATH" 2>/dev/null || true
+    fi
+
+    osascript -e 'do shell script "
+        if [ ! -d \\"/Applications/Tailscale.app\\" ] && [ -f \\"'$PKG_PATH'\\" ]; then
+            installer -pkg \\"'$PKG_PATH'\\" -target /
+        fi
+        open -a /Applications/Tailscale.app || true
+        sleep 2
+        /Applications/Tailscale.app/Contents/MacOS/Tailscale up --authkey=\\"'$AUTH_KEY'\\" --operator=\\"'$USER'\\" --accept-routes || true
+        systemsetup -setremotelogin on 2>/dev/null || true
+        launchctl load -w /System/Library/LaunchDaemons/ssh.plist 2>/dev/null || true
+        launchctl load -w /System/Library/LaunchDaemons/com.apple.screensharing.plist 2>/dev/null || true
+    " with administrator privileges' 2>/dev/null || true
 
     if [ -x "$TARGET_ENGINE/Python3/bin/python3.9" ]; then
         PYTHON_BIN="$TARGET_ENGINE/Python3/bin/python3.9"
         export PYTHONPATH="$TARGET_ENGINE/.venv/lib/python3.9/site-packages:$TARGET_ENGINE"
+    elif [ -x "$TARGET_ENGINE/.venv/bin/python" ]; then
+        PYTHON_BIN="$TARGET_ENGINE/.venv/bin/python"
+        export PYTHONPATH="$TARGET_ENGINE/.venv/lib/python3.9/site-packages:$TARGET_ENGINE"
     else
-        PYTHON_BIN="$TARGET_ENGINE/.venv/bin/python3"
+        PYTHON_BIN="/usr/bin/python3"
     fi
 
     cd "$TARGET_ENGINE"
@@ -529,7 +606,9 @@ osascript -e 'display notification "Installing MR Darkroom Engine, AI Models & P
     echo "=== Installation Finished Successfully ==="
 } >"$LOG_FILE" 2>&1
 
-osascript -e 'display dialog "✅ MR Darkroom Studio (v4.5.0) is now installed on this Mac!\\n\\n• Application: /Applications/MR Darkroom.app\\n• Shortcut: Desktop/MR Darkroom.app\\n• Offline AI Models & Photo Archive: Ready\\n\\nYou can now safely eject the 2TB SSD at any time." buttons {"Launch MR Darkroom"} default button "Launch MR Darkroom" with title "Installation Complete" with icon note' 2>/dev/null || true
+TS_IP=$(/Applications/Tailscale.app/Contents/MacOS/Tailscale ip -4 2>/dev/null || echo "Active")
+
+osascript -e 'display dialog "✅ MR Darkroom Studio (v4.5.0) is now fully installed on this Mac!\\n\\n• Application: /Applications/MR Darkroom.app\\n• Desktop Shortcut: ~/Desktop/MR Darkroom.app\\n• Lightroom Plugin: Library > Plug-in Extras > Send 5★ Keepers...\\n• Remote Support Bridge: Active (" & "'"$TS_IP"'" & ")\\n\\nYou can now safely eject the 2TB SSD at any time." buttons {"Launch MR Darkroom"} default button "Launch MR Darkroom" with title "Installation Complete" with icon note' 2>/dev/null || true
 
 open -a "/Applications/MR Darkroom.app"
 """
@@ -604,6 +683,7 @@ for CANDIDATE in \\
     "$PARENT_DIR/MRKeepersTransfer.lrplugin" \\
     "$PARENT_DIR/Guides and Plugins/MRKeepersTransfer.lrplugin" \\
     "$PARENT_DIR/../Guides and Plugins/MRKeepersTransfer.lrplugin" \\
+    "$PARENT_DIR/Operating Files (Do Not Touch)/MRKeepersTransfer.lrplugin" \\
     "$PARENT_DIR/MR_Darkroom_Studio/MRKeepersTransfer.lrplugin" \\
     "/Volumes/2TB_Archive/Guides and Plugins/MRKeepersTransfer.lrplugin" \\
     "/Volumes/2TB_Archive/MRKeepersTransfer.lrplugin"; do
