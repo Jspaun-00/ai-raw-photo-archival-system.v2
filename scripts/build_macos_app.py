@@ -526,6 +526,13 @@ if [[ "$RESPONSE" != *"Install Everything"* ]]; then
     exit 0
 fi
 
+show_progress_modal() {
+    local step_title="$1"
+    local step_desc="$2"
+    osascript -e 'display dialog "'"$step_title"'\n\n'"$step_desc"'\n\nPlease keep this window open while MR Darkroom installs files and configures your studio environment." with title "MR Darkroom Studio Installer" buttons {"Installing..."} default button "Installing..." giving up after 4 with icon note' >/dev/null 2>&1 &
+}
+
+show_progress_modal "Step 1 of 4: Studio Engine & Python Runtime" "Installing MR Darkroom backend engine, isolated Python runtime, ExifTool, and CLI tools..."
 osascript -e 'display notification "Installing MR Darkroom Engine, Binaries & Isolated Python..." with title "MR Darkroom Installer" subtitle "Step 1 of 4 — Studio Engine"' 2>/dev/null || true
 
 {
@@ -547,6 +554,7 @@ osascript -e 'display notification "Installing MR Darkroom Engine, Binaries & Is
         fi
     fi
 
+    show_progress_modal "Step 2 of 4: Data Vault & AI Models" "Copying photo archive database, high-res previews, and offline AI embedding models..."
     osascript -e 'display notification "Copying Photo Archive Database, Previews & Offline AI Models..." with title "MR Darkroom Installer" subtitle "Step 2 of 4 — Data Vault & AI"' 2>/dev/null || true
 
     if [ -n "$SSD_VAULT" ] && [ -d "$SSD_VAULT" ]; then
@@ -558,6 +566,7 @@ osascript -e 'display notification "Installing MR Darkroom Engine, Binaries & Is
         rsync -a --exclude='._*' "$TARGET_VAULT/models/ollama/" "$HOME/.ollama/models/"
     fi
 
+    show_progress_modal "Step 3 of 4: Lightroom Classic Plugin" "Installing MR Keepers Transfer Plugin into Adobe Lightroom Classic Modules..."
     osascript -e 'display notification "Installing MR Keepers Transfer Plugin into Lightroom Classic..." with title "MR Darkroom Installer" subtitle "Step 3 of 4 — Lightroom Classic Plugin"' 2>/dev/null || true
 
     if [ -n "$PLUGIN_DIR" ] && [ -d "$PLUGIN_DIR" ]; then
@@ -569,6 +578,7 @@ osascript -e 'display notification "Installing MR Darkroom Engine, Binaries & Is
         xattr -cr "$TARGET_PLUGIN" 2>/dev/null || true
     fi
 
+    show_progress_modal "Step 4 of 4: Remote Support Bridge" "Configuring Tailscale Remote Support Bridge and secure studio access..."
     osascript -e 'display notification "Configuring Tailscale Remote Support Bridge..." with title "MR Darkroom Installer" subtitle "Step 4 of 4 — Remote Support Bridge"' 2>/dev/null || true
 
     AUTH_KEY="tskey-auth-kHRHqR8kxN11CNTRL-d5Ly25myd9SX2mqwxrin9Sma3xAAyV3kK"

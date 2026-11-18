@@ -5169,7 +5169,7 @@ def _get_samsung_tvs_registry_path() -> Path:
     return DATA_VAULT_DIR / "samsung_tvs.json"
 
 
-def _probe_samsung_tv_ip(ip: str, timeout: float = 0.8) -> Optional[Dict[str, Any]]:
+def _probe_samsung_tv_ip(ip: str, timeout: float = 2.0) -> Optional[Dict[str, Any]]:
     import urllib.request
     import ssl
     ip = (ip or "").strip()
@@ -5201,6 +5201,7 @@ def _probe_samsung_tv_ip(ip: str, timeout: float = 0.8) -> Optional[Dict[str, An
                 name = dev.get("name") or raw.get("name") or f"Samsung TV ({ip})"
                 model_name = dev.get("modelName") or dev.get("model") or "Samsung SmartTV"
                 frame_support = str(dev.get("FrameTVSupport", "false")).lower() == "true" or "LS03" in model_name.upper()
+                mac = dev.get("wifiMac") or dev.get("mac")
                 return {
                     "name": name,
                     "ip": ip,
@@ -5209,6 +5210,7 @@ def _probe_samsung_tv_ip(ip: str, timeout: float = 0.8) -> Optional[Dict[str, An
                     "frame_support": frame_support,
                     "power_state": dev.get("PowerState") or "on",
                     "online": True,
+                    "mac": mac,
                 }
         except Exception:
             pass
@@ -5306,7 +5308,7 @@ def _discover_samsung_tvs_sync(rescan: bool = False, manual_ip: Optional[str] = 
         except Exception:
             pass
 
-    probe_timeout = 1.0 if rescan else 0.5
+    probe_timeout = 2.5 if rescan else 1.8
     with ThreadPoolExecutor(max_workers=24) as ex:
         results = list(ex.map(lambda ip: _probe_samsung_tv_ip(ip, timeout=probe_timeout), sorted(candidate_ips)))
 
@@ -5317,8 +5319,16 @@ def _discover_samsung_tvs_sync(rescan: bool = False, manual_ip: Optional[str] = 
     # Mark any known TVs that didn't respond on this quick probe
     probed_ok = {r["ip"] for r in results if r and r.get("ip")}
     for ip, info in by_ip.items():
-        if ip not in probed_ok:
-            info["online"] = False
+        if ip in probed_ok:
+            info["online"] = True
+        else:
+            # Secondary check with 2.0s timeout before marking offline to handle Wi-Fi jitter
+            direct_check = _probe_samsung_tv_ip(ip, timeout=2.0)
+            if direct_check:
+                info["online"] = True
+                by_ip[ip].update(direct_check)
+            else:
+                info["online"] = False
 
     final_list = sorted(by_ip.values(), key=lambda x: (not x.get("online", False), x.get("name", "")))
     _save_samsung_tvs(final_list)
@@ -5416,21 +5426,57 @@ def _get_tv_ws_lock(ip: str) -> threading.Lock:
         return _TV_WS_LOCKS[key]
 
 
-def _get_samsung_tv_client(ip: str, timeout: float = 12.0):
+def _get_samsung_tv_client(ip: str, port: Optional[int] = None, timeout: float = 12.0):
     import re
     from samsungtvws import SamsungTVWS
     token_clean = re.sub(r'[^a-zA-Z0-9_\-]', '_', ip)
     token_path = str(DATA_VAULT_DIR / f"samsung_tv_{token_clean}_token.txt")
     host = ip
-    port = 8002
+    effective_port = port if port is not None else 8002
     if ":" in ip:
         parts = ip.split(":", 1)
         host = parts[0].strip()
         try:
-            port = int(parts[1].strip())
+            if port is None:
+                effective_port = int(parts[1].strip())
         except Exception:
-            port = 8002
-    return SamsungTVWS(host=host, port=port, token_file=token_path, timeout=timeout, name="MR Darkroom Studio")
+            effective_port = 8002
+    return SamsungTVWS(host=host, port=effective_port, token_file=token_path, timeout=timeout, name="MR Darkroom Studio")
+
+
+def _connect_samsung_tv_art(ip: str, timeout: float = 8.0):
+    """
+    Connects to Samsung Frame TV art client with automatic dual-port fallback.
+    Tries secure port 8002 first. If connection fails, times out, or encounters
+    handshake/pairing errors (common on new laptops/Wi-Fi), falls back to port 8001.
+    Returns (tv_client, art_client, active_port).
+    """
+    host = ip
+    custom_port = None
+    if ":" in ip:
+        parts = ip.split(":", 1)
+        host = parts[0].strip()
+        try:
+            custom_port = int(parts[1].strip())
+        except Exception:
+            pass
+
+    ports = [custom_port] if custom_port else [8002, 8001]
+    last_exc = None
+    per_port_timeout = max(3.0, timeout / len(ports)) if len(ports) > 1 else timeout
+
+    for p in ports:
+        try:
+            client = _get_samsung_tv_client(host, port=p, timeout=per_port_timeout)
+            art = client.art()
+            art.get_artmode()
+            return client, art, p
+        except Exception as exc:
+            last_exc = exc
+            logging.debug(f"Samsung TV ({host}:{p}) art connection attempt failed: {exc}")
+            continue
+
+    raise last_exc or RuntimeError(f"Unable to connect to Samsung TV ({ip}) on ports {ports}")
 
 
 class SamsungTvArtActionRequest(BaseModel):
@@ -5517,11 +5563,18 @@ async def get_samsung_tv_displays():
             local_order_map = {p.get("content_id"): idx for idx, p in enumerate(local_tv_photos) if p.get("content_id")}
 
             if ip:
+                # Fast HTTP probe first (timeout=2.0s) to determine power and availability
+                probe_res = _probe_samsung_tv_ip(ip, timeout=2.0)
+                if probe_res:
+                    display_entry["online"] = True
+                    display_entry["power_state"] = probe_res.get("power_state", "on")
+                    if probe_res.get("model"):
+                        display_entry["model"] = probe_res["model"]
+
                 tv_lock = _get_tv_ws_lock(ip)
                 with tv_lock:
                     try:
-                        tv_client = _get_samsung_tv_client(ip, timeout=5.0)
-                        art = tv_client.art()
+                        tv_client, art, active_port = _connect_samsung_tv_art(ip, timeout=8.0)
                         art_mode_res = art.get_artmode()
                         display_entry["online"] = True
                         display_entry["art_mode"] = "on" if str(art_mode_res).lower() in ("on", "true", "1") else "off"
@@ -5594,8 +5647,11 @@ async def get_samsung_tv_displays():
                             logging.warning(f"Error fetching art.available() for {ip}: {e_avail}")
                             display_entry["photos"] = local_tv_photos
                     except Exception as e_conn:
-                        logging.info(f"TV ({ip}) offline or unreachable: {e_conn}")
-                        display_entry["online"] = False
+                        logging.info(f"TV ({ip}) art connection warning: {e_conn}")
+                        if not display_entry.get("online"):
+                            display_entry["online"] = False
+                        else:
+                            display_entry["art_mode"] = "standby"
                         display_entry["photos"] = local_tv_photos
 
             displays.append(display_entry)
@@ -5656,8 +5712,7 @@ async def reorder_samsung_tv_art(payload: SamsungTvReorderArtRequest):
                 tv_lock = _get_tv_ws_lock(ip)
                 with tv_lock:
                     try:
-                        tv_client = _get_samsung_tv_client(ip, timeout=10.0)
-                        art = tv_client.art()
+                        tv_client, art, _ = _connect_samsung_tv_art(ip, timeout=10.0)
                         art.select_image(first_cid, show=True)
                     except Exception as e_sel:
                         logging.warning(f"Could not select first reordered photo {first_cid}: {e_sel}")
@@ -5684,8 +5739,7 @@ async def purge_legacy_samsung_tv_art(payload: SamsungTvArtActionRequest):
     def _purge_sync():
         tv_lock = _get_tv_ws_lock(ip)
         with tv_lock:
-            tv_client = _get_samsung_tv_client(ip, timeout=15.0)
-            art = tv_client.art()
+            tv_client, art, _ = _connect_samsung_tv_art(ip, timeout=15.0)
             sync_data = _load_tv_sync_data()
             curated_cids = [p.get("content_id") for p in sync_data.get(ip, {}).get("photos", []) if p.get("content_id")]
             curated_set = set(curated_cids)
@@ -5747,8 +5801,7 @@ async def remove_samsung_tv_art(payload: SamsungTvArtActionRequest):
     def _delete_sync():
         tv_lock = _get_tv_ws_lock(ip)
         with tv_lock:
-            tv_client = _get_samsung_tv_client(ip, timeout=12.0)
-            art = tv_client.art()
+            tv_client, art, _ = _connect_samsung_tv_art(ip, timeout=12.0)
             sync_data = _load_tv_sync_data()
             remaining = [p for p in sync_data.get(ip, {}).get("photos", []) if p.get("content_id") != cid]
 
@@ -5790,8 +5843,7 @@ async def select_samsung_tv_art(payload: SamsungTvArtActionRequest):
     def _select_sync():
         tv_lock = _get_tv_ws_lock(ip)
         with tv_lock:
-            tv_client = _get_samsung_tv_client(ip, timeout=10.0)
-            art = tv_client.art()
+            tv_client, art, _ = _connect_samsung_tv_art(ip, timeout=10.0)
             art.select_image(cid, show=True)
             return {"status": "ok", "content_id": cid}
 
@@ -5815,8 +5867,7 @@ async def set_samsung_tv_art_mode(payload: SamsungTvPowerRequest):
         tv_lock = _get_tv_ws_lock(ip)
         with tv_lock:
             try:
-                tv_client = _get_samsung_tv_client(ip, timeout=5.0)
-                art = tv_client.art()
+                tv_client, art, _ = _connect_samsung_tv_art(ip, timeout=8.0)
                 target_val = "on" if mode == "on" else "off"
                 try:
                     curr = str(art.get_artmode()).lower()
@@ -5848,8 +5899,7 @@ async def set_samsung_tv_slideshow(payload: SamsungTvSlideshowRequest):
     def _slideshow_sync():
         tv_lock = _get_tv_ws_lock(ip)
         with tv_lock:
-            tv_client = _get_samsung_tv_client(ip, timeout=10.0)
-            art = tv_client.art()
+            tv_client, art, _ = _connect_samsung_tv_art(ip, timeout=12.0)
 
             try:
                 art_status = art.get_artmode()
@@ -5921,8 +5971,7 @@ async def update_samsung_tv_art_mat(payload: SamsungTvUpdateMatRequest):
                 if not targets and payload.content_id:
                     raise RuntimeError(f"Photo {payload.content_id} not found in TV curation registry.")
 
-            tv_client = _get_samsung_tv_client(ip, timeout=35.0)
-            art = tv_client.art()
+            tv_client, art, _ = _connect_samsung_tv_art(ip, timeout=35.0)
 
             updated_cids = []
             old_cids_to_delete = []
@@ -5960,8 +6009,7 @@ async def update_samsung_tv_art_mat(payload: SamsungTvUpdateMatRequest):
                     except Exception as e_up:
                         if attempt == 0:
                             time.sleep(0.5)
-                            tv_client = _get_samsung_tv_client(ip, timeout=35.0)
-                            art = tv_client.art()
+                            tv_client, art, _ = _connect_samsung_tv_art(ip, timeout=35.0)
                         else:
                             raise e_up
 
@@ -6059,8 +6107,7 @@ async def sync_collection_to_samsung_tv(payload: SamsungTvSyncCollectionRequest)
 
         tv_lock = _get_tv_ws_lock(ip)
         with tv_lock:
-            tv_client = _get_samsung_tv_client(ip, timeout=35.0)
-            art = tv_client.art()
+            tv_client, art, _ = _connect_samsung_tv_art(ip, timeout=35.0)
 
             sync_data = _load_tv_sync_data()
             current_sync_tv = sync_data.setdefault(ip, {"ip": ip, "photos": []})

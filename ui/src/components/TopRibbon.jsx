@@ -9,10 +9,10 @@ const SUBSET_OPTIONS = [
 
 const VIEW_MODES = [
   { id: 'grid', label: '⊞ Grid', title: 'Continuous Light-Table Grid' },
-  { id: 'date', label: '📅 By Date', title: 'Collapsible Shoot Days with Smart Titles' },
-  { id: 'trips', label: '🧭 Trips & Map', title: 'Trips, Expeditions & Regional Map' },
+  { id: 'date', label: '📅 Date', title: 'Collapsible Shoot Days with Smart Titles' },
+  { id: 'trips', label: '🧭 Trips', title: 'Trips, Expeditions & Regional Map' },
   { id: 'collections', label: '📚 Collections', title: 'Mitch’s Curated Manual Collections' },
-  { id: 'tv_displays', label: '📺 TV Displays', title: 'Samsung Frame TVs & Slideshow Management' },
+  { id: 'tv_displays', label: '📺 Displays', title: 'Samsung Frame TVs & Slideshow Management' },
 ];
 
 const PORTFOLIO_QUICK_PILLS = [
@@ -238,10 +238,10 @@ export default function TopRibbon({
           background: 'rgba(11, 13, 18, 0.96)',
           backdropFilter: 'blur(16px)',
           borderBottom: '1px solid #1f2430',
-          padding: '10px 20px',
+          padding: '8px 14px',
           display: 'flex',
           flexDirection: 'column',
-          gap: '10px',
+          gap: '8px',
         }}
       >
         {/* Row 1: Primary Header: Brand Logo + Generous Search + View Switcher + Unified Catalog Dropdown + Import */}
@@ -249,25 +249,25 @@ export default function TopRibbon({
           style={{
             display: 'flex',
             alignItems: 'center',
-            gap: '12px',
+            gap: '8px',
             width: '100%',
             flexWrap: 'nowrap',
           }}
         >
           {/* Studio Identity: MR Darkroom */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexShrink: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
             <div
               style={{
-                width: '34px',
-                height: '34px',
-                borderRadius: '9px',
+                width: '32px',
+                height: '32px',
+                borderRadius: '8px',
                 background: 'linear-gradient(135deg, #18181b 0%, #090b10 100%)',
                 border: '1.5px solid #f59e0b',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
                 fontWeight: 800,
-                fontSize: '14px',
+                fontSize: '13px',
                 color: '#fbbf24',
                 letterSpacing: '-0.03em',
                 boxShadow: '0 2px 10px rgba(245, 158, 11, 0.2)',
@@ -275,11 +275,11 @@ export default function TopRibbon({
             >
               MR
             </div>
-            <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px' }}>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: '6px' }}>
               <span
                 style={{
                   fontWeight: 700,
-                  fontSize: '17px',
+                  fontSize: '16px',
                   letterSpacing: '-0.01em',
                   color: '#f8fafc',
                   whiteSpace: 'nowrap',
@@ -289,12 +289,12 @@ export default function TopRibbon({
               </span>
               <span
                 style={{
-                  fontSize: '11px',
+                  fontSize: '10.5px',
                   fontWeight: 600,
                   color: '#94a3b8',
                   background: '#161922',
                   border: '1px solid #262b38',
-                  padding: '1px 6px',
+                  padding: '1px 5px',
                   borderRadius: '5px',
                   whiteSpace: 'nowrap',
                 }}
@@ -309,9 +309,9 @@ export default function TopRibbon({
                 onClick={handleApplyUpdate}
                 title={`Update available (${updateInfo.commits_behind} new update${updateInfo.commits_behind === 1 ? '' : 's'}). Click to update MR Darkroom automatically.`}
                 style={{
-                  padding: '4px 10px',
+                  padding: '4px 8px',
                   borderRadius: '6px',
-                  fontSize: '12px',
+                  fontSize: '11.5px',
                   fontWeight: 700,
                   cursor: 'pointer',
                   border: '1px solid #10b981',
@@ -320,7 +320,7 @@ export default function TopRibbon({
                   boxShadow: '0 0 12px rgba(16, 185, 129, 0.3)',
                   display: 'flex',
                   alignItems: 'center',
-                  gap: '5px',
+                  gap: '4px',
                   whiteSpace: 'nowrap',
                 }}
               >
@@ -333,18 +333,18 @@ export default function TopRibbon({
           <div
             style={{
               position: 'relative',
-              flex: '1 1 200px',
-              minWidth: '150px',
+              flex: '1 1 140px',
+              minWidth: '90px',
             }}
           >
             <span
               style={{
                 position: 'absolute',
-                left: '14px',
+                left: '11px',
                 top: '50%',
                 transform: 'translateY(-50%)',
                 color: '#94a3b8',
-                fontSize: '15px',
+                fontSize: '13.5px',
                 pointerEvents: 'none',
               }}
             >
@@ -360,15 +360,15 @@ export default function TopRibbon({
                   handleQueryChange('');
                 }
               }}
-              placeholder="Search places, landmarks, dates, cameras, breeds, subjects..."
+              placeholder="Search places, tags, cameras..."
               style={{
                 width: '100%',
-                padding: '9px 38px 9px 40px',
-                borderRadius: '9px',
+                padding: '7px 30px 7px 32px',
+                borderRadius: '8px',
                 background: '#141822',
                 border: currentQuery ? '1.5px solid #f59e0b' : '1.5px solid #2d3548',
                 color: '#ffffff',
-                fontSize: '15px',
+                fontSize: '13.5px',
                 fontWeight: 500,
                 outline: 'none',
                 userSelect: 'text',
@@ -385,17 +385,17 @@ export default function TopRibbon({
                 title="Clear search"
                 style={{
                   position: 'absolute',
-                  right: '9px',
+                  right: '7px',
                   top: '50%',
                   transform: 'translateY(-50%)',
                   background: '#262b38',
                   border: '1px solid #3b4254',
-                  borderRadius: '6px',
+                  borderRadius: '5px',
                   color: '#f8fafc',
                   cursor: 'pointer',
-                  fontSize: '12px',
+                  fontSize: '11px',
                   fontWeight: 700,
-                  padding: '2px 7px',
+                  padding: '2px 5px',
                 }}
               >
                 ✕
@@ -403,14 +403,14 @@ export default function TopRibbon({
             )}
           </div>
 
-          {/* View Switcher: [ ⊞ Grid | 📅 By Date | 🧭 Trips & Regions ] */}
+          {/* View Switcher: [ ⊞ Grid | 📅 Date | 🧭 Trips | 📚 Collections | 📺 Displays ] */}
           <div
             style={{
               display: 'flex',
               alignItems: 'center',
               background: '#141720',
-              padding: '3px',
-              borderRadius: '9px',
+              padding: '2.5px',
+              borderRadius: '8px',
               border: '1px solid #2a3040',
               flexShrink: 0,
             }}
@@ -424,9 +424,9 @@ export default function TopRibbon({
                   onClick={() => handleViewChange(vm.id)}
                   title={vm.title}
                   style={{
-                    padding: '7px 14px',
-                    borderRadius: '7px',
-                    fontSize: '14px',
+                    padding: '6px 10px',
+                    borderRadius: '6px',
+                    fontSize: '13px',
                     fontWeight: active ? 700 : 500,
                     cursor: 'pointer',
                     border: 'none',
@@ -472,8 +472,8 @@ export default function TopRibbon({
                 }
               }}
               style={{
-                padding: '7px 10px',
-                fontSize: '13px',
+                padding: '6px 8px',
+                fontSize: '12.5px',
                 fontWeight: 600,
                 cursor: 'pointer',
                 background: isKeepersActive ? 'rgba(245, 158, 11, 0.2)' : '#1e293b',
@@ -482,7 +482,7 @@ export default function TopRibbon({
                 borderRight: isKeepersActive ? '1px solid rgba(245, 158, 11, 0.4)' : '1px solid #334155',
                 display: 'flex',
                 alignItems: 'center',
-                gap: '5px',
+                gap: '4px',
                 whiteSpace: 'nowrap',
               }}
             >
@@ -507,15 +507,15 @@ export default function TopRibbon({
                 if (onSelectCatalog) onSelectCatalog(val);
               }}
               style={{
-                padding: '7px 11px',
+                padding: '6px 8px',
                 background: '#141720',
                 color: isKeepersActive ? '#fbbf24' : '#f8fafc',
                 border: 'none',
-                fontSize: '13.5px',
+                fontSize: '12.5px',
                 fontWeight: 700,
                 cursor: 'pointer',
                 outline: 'none',
-                maxWidth: '180px',
+                maxWidth: '140px',
               }}
             >
               <option value="All Catalogs">All Photos</option>
@@ -547,9 +547,9 @@ export default function TopRibbon({
             onClick={() => onOpenPipelineModal && onOpenPipelineModal('pipeline')}
             title="Browse to any photo folder, create or select a catalog, and run 1-click Import + Offline GPS & AI Tagging"
             style={{
-              padding: '8px 16px',
+              padding: '7px 11px',
               borderRadius: '8px',
-              fontSize: '14px',
+              fontSize: '13px',
               fontWeight: 700,
               cursor: 'pointer',
               border: '1px solid #3b82f6',
@@ -557,12 +557,12 @@ export default function TopRibbon({
               color: '#f8fafc',
               display: 'flex',
               alignItems: 'center',
-              gap: '6px',
+              gap: '5px',
               flexShrink: 0,
               whiteSpace: 'nowrap',
             }}
           >
-            <span>📥</span> Import &amp; AI Tag
+            <span>📥</span> Import
           </button>
 
           {/* Studio Help Guide Button */}
@@ -571,9 +571,9 @@ export default function TopRibbon({
             onClick={() => onOpenHelpGuide && onOpenHelpGuide('import')}
             title="Studio Help Guide (Press ? for Help) — Step-by-step visual guides for Ingest & Catalog, Keyboard Culling, Collections, Lightroom Edit & Sync, 12K TV Exports, and iCloud/GDrive"
             style={{
-              padding: '8px 17px',
+              padding: '7px 12px',
               borderRadius: '8px',
-              fontSize: '14px',
+              fontSize: '13px',
               fontWeight: 800,
               cursor: 'pointer',
               border: '2px solid #f59e0b',
@@ -581,14 +581,14 @@ export default function TopRibbon({
               color: '#fbbf24',
               display: 'flex',
               alignItems: 'center',
-              gap: '7px',
+              gap: '6px',
               flexShrink: 0,
               whiteSpace: 'nowrap',
               boxShadow: '0 2px 12px rgba(245, 158, 11, 0.3)',
             }}
           >
-            <span style={{ fontSize: '16px' }}>📖</span>
-            <span>Help Guide</span>
+            <span style={{ fontSize: '15px' }}>📖</span>
+            <span>Help</span>
           </button>
         </div>
 
@@ -599,7 +599,7 @@ export default function TopRibbon({
             alignItems: 'center',
             justifyContent: 'space-between',
             flexWrap: 'nowrap',
-            gap: '10px 14px',
+            gap: '8px 12px',
             width: '100%',
           }}
         >
@@ -608,21 +608,24 @@ export default function TopRibbon({
             style={{
               display: 'flex',
               alignItems: 'center',
-              gap: '7px',
+              gap: '6px',
               overflowX: 'auto',
-              flex: '1 1 280px',
+              flex: '1 1 240px',
               minWidth: 0,
               padding: '2px 0',
-              scrollbarWidth: 'thin',
+              scrollbarWidth: 'none',
+              WebkitOverflowScrolling: 'touch',
+              maskImage: 'linear-gradient(to right, black calc(100% - 24px), transparent 100%)',
+              WebkitMaskImage: 'linear-gradient(to right, black calc(100% - 24px), transparent 100%)',
             }}
           >
             <button
               type="button"
               onClick={() => onSelectPortfolioTheme && onSelectPortfolioTheme(null)}
               style={{
-                padding: '6px 12px',
-                borderRadius: '7px',
-                fontSize: '13.5px',
+                padding: '5px 10px',
+                borderRadius: '6px',
+                fontSize: '12.5px',
                 fontWeight: !activePortfolioTheme ? 700 : 500,
                 cursor: 'pointer',
                 border: !activePortfolioTheme ? '1px solid #f59e0b' : '1px solid #262b38',
@@ -646,9 +649,9 @@ export default function TopRibbon({
                     onSelectPortfolioTheme(isSelected ? null : pill.id)
                   }
                   style={{
-                    padding: '6px 12px',
-                    borderRadius: '7px',
-                    fontSize: '13.5px',
+                    padding: '5px 10px',
+                    borderRadius: '6px',
+                    fontSize: '12.5px',
                     fontWeight: isSelected ? 700 : 500,
                     cursor: 'pointer',
                     border: isSelected ? '1px solid #f59e0b' : '1px solid #262b38',
@@ -656,7 +659,7 @@ export default function TopRibbon({
                     color: isSelected ? '#fbbf24' : '#cbd5e1',
                     display: 'inline-flex',
                     alignItems: 'center',
-                    gap: '6px',
+                    gap: '5px',
                     flexShrink: 0,
                     transition: 'all 0.15s',
                     whiteSpace: 'nowrap',
@@ -674,7 +677,7 @@ export default function TopRibbon({
             style={{
               display: 'flex',
               alignItems: 'center',
-              gap: '8px',
+              gap: '6px',
               flexShrink: 0,
             }}
           >
@@ -684,12 +687,12 @@ export default function TopRibbon({
               onChange={(e) => handleSortChange(e.target.value)}
               aria-label="Sort photos by"
               style={{
-                padding: '7px 12px',
-                borderRadius: '8px',
+                padding: '6px 10px',
+                borderRadius: '7px',
                 background: '#141720',
                 border: '1px solid #2a3040',
                 color: '#f1f5f9',
-                fontSize: '13.5px',
+                fontSize: '12.5px',
                 fontWeight: 600,
                 cursor: 'pointer',
                 outline: 'none',
@@ -711,9 +714,9 @@ export default function TopRibbon({
                   setFiltersOpen(false);
                 }}
                 style={{
-                  padding: '7px 13px',
-                  borderRadius: '8px',
-                  fontSize: '13.5px',
+                  padding: '6px 10px',
+                  borderRadius: '7px',
+                  fontSize: '12.5px',
                   fontWeight: 600,
                   cursor: 'pointer',
                   border: currentSubset !== 'all' ? '1px solid #f59e0b' : '1px solid #2a3040',
@@ -721,7 +724,7 @@ export default function TopRibbon({
                   color: currentSubset !== 'all' ? '#fbbf24' : '#e2e8f0',
                   display: 'flex',
                   alignItems: 'center',
-                  gap: '5px',
+                  gap: '4px',
                   whiteSpace: 'nowrap',
                 }}
               >
@@ -803,9 +806,9 @@ export default function TopRibbon({
                   setAestheticOpen(false);
                 }}
                 style={{
-                  padding: '7px 13px',
-                  borderRadius: '8px',
-                  fontSize: '13.5px',
+                  padding: '6px 10px',
+                  borderRadius: '7px',
+                  fontSize: '12.5px',
                   fontWeight: 600,
                   cursor: 'pointer',
                   border: activeFilterCount > 0 ? '1px solid #38bdf8' : '1px solid #2a3040',
@@ -813,7 +816,7 @@ export default function TopRibbon({
                   color: activeFilterCount > 0 ? '#7dd3fc' : '#e2e8f0',
                   display: 'flex',
                   alignItems: 'center',
-                  gap: '5px',
+                  gap: '4px',
                   whiteSpace: 'nowrap',
                 }}
               >

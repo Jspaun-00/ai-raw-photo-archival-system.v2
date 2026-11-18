@@ -48,7 +48,7 @@ function PhotoGrid({
 }) {
   const parentRef = useRef(null);
   const lastScrollTopRef = useRef(0);
-  const [columns, setColumns] = useState(5);
+  const [columns, setColumns] = useState(4);
   const [collapsedDates, setCollapsedDates] = useState({});
 
   // Track scroll position so in-place photo updates never snap grid to top
@@ -67,11 +67,11 @@ function PhotoGrid({
   useEffect(() => {
     const updateColumns = () => {
       const width = parentRef.current?.clientWidth || window.innerWidth || 1440;
-      let nextCols = 5;
-      if (width < 640) nextCols = 2;
-      else if (width < 1024) nextCols = 3;
-      else if (width < 1440) nextCols = 4;
-      else if (width < 1920) nextCols = 5;
+      let nextCols = 4;
+      if (width < 680) nextCols = 2;
+      else if (width < 1100) nextCols = 3;
+      else if (width < 1560) nextCols = 4;
+      else if (width < 2200) nextCols = 5;
       else nextCols = 6;
       setColumns((prev) => (prev === nextCols ? prev : nextCols));
     };
