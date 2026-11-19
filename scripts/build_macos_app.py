@@ -387,10 +387,84 @@ export PATH="$PROJECT_ROOT/bin:$(dirname "$PYTHON_BIN"):$PATH"
 
 open_studio_window() {{
     local APP_URL="http://127.0.0.1:8501"
+    # 1. If Google Chrome is running and already has 127.0.0.1:8501 open, focus that window/tab
+    if [ -d "/Applications/Google Chrome.app" ] && pgrep -x "Google Chrome" >/dev/null 2>&1; then
+        local CHROME_RES
+        CHROME_RES=$(osascript -e 'tell application "Google Chrome"
+            repeat with w in windows
+                set tabIdx to 0
+                repeat with t in tabs of w
+                    set tabIdx to tabIdx + 1
+                    try
+                        if (URL of t contains "127.0.0.1:8501") or (URL of t contains "localhost:8501") then
+                            set active tab index of w to tabIdx
+                            set index of w to 1
+                            activate
+                            return "FOCUSED"
+                        end if
+                    end try
+                end repeat
+            end repeat
+        end tell
+        return "NONE"' 2>/dev/null || echo "NONE")
+        if [ "$CHROME_RES" = "FOCUSED" ]; then
+            return 0
+        fi
+    fi
+
+    # 2. If Brave Browser is running and already has 127.0.0.1:8501 open, focus that window/tab
+    if [ -d "/Applications/Brave Browser.app" ] && pgrep -x "Brave Browser" >/dev/null 2>&1; then
+        local BRAVE_RES
+        BRAVE_RES=$(osascript -e 'tell application "Brave Browser"
+            repeat with w in windows
+                set tabIdx to 0
+                repeat with t in tabs of w
+                    set tabIdx to tabIdx + 1
+                    try
+                        if (URL of t contains "127.0.0.1:8501") or (URL of t contains "localhost:8501") then
+                            set active tab index of w to tabIdx
+                            set index of w to 1
+                            activate
+                            return "FOCUSED"
+                        end if
+                    end try
+                end repeat
+            end repeat
+        end tell
+        return "NONE"' 2>/dev/null || echo "NONE")
+        if [ "$BRAVE_RES" = "FOCUSED" ]; then
+            return 0
+        fi
+    fi
+
+    # 3. If Safari is running and already has 127.0.0.1:8501 open, focus that window/tab
+    if pgrep -x "Safari" >/dev/null 2>&1; then
+        local SAFARI_RES
+        SAFARI_RES=$(osascript -e 'tell application "Safari"
+            repeat with w in windows
+                repeat with t in tabs of w
+                    try
+                        if (URL of t contains "127.0.0.1:8501") or (URL of t contains "localhost:8501") then
+                            set current tab of w to t
+                            set index of w to 1
+                            activate
+                            return "FOCUSED"
+                        end if
+                    end try
+                end repeat
+            end repeat
+        end tell
+        return "NONE"' 2>/dev/null || echo "NONE")
+        if [ "$SAFARI_RES" = "FOCUSED" ]; then
+            return 0
+        fi
+    fi
+
+    # 4. Otherwise open a single window (without -n so we never spawn duplicate browser instances)
     if [ -d "/Applications/Google Chrome.app" ]; then
-        open -na "Google Chrome" --args --app="$APP_URL"
+        open -a "Google Chrome" --args --app="$APP_URL"
     elif [ -d "/Applications/Brave Browser.app" ]; then
-        open -na "Brave Browser" --args --app="$APP_URL"
+        open -a "Brave Browser" --args --app="$APP_URL"
     else
         open "$APP_URL"
     fi

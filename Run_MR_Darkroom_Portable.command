@@ -82,13 +82,57 @@ else
     echo "✓ Ollama AI Vision Server is active on port 11434"
 fi
 
-# 4. Helper to open the Studio UI in a dedicated standalone window
+# 4. Helper to focus existing Studio UI window or open a single standalone window
 open_studio_window() {
     local URL="http://127.0.0.1:8501"
+    if [ -d "/Applications/Google Chrome.app" ] && pgrep -x "Google Chrome" >/dev/null 2>&1; then
+        local CHROME_RES
+        CHROME_RES=$(osascript -e 'tell application "Google Chrome"
+            repeat with w in windows
+                set tabIdx to 0
+                repeat with t in tabs of w
+                    set tabIdx to tabIdx + 1
+                    try
+                        if (URL of t contains "127.0.0.1:8501") or (URL of t contains "localhost:8501") then
+                            set active tab index of w to tabIdx
+                            set index of w to 1
+                            activate
+                            return "FOCUSED"
+                        end if
+                    end try
+                end repeat
+            end repeat
+        end tell
+        return "NONE"' 2>/dev/null || echo "NONE")
+        if [ "$CHROME_RES" = "FOCUSED" ]; then
+            return 0
+        fi
+    fi
+    if pgrep -x "Safari" >/dev/null 2>&1; then
+        local SAFARI_RES
+        SAFARI_RES=$(osascript -e 'tell application "Safari"
+            repeat with w in windows
+                repeat with t in tabs of w
+                    try
+                        if (URL of t contains "127.0.0.1:8501") or (URL of t contains "localhost:8501") then
+                            set current tab of w to t
+                            set index of w to 1
+                            activate
+                            return "FOCUSED"
+                        end if
+                    end try
+                end repeat
+            end repeat
+        end tell
+        return "NONE"' 2>/dev/null || echo "NONE")
+        if [ "$SAFARI_RES" = "FOCUSED" ]; then
+            return 0
+        fi
+    fi
     if [ -d "/Applications/Google Chrome.app" ]; then
-        open -na "Google Chrome" --args --app="$URL"
+        open -a "Google Chrome" --args --app="$URL"
     elif [ -d "/Applications/Brave Browser.app" ]; then
-        open -na "Brave Browser" --args --app="$URL"
+        open -a "Brave Browser" --args --app="$URL"
     else
         open "$URL"
     fi

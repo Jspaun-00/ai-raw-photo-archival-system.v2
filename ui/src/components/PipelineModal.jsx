@@ -520,17 +520,28 @@ export default function PipelineModal({
               <RefreshCw className={`w-3 h-3 ${checkingUpdate ? 'animate-spin' : ''}`} />
               <span>{checkingUpdate ? 'Checking...' : '🔄 Check Updates'}</span>
             </button>
-            {updateInfo?.update_available && (
+            {updateInfo && (
               <button
                 type="button"
                 onClick={handleApplyUpdate}
                 disabled={applyingUpdate}
-                className="flex items-center gap-1.5 px-2.5 py-1 text-xs font-mono bg-emerald-600 hover:bg-emerald-500 text-white font-semibold rounded-sm transition-colors"
+                title={
+                  updateInfo.update_available
+                    ? `${updateInfo.commits_behind} new update(s) available on GitHub`
+                    : `Current commit: ${updateInfo.current_commit || 'latest'} — Click to force pull latest GitHub main & sync Lightroom plugin`
+                }
+                className={`flex items-center gap-1.5 px-2.5 py-1 text-xs font-mono font-semibold rounded-sm transition-colors ${
+                  updateInfo.update_available
+                    ? 'bg-emerald-600 hover:bg-emerald-500 text-white'
+                    : 'bg-studio-bg hover:bg-studio-hover border border-emerald-500/40 text-emerald-300'
+                }`}
               >
                 <span>
                   {applyingUpdate
                     ? 'Updating... Reloading in 3s'
-                    : `✨ Update Now (${updateInfo.commits_behind})`}
+                    : updateInfo.update_available
+                    ? `✨ Update Now (${updateInfo.commits_behind})`
+                    : `⬇️ Pull Latest (${updateInfo.remote_commit || updateInfo.version || 'Sync'})`}
                 </span>
               </button>
             )}

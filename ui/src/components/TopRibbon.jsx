@@ -118,19 +118,24 @@ export default function TopRibbon({
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  // Check for remote Git updates on mount
-  useEffect(() => {
-    let cancelled = false;
+  // Check for remote Git updates on mount & window focus
+  const refreshUpdateCheck = () => {
     fetch('/api/system/update-check')
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => {
-        if (!cancelled && data) {
+        if (data) {
           setUpdateInfo(data);
         }
       })
       .catch(() => {});
+  };
+
+  useEffect(() => {
+    refreshUpdateCheck();
+    const onFocus = () => refreshUpdateCheck();
+    window.addEventListener('focus', onFocus);
     return () => {
-      cancelled = true;
+      window.removeEventListener('focus', onFocus);
     };
   }, []);
 
@@ -303,6 +308,8 @@ export default function TopRibbon({
                 MR Darkroom
               </span>
               <span
+                onClick={refreshUpdateCheck}
+                title="Click to check for remote Git updates"
                 style={{
                   fontSize: '10.5px',
                   fontWeight: 600,
@@ -312,9 +319,10 @@ export default function TopRibbon({
                   padding: '1px 5px',
                   borderRadius: '5px',
                   whiteSpace: 'nowrap',
+                  cursor: 'pointer',
                 }}
               >
-                v{updateInfo?.version || '4.0'}
+                v{updateInfo?.version || '4.5.2'}
               </span>
             </div>
 

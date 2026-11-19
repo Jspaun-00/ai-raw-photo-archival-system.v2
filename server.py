@@ -10285,14 +10285,31 @@ async def trigger_das_backup():
 # ==============================================================================
 # 9B. 1-CLICK REMOTE GIT AUTO-UPDATER & DATA VAULT STATUS
 # ==============================================================================
-def _run_git_cmd(args: List[str], timeout: float = 3.0) -> Tuple[int, str, str]:
+def _clean_git_appledouble_files(repo_dir: Path) -> None:
+    """Removes macOS ExFAT AppleDouble (._*) files inside .git that break pack-index reads."""
+    git_dir = repo_dir / ".git"
+    if not git_dir.exists():
+        return
+    try:
+        for p in git_dir.rglob("._*"):
+            try:
+                p.unlink()
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
+def _run_git_cmd(args: List[str], timeout: float = 6.0, cwd: Optional[Path] = None) -> Tuple[int, str, str]:
+    target_cwd = cwd or PROJECT_ROOT
+    _clean_git_appledouble_files(target_cwd)
     try:
         git_env = os.environ.copy()
         git_env["GIT_TERMINAL_PROMPT"] = "0"
         git_env["GIT_SSH_COMMAND"] = "ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new"
         res = subprocess.run(
-            ["git"] + args,
-            cwd=str(PROJECT_ROOT),
+            ["git", "-c", "credential.helper=", "-c", "core.fileMode=false"] + args,
+            cwd=str(target_cwd),
             env=git_env,
             capture_output=True,
             text=True,
@@ -10308,41 +10325,56 @@ def _run_git_cmd(args: List[str], timeout: float = 3.0) -> Tuple[int, str, str]:
 @app.get("/api/system/update-check")
 async def check_system_update():
     """
-    Checks if a remote Git update is available from origin (with a 3s timeout so offline
-    operation never hangs) and returns current version & Data Vault status.
+    Checks if a remote Git update is available from origin and returns current version & Data Vault status.
+    Automatically cleans ExFAT AppleDouble files in .git and explicitly updates refs/remotes/origin/main.
     """
     v_info = get_version_info()
-    rc_head, current_commit, _ = _run_git_cmd(["rev-parse", "--short", "HEAD"], timeout=2.0)
-    rc_branch, branch, _ = _run_git_cmd(["rev-parse", "--abbrev-ref", "HEAD"], timeout=2.0)
+    rc_head, current_commit, _ = _run_git_cmd(["rev-parse", "--short", "HEAD"], timeout=3.0)
+    rc_branch, branch, _ = _run_git_cmd(["rev-parse", "--abbrev-ref", "HEAD"], timeout=3.0)
     if rc_branch != 0 or not branch or branch == "HEAD":
         branch = "main"
 
-    # Non-blocking fetch with 3.0s timeout
-    fetch_rc, _, fetch_err = _run_git_cmd(["fetch", "origin", branch, "--quiet"], timeout=3.0)
+    # Explicitly fetch into refs/remotes/origin/<branch> so origin/main always updates
+    fetch_rc, _, fetch_err = _run_git_cmd(
+        ["fetch", "origin", f"+refs/heads/{branch}:refs/remotes/origin/{branch}", "--quiet"],
+        timeout=8.0,
+    )
     if fetch_rc != 0:
-        # Try generic git fetch origin
-        fetch_rc, _, fetch_err = _run_git_cmd(["fetch", "origin", "--quiet"], timeout=3.0)
+        fetch_rc, _, fetch_err = _run_git_cmd(["fetch", "origin", "--quiet"], timeout=8.0)
 
     remote_ref = f"origin/{branch}"
-    rc_rem, remote_commit, _ = _run_git_cmd(["rev-parse", "--short", remote_ref], timeout=2.0)
+    rc_rem, remote_commit, _ = _run_git_cmd(["rev-parse", "--short", remote_ref], timeout=3.0)
     if rc_rem != 0:
-        # Fallback to origin/main
         remote_ref = "origin/main"
-        rc_rem, remote_commit, _ = _run_git_cmd(["rev-parse", "--short", remote_ref], timeout=2.0)
+        rc_rem, remote_commit, _ = _run_git_cmd(["rev-parse", "--short", remote_ref], timeout=3.0)
+
+    # Fallback: query remote HEAD directly via ls-remote if local tracking ref failed
+    if (rc_rem != 0 or not remote_commit) or fetch_rc != 0:
+        rc_ls, ls_out, _ = _run_git_cmd(["ls-remote", "origin", f"refs/heads/{branch}"], timeout=6.0)
+        if rc_ls == 0 and ls_out:
+            full_sha = ls_out.split()[0].strip()
+            if len(full_sha) >= 7:
+                remote_commit = full_sha[:7]
+                rc_rem = 0
 
     commits_behind = 0
     changelog: List[str] = []
     remote_version = v_info.get("version", APP_VERSION)
 
     if rc_rem == 0 and remote_commit:
-        rc_cnt, cnt_str, _ = _run_git_cmd(["rev-list", "--count", f"HEAD..{remote_ref}"], timeout=2.0)
+        rc_cnt, cnt_str, _ = _run_git_cmd(["rev-list", "--count", f"HEAD..{remote_ref}"], timeout=3.0)
         if rc_cnt == 0 and cnt_str.isdigit():
             commits_behind = int(cnt_str)
+        if commits_behind == 0 and current_commit and remote_commit and current_commit != remote_commit:
+            # Check if remote_commit is already an ancestor of HEAD (meaning local is ahead, not behind)
+            rc_anc, _, _ = _run_git_cmd(["merge-base", "--is-ancestor", remote_commit, "HEAD"], timeout=2.0)
+            if rc_anc != 0:
+                commits_behind = 1
         if commits_behind > 0:
-            rc_log, log_out, _ = _run_git_cmd(["log", f"HEAD..{remote_ref}", "--oneline", "-n", "8"], timeout=2.0)
+            rc_log, log_out, _ = _run_git_cmd(["log", f"HEAD..{remote_ref}", "--oneline", "-n", "8"], timeout=3.0)
             if rc_log == 0 and log_out:
                 changelog = [line.strip() for line in log_out.splitlines() if line.strip()]
-            rc_ver, ver_out, _ = _run_git_cmd(["show", f"{remote_ref}:version.json"], timeout=2.0)
+            rc_ver, ver_out, _ = _run_git_cmd(["show", f"{remote_ref}:version.json"], timeout=3.0)
             if rc_ver == 0 and ver_out:
                 try:
                     rem_v = json.loads(ver_out)
@@ -10525,21 +10557,25 @@ async def get_system_diagnostics():
 @app.post("/api/system/update-apply")
 async def apply_system_update():
     """
-    Safely stashes any local working-tree clutter, pulls the latest code & pre-built UI
-    from origin, installs any updated Python dependencies, updates the Lightroom plugin,
-    and restarts the server cleanly.
+    Safely fetches the latest code & pre-built UI from origin/main, resets the working
+    tree cleanly to origin/main, syncs sibling installations (including 2TB_Archive if mounted),
+    updates the Lightroom plugin, refreshes the macOS app launcher, and restarts the server.
     User databases and thumbnails in ~/Library/Application Support/MRDarkroom are untouched.
     """
     ensure_data_vault_migrated()
 
-    _, branch, _ = _run_git_cmd(["rev-parse", "--abbrev-ref", "HEAD"], timeout=2.0)
+    _, branch, _ = _run_git_cmd(["rev-parse", "--abbrev-ref", "HEAD"], timeout=3.0)
     if not branch or branch == "HEAD":
         branch = "main"
 
-    # Stash local untracked/modified code files (never touches external Data Vault)
-    _run_git_cmd(["stash", "--include-untracked"], timeout=10.0)
+    fetch_rc, _, _ = _run_git_cmd(
+        ["fetch", "origin", f"+refs/heads/{branch}:refs/remotes/origin/{branch}"],
+        timeout=30.0,
+    )
+    if fetch_rc != 0:
+        _run_git_cmd(["fetch", "origin"], timeout=30.0)
 
-    pull_rc, pull_out, pull_err = _run_git_cmd(["pull", "--rebase", "origin", branch], timeout=30.0)
+    pull_rc, pull_out, pull_err = _run_git_cmd(["reset", "--hard", f"origin/{branch}"], timeout=15.0)
     if pull_rc != 0:
         pull_rc, pull_out, pull_err = _run_git_cmd(["pull", "--rebase", "origin", "main"], timeout=30.0)
 
@@ -10556,11 +10592,12 @@ async def apply_system_update():
         except Exception as exc:
             logging.warning(f"Dependency update skipped/warning: {exc}")
 
-    # Keep sibling local installation (~/MRDarkroom <-> ~/Library/Application Support/MRDarkroom/Engine) in sync
+    # Keep sibling local installation (~/MRDarkroom <-> ~/Library/Application Support/MRDarkroom/Engine <-> 2TB SSD) in sync
     try:
         alt_roots = [
             Path.home() / "MRDarkroom",
             Path.home() / "Library" / "Application Support" / "MRDarkroom" / "Engine",
+            Path("/Volumes/2TB_Archive/Operating Files (Do Not Touch)/Engine"),
         ]
         for alt in alt_roots:
             if alt.exists() and alt.resolve() != PROJECT_ROOT.resolve():
@@ -10581,21 +10618,44 @@ async def apply_system_update():
                         f"{PROJECT_ROOT}/",
                         f"{alt}/",
                     ],
-                    timeout=20.0,
+                    timeout=25.0,
                     capture_output=True,
                 )
     except Exception as exc:
         logging.warning(f"Mirror sync during update warning: {exc}")
 
-    # Automatically deploy latest Lightroom plugin to Adobe Modules directory
+    # Automatically deploy latest Lightroom plugin to Adobe Modules directory and 2TB SSD if mounted
     try:
         ok_plug, plug_msg = _sync_lr_plugin_to_adobe_modules()
         if ok_plug:
             logging.info(f"System update: {plug_msg}")
         else:
             logging.warning(f"System update Lightroom plugin deploy warning: {plug_msg}")
+        for ssd_plug in [
+            Path("/Volumes/2TB_Archive/Operating Files (Do Not Touch)/MRKeepersTransfer.lrplugin"),
+            Path("/Volumes/2TB_Archive/Guides and Plugins/MRKeepersTransfer.lrplugin"),
+        ]:
+            if ssd_plug.parent.exists() and (PROJECT_ROOT / "MRKeepersTransfer.lrplugin").exists():
+                subprocess.run(
+                    ["rsync", "-a", "--delete", "--exclude=._*", f"{PROJECT_ROOT / 'MRKeepersTransfer.lrplugin'}/", f"{ssd_plug}/"],
+                    timeout=10.0,
+                    capture_output=True,
+                )
     except Exception as exc:
         logging.warning(f"Lightroom plugin auto-deploy error: {exc}")
+
+    # Refresh macOS launcher app bundle so single-window focus behavior stays current
+    try:
+        build_script = PROJECT_ROOT / "scripts" / "build_macos_app.py"
+        if build_script.exists():
+            subprocess.run(
+                [sys.executable, str(build_script), "--project-root", str(PROJECT_ROOT)],
+                cwd=str(PROJECT_ROOT),
+                timeout=20.0,
+                capture_output=True,
+            )
+    except Exception as exc:
+        logging.warning(f"macOS app bundle refresh warning: {exc}")
 
     def _delayed_restart():
         import shlex
