@@ -1,0 +1,85 @@
+"""
+SamsungTVWS - Samsung Smart TV WS API wrapper
+
+Copyright (C) 2019 DSR! <xchwarze@gmail.com>
+
+SPDX-License-Identifier: LGPL-3.0
+"""
+
+from __future__ import annotations
+
+import base64
+import logging
+from typing import Any
+
+import requests
+
+from . import connection, exceptions, helper
+
+_LOGGING = logging.getLogger(__name__)
+
+
+class SamsungTVRest(connection.SamsungTVWSBaseConnection):
+    def __init__(
+        self,
+        host: str,
+        port: int = 8001,
+        timeout: float | None = None,
+    ) -> None:
+        super().__init__(
+            host,
+            endpoint="",
+            port=port,
+            timeout=timeout,
+        )
+
+    def _rest_request(self, target: str, method: str = "GET") -> dict[str, Any]:
+        url = self._format_rest_url(target)
+        try:
+            if method == "POST":
+                response = requests.post(url, timeout=self.timeout, verify=False)
+            elif method == "PUT":
+                response = requests.put(url, timeout=self.timeout, verify=False)
+            elif method == "DELETE":
+                response = requests.delete(url, timeout=self.timeout, verify=False)
+            else:
+                response = requests.get(url, timeout=self.timeout, verify=False)
+            return helper.process_api_response(response.text)
+        except requests.ConnectionError as err:
+            raise exceptions.HttpApiError(
+                "TV unreachable or feature not supported on this model."
+            ) from err
+
+    def rest_device_info(self) -> dict[str, Any]:
+        _LOGGING.debug("Get device info via rest api")
+        return self._rest_request("")
+
+    def rest_app_status(self, app_id: str) -> dict[str, Any]:
+        _LOGGING.debug("Get app %s status via rest api", app_id)
+        return self._rest_request("applications/" + app_id)
+
+    def rest_app_run(self, app_id: str) -> dict[str, Any]:
+        _LOGGING.debug("Run app %s via rest api", app_id)
+        return self._rest_request("applications/" + app_id, "POST")
+
+    def rest_app_close(self, app_id: str) -> dict[str, Any]:
+        _LOGGING.debug("Close app %s via rest api", app_id)
+        return self._rest_request("applications/" + app_id, "DELETE")
+
+    def rest_app_install(self, app_id: str) -> dict[str, Any]:
+        _LOGGING.debug("Install app %s via rest api", app_id)
+        return self._rest_request("applications/" + app_id, "PUT")
+
+    def rest_ime_input(self, text: str, token: str | None = None) -> bool:
+        if not text:
+            return False
+
+        if not token:
+            raise ValueError("IME input requires a valid security token")
+
+        encoded = (
+            base64.b64encode(text.encode("utf-8")).decode("ascii").replace("\n", "")
+        )
+        url = self._format_rest_url(f"remoteControl/imeInput/{encoded}?token={token}")
+        resp = requests.post(url, timeout=self.timeout, verify=False)
+        return resp.status_code == 200

@@ -288,6 +288,8 @@ def create_app_bundle(target_app_path: Path, project_root: Path, icns_source: Pa
             "CFBundleVersion": "450",
             "LSMinimumSystemVersion": "12.0",
             "NSHighResolutionCapable": True,
+            "NSLocalNetworkUsageDescription": "MR Darkroom discovers and syncs 4K artwork to Samsung Frame TVs on your local Wi-Fi network.",
+            "NSBonjourServices": ["_googlecast._tcp", "_airplay._tcp"],
         }
         with open(contents_dir / "Info.plist", "wb") as f:
             plistlib.dump(info_plist, f)
@@ -377,7 +379,7 @@ elif [ -x "$LOCAL_RUNTIME_CACHE/.venv/bin/python" ]; then
 else
     PYTHON_BIN="/usr/bin/python3"
 fi
-export PYTHONPATH="$SITE_PACKAGES_DIR:$PROJECT_ROOT"
+export PYTHONPATH="$PROJECT_ROOT/vendor:$SITE_PACKAGES_DIR:$PROJECT_ROOT"
 export PATH="$PROJECT_ROOT/bin:$(dirname "$PYTHON_BIN"):$PATH"
 
 open_studio_window() {{
@@ -475,6 +477,8 @@ def create_installer_app_bundle(target_app_path: Path, icns_source: Path) -> Pat
             "CFBundleVersion": "450",
             "LSMinimumSystemVersion": "12.0",
             "NSHighResolutionCapable": True,
+            "NSLocalNetworkUsageDescription": "MR Darkroom discovers and syncs 4K artwork to Samsung Frame TVs on your local Wi-Fi network.",
+            "NSBonjourServices": ["_googlecast._tcp", "_airplay._tcp"],
         }
         with open(contents_dir / "Info.plist", "wb") as f:
             plistlib.dump(info_plist, f)
@@ -603,10 +607,10 @@ osascript -e 'display notification "Installing MR Darkroom Engine, Binaries & Is
 
     if [ -x "$TARGET_ENGINE/Python3/bin/python3.9" ]; then
         PYTHON_BIN="$TARGET_ENGINE/Python3/bin/python3.9"
-        export PYTHONPATH="$TARGET_ENGINE/.venv/lib/python3.9/site-packages:$TARGET_ENGINE"
+        export PYTHONPATH="$TARGET_ENGINE/vendor:$TARGET_ENGINE/.venv/lib/python3.9/site-packages:$TARGET_ENGINE"
     elif [ -x "$TARGET_ENGINE/.venv/bin/python" ]; then
         PYTHON_BIN="$TARGET_ENGINE/.venv/bin/python"
-        export PYTHONPATH="$TARGET_ENGINE/.venv/lib/python3.9/site-packages:$TARGET_ENGINE"
+        export PYTHONPATH="$TARGET_ENGINE/vendor:$TARGET_ENGINE/.venv/lib/python3.9/site-packages:$TARGET_ENGINE"
     else
         PYTHON_BIN="/usr/bin/python3"
     fi
@@ -676,6 +680,8 @@ def create_plugin_installer_app_bundle(target_app_path: Path, icns_source: Path)
             "CFBundleVersion": "450",
             "LSMinimumSystemVersion": "12.0",
             "NSHighResolutionCapable": True,
+            "NSLocalNetworkUsageDescription": "MR Darkroom discovers and syncs 4K artwork to Samsung Frame TVs on your local Wi-Fi network.",
+            "NSBonjourServices": ["_googlecast._tcp", "_airplay._tcp"],
         }
         with open(contents_dir / "Info.plist", "wb") as f:
             plistlib.dump(info_plist, f)
@@ -775,7 +781,7 @@ def install_launch_agent(project_root: Path) -> Path:
         "WorkingDirectory": str(project_root),
         "EnvironmentVariables": {
             "PATH": f"{project_root / 'bin'}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
-            "PYTHONPATH": f"{project_root / '.venv/lib/python3.9/site-packages'}:{project_root}",
+            "PYTHONPATH": f"{project_root / 'vendor'}:{project_root / '.venv/lib/python3.9/site-packages'}:{project_root}",
             "MRDARKROOM_VAULT_DIR": str(vault_dir),
             "HF_HOME": str(vault_dir / "models" / "huggingface"),
             "OLLAMA_MODELS": str(vault_dir / "models" / "ollama"),

@@ -32,3 +32,7 @@ insightface>=0.7.3
 
 # Configuration Management
 pyyaml>=6.0.1
+
+# Samsung Frame TV Art Mode WebSocket & D2D Control
+samsungtvws>=3.0.0
+websocket-client>=1.6.0

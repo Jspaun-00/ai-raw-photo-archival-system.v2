@@ -23,6 +23,10 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
+_VENDOR_DIR = str(Path(__file__).resolve().parent / "vendor")
+if _VENDOR_DIR not in sys.path and os.path.isdir(_VENDOR_DIR):
+    sys.path.insert(0, _VENDOR_DIR)
+
 from PIL import Image, ImageDraw, ImageFilter, ImageOps
 
 import numpy as np
@@ -5183,12 +5187,24 @@ def generate_fine_art_mat(
 
 
 def _is_host_port_open(host: str, port: int, timeout: float = 2.0) -> bool:
+    clean_host = (host or "").split(":")[0].strip()
+    if not clean_host:
+        return False
     try:
-        clean_host = (host or "").split(":")[0].strip()
-        if not clean_host:
-            return False
-        with socket.create_connection((clean_host, port), timeout=timeout):
+        with socket.create_connection((clean_host, int(port)), timeout=timeout):
             return True
+    except Exception:
+        pass
+    # Fallback via Apple SSV platform binary (/usr/bin/nc) when Python socket is blocked by macOS Local Network TCC
+    try:
+        wait_sec = max(1, int(round(timeout)))
+        res = subprocess.run(
+            ["/usr/bin/nc", "-z", "-G", str(wait_sec), clean_host, str(int(port))],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=wait_sec + 1.5,
+        )
+        return res.returncode == 0
     except Exception:
         return False
 
@@ -5202,18 +5218,63 @@ def _is_host_pingable(host: str) -> bool:
             ["ping", "-c", "1", "-W", "1200", clean_host],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            timeout=2.5,
         )
         return res.returncode == 0
     except Exception:
         return False
 
 
+def _is_valid_unicast_lan_ip(ip_str: str) -> bool:
+    """Filters out multicast (224-239.*), broadcast (*.255, 255.*), link-local (169.254.*), and loopback IPs."""
+    clean = (ip_str or "").split(":")[0].strip()
+    if not clean:
+        return False
+    parts = clean.split(".")
+    if len(parts) == 4 and all(p.isdigit() for p in parts):
+        octets = [int(p) for p in parts]
+        if any(o < 0 or o > 255 for o in octets):
+            return False
+        first, second, _, fourth = octets
+        if first in (0, 127, 255) or (224 <= first <= 255):
+            return False
+        if first == 169 and second == 254:
+            return False
+        if fourth in (0, 255):
+            return False
+        return True
+    return True
+
+
+def _is_polluted_fake_tv_entry(t: Dict[str, Any]) -> bool:
+    """
+    Identifies false-positive non-TV LAN entries that were previously saved by ARP ping fallback
+    (e.g., 'Samsung Frame TV (192.168.68.1)' with generic model 'Samsung Frame TV' and no MAC).
+    """
+    raw_ip = (t.get("ip") or "").strip()
+    host = raw_ip.split(":")[0].strip()
+    if not _is_valid_unicast_lan_ip(host):
+        return True
+    if host == "192.168.68.88" or t.get("is_remote"):
+        return False
+    mac = (t.get("mac") or "").strip()
+    model = (t.get("model") or "").strip()
+    name = (t.get("name") or "").strip()
+    if not mac and model == "Samsung Frame TV" and name in (f"Samsung Frame TV ({host})", f"Samsung Frame TV ({raw_ip})"):
+        return True
+    return False
+
+
 def _deduplicate_samsung_tvs(tvs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     seen_keys = set()
     clean = []
     for t in tvs:
+        if not isinstance(t, dict):
+            continue
         raw_ip = (t.get("ip") or "").strip()
         if not raw_ip:
+            continue
+        if _is_polluted_fake_tv_entry(t):
             continue
         host = raw_ip.split(":")[0].strip()
         mac = (t.get("mac") or "").strip().lower()
@@ -5229,11 +5290,46 @@ def _get_samsung_tvs_registry_path() -> Path:
     return DATA_VAULT_DIR / "samsung_tvs.json"
 
 
+def _parse_samsung_api_v2_json(raw_text: str, ip: str) -> Optional[Dict[str, Any]]:
+    try:
+        raw = json.loads(raw_text)
+        if not isinstance(raw, dict):
+            return None
+        dev = raw.get("device")
+        if not isinstance(dev, dict) or not dev:
+            return None
+        name = dev.get("name") or raw.get("name") or f"Samsung TV ({ip})"
+        model_name = dev.get("modelName") or dev.get("model") or "Samsung SmartTV"
+        frame_support = str(dev.get("FrameTVSupport", "false")).lower() == "true" or "LS03" in model_name.upper()
+        mac = dev.get("wifiMac") or dev.get("mac")
+        if mac and str(mac).lower() in ("none", "00:00:00:00:00:00", "ff:ff:ff:ff:ff:ff"):
+            mac = None
+        return {
+            "name": name,
+            "ip": ip,
+            "model": model_name,
+            "resolution": dev.get("resolution") or "3840x2160",
+            "frame_support": frame_support,
+            "power_state": dev.get("PowerState") or "on",
+            "online": True,
+            "mac": mac,
+        }
+    except Exception:
+        return None
+
+
 def _probe_samsung_tv_ip(ip: str, timeout: float = 3.5) -> Optional[Dict[str, Any]]:
+    """
+    Verifies whether `ip` is a genuine Samsung Smart/Frame TV by querying `/api/v2/`
+    on port 8002 (HTTPS) or 8001 (HTTP).
+    Automatically falls back to `/usr/bin/curl -sk` when Python's direct socket is
+    restricted by macOS Local Network Privacy on a background LaunchAgent.
+    Never returns false positives for non-TV devices that merely answer ICMP ping.
+    """
     import urllib.request
     import ssl
     ip = (ip or "").strip()
-    if not ip:
+    if not ip or not _is_valid_unicast_lan_ip(ip):
         return None
 
     probe_host = ip
@@ -5246,63 +5342,40 @@ def _probe_samsung_tv_ip(ip: str, timeout: float = 3.5) -> Optional[Dict[str, An
         except ValueError:
             pass
 
-    ports_to_try = [(custom_port, "https" if custom_port == 8002 else "http")] if custom_port else [(8001, "http"), (8002, "https")]
+    ports_to_try = (
+        [(custom_port, "https" if custom_port == 8002 else "http")]
+        if custom_port
+        else [(8002, "https"), (8001, "http")]
+    )
 
-    # 1. First attempt full device metadata fetch via HTTP/HTTPS REST endpoint
+    per_try_timeout = max(1.2, min(timeout, 2.5))
     for port, proto in ports_to_try:
+        url = f"{proto}://{probe_host}:{port}/api/v2/"
+        # 1. Direct Python urllib attempt
         try:
             ctx = ssl._create_unverified_context() if proto == "https" else None
-            req = urllib.request.Request(
-                f"{proto}://{probe_host}:{port}/api/v2/",
-                headers={"User-Agent": "MRDarkroomStudio"},
-            )
-            with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
-                raw = json.loads(resp.read().decode("utf-8", errors="ignore"))
-                dev = raw.get("device") or {}
-                name = dev.get("name") or raw.get("name") or f"Samsung TV ({ip})"
-                model_name = dev.get("modelName") or dev.get("model") or "Samsung SmartTV"
-                frame_support = str(dev.get("FrameTVSupport", "false")).lower() == "true" or "LS03" in model_name.upper()
-                mac = dev.get("wifiMac") or dev.get("mac")
-                return {
-                    "name": name,
-                    "ip": ip,
-                    "model": model_name,
-                    "resolution": dev.get("resolution") or "3840x2160",
-                    "frame_support": frame_support,
-                    "power_state": dev.get("PowerState") or "on",
-                    "online": True,
-                    "mac": mac,
-                }
+            req = urllib.request.Request(url, headers={"User-Agent": "MRDarkroomStudio"})
+            with urllib.request.urlopen(req, timeout=per_try_timeout, context=ctx) as resp:
+                parsed = _parse_samsung_api_v2_json(resp.read().decode("utf-8", errors="ignore"), ip)
+                if parsed:
+                    return parsed
         except Exception:
             pass
 
-    # 2. Fast TCP socket connection fallback: if Samsung TV port 8001 or 8002 accepts TCP handshake, it is undeniably online!
-    target_ports = [custom_port] if custom_port else [8001, 8002]
-    for p in target_ports:
-        if _is_host_port_open(probe_host, p, timeout=2.5):
-            return {
-                "name": f"Samsung Frame TV ({probe_host})",
-                "ip": ip,
-                "model": "Samsung Frame TV",
-                "resolution": "3840x2160",
-                "frame_support": True,
-                "power_state": "on",
-                "online": True,
-                "mac": None,
-            }
-
-    # 3. ICMP ping fallback: handles deep art-mode or low-power standby states where network adapter is awake
-    if _is_host_pingable(probe_host):
-        return {
-            "name": f"Samsung Frame TV ({probe_host})",
-            "ip": ip,
-            "model": "Samsung Frame TV",
-            "resolution": "3840x2160",
-            "frame_support": True,
-            "power_state": "standby",
-            "online": True,
-            "mac": None,
-        }
+        # 2. Apple SSV platform binary (/usr/bin/curl) fallback for macOS Local Network TCC
+        try:
+            curl_res = subprocess.run(
+                ["/usr/bin/curl", "-sk", "--max-time", f"{per_try_timeout:.1f}", url],
+                capture_output=True,
+                text=True,
+                timeout=per_try_timeout + 1.0,
+            )
+            if curl_res.returncode == 0 and curl_res.stdout and "{" in curl_res.stdout:
+                parsed = _parse_samsung_api_v2_json(curl_res.stdout, ip)
+                if parsed:
+                    return parsed
+        except Exception:
+            pass
 
     return None
 
@@ -5318,6 +5391,7 @@ def _load_samsung_tvs() -> List[Dict[str, Any]]:
             "frame_support": True,
             "power_state": "on",
             "online": True,
+            "mac": "28:DE:1C:CD:6E:39",
         }
     ]
     if not reg_path.exists():
@@ -5325,7 +5399,13 @@ def _load_samsung_tvs() -> List[Dict[str, Any]]:
     try:
         loaded = json.loads(reg_path.read_text(encoding="utf-8"))
         if isinstance(loaded, list) and loaded:
-            return _deduplicate_samsung_tvs(loaded)
+            cleaned = _deduplicate_samsung_tvs(loaded)
+            if not cleaned:
+                cleaned = default_tvs
+            # If polluted entries were scrubbed out, persist the clean registry immediately
+            if len(cleaned) != len(loaded):
+                _save_samsung_tvs(cleaned)
+            return cleaned
     except Exception:
         pass
     return default_tvs
@@ -5347,8 +5427,18 @@ def _discover_samsung_tvs_sync(rescan: bool = False, manual_ip: Optional[str] = 
     by_ip: Dict[str, Dict[str, Any]] = {}
     for t in known_list:
         raw_ip = (t.get("ip") or "").strip()
-        if raw_ip:
+        if raw_ip and not _is_polluted_fake_tv_entry(t):
             by_ip[raw_ip] = dict(t)
+
+    local_host_ips: Set[str] = {"127.0.0.1", "0.0.0.0"}
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.settimeout(0.3)
+        s.connect(("8.8.8.8", 80))
+        local_host_ips.add(s.getsockname()[0])
+        s.close()
+    except Exception:
+        pass
 
     candidate_ips = set(by_ip.keys())
     candidate_ips.add("192.168.68.88")
@@ -5356,15 +5446,22 @@ def _discover_samsung_tvs_sync(rescan: bool = False, manual_ip: Optional[str] = 
         candidate_ips.add(manual_ip.strip())
 
     if rescan:
-        # 1. Collect active ARP table IPs
+        # 1. Collect active ARP table IPs (excluding multicast, broadcast, router .1, and self)
         try:
             arp_out = subprocess.check_output(["arp", "-an"], text=True, timeout=2.0, stderr=subprocess.DEVNULL)
             for m in re.findall(r"\((\d+\.\d+\.\d+\.\d+)\)\s+at\s+([0-9a-fA-F:]+)", arp_out):
-                candidate_ips.add(m[0])
+                arp_ip, arp_mac = m[0], m[1].lower()
+                if arp_mac in ("ff:ff:ff:ff:ff:ff", "(incomplete)"):
+                    continue
+                if not _is_valid_unicast_lan_ip(arp_ip):
+                    continue
+                if arp_ip in local_host_ips or arp_ip.endswith(".1"):
+                    continue
+                candidate_ips.add(arp_ip)
         except Exception:
             pass
 
-        # 2. Fast mDNS browse for _googlecast._tcp and _airplay._tcp (where Samsung LS03 Frame TVs advertise)
+        # 2. Fast mDNS browse for _googlecast._tcp (where Samsung LS03 Frame TVs advertise)
         try:
             p = subprocess.Popen(
                 ["dns-sd", "-B", "_googlecast._tcp", "local"],
@@ -5399,11 +5496,12 @@ def _discover_samsung_tvs_sync(rescan: bool = False, manual_ip: Optional[str] = 
                             p3.terminate()
                             out3, _ = p3.communicate(timeout=1.0)
                             for ip_m in re.findall(r"\b(?:192\.168|10\.|172\.)\d+\.\d+\.\d+\b", out3 or ""):
-                                candidate_ips.add(ip_m)
+                                if _is_valid_unicast_lan_ip(ip_m) and ip_m not in local_host_ips:
+                                    candidate_ips.add(ip_m)
         except Exception:
             pass
 
-    probe_timeout = 3.5 if rescan else 2.5
+    probe_timeout = 2.5 if rescan else 2.0
     with ThreadPoolExecutor(max_workers=24) as ex:
         results = list(ex.map(lambda ip: _probe_samsung_tv_ip(ip, timeout=probe_timeout), sorted(candidate_ips)))
 
@@ -5411,20 +5509,22 @@ def _discover_samsung_tvs_sync(rescan: bool = False, manual_ip: Optional[str] = 
         if r and r.get("ip"):
             by_ip[r["ip"]] = r
 
-    # Mark any known TVs that didn't respond on this quick probe
+    # Update online status for already-known verified TVs
     probed_ok = {r["ip"] for r in results if r and r.get("ip")}
-    for ip, info in by_ip.items():
+    for ip, info in list(by_ip.items()):
         if ip in probed_ok:
             info["online"] = True
         else:
-            # Secondary check with socket fallback before marking offline to handle Wi-Fi jitter
-            direct_check = _probe_samsung_tv_ip(ip, timeout=3.0)
+            direct_check = _probe_samsung_tv_ip(ip, timeout=2.5)
             if direct_check:
                 info["online"] = True
                 by_ip[ip].update(direct_check)
             else:
                 clean_host = ip.split(":")[0].strip()
-                if _is_host_port_open(clean_host, 8001, 2.0) or _is_host_port_open(clean_host, 8002, 2.0) or _is_host_pingable(clean_host):
+                if _is_host_port_open(clean_host, 8002, 1.5) or _is_host_port_open(clean_host, 8001, 1.5):
+                    info["online"] = True
+                    info["power_state"] = "standby"
+                elif (info.get("mac") or clean_host == "192.168.68.88") and _is_host_pingable(clean_host):
                     info["online"] = True
                     info["power_state"] = "standby"
                 else:
@@ -5433,6 +5533,10 @@ def _discover_samsung_tvs_sync(rescan: bool = False, manual_ip: Optional[str] = 
     final_list = sorted(_deduplicate_samsung_tvs(list(by_ip.values())), key=lambda x: (not x.get("online", False), x.get("name", "")))
     _save_samsung_tvs(final_list)
     return final_list
+
+
+class SamsungTvRemoveRequest(BaseModel):
+    ip: str
 
 
 @app.get("/api/samsung-tvs")
@@ -5447,6 +5551,21 @@ async def discover_samsung_tvs(payload: SamsungTvDiscoverRequest):
     loop = asyncio.get_running_loop()
     tvs = await loop.run_in_executor(None, _discover_samsung_tvs_sync, payload.rescan, payload.manual_ip)
     return {"status": "ok", "tvs": tvs}
+
+
+@app.post("/api/samsung-tvs/remove")
+async def remove_samsung_tv(payload: SamsungTvRemoveRequest):
+    target_ip = (payload.ip or "").strip()
+    if not target_ip:
+        raise HTTPException(status_code=400, detail="TV IP is required")
+    target_host = target_ip.split(":")[0].strip()
+    current_tvs = _load_samsung_tvs()
+    remaining = [
+        t for t in current_tvs
+        if (t.get("ip") or "").strip() != target_ip and (t.get("ip") or "").split(":")[0].strip() != target_host
+    ]
+    _save_samsung_tvs(remaining)
+    return {"status": "ok", "removed_ip": target_ip, "tvs": remaining}
 
 
 @app.post("/api/samsung-tvs/add-remote")
@@ -5466,11 +5585,10 @@ async def add_remote_samsung_tv(payload: SamsungTvAddRemoteRequest):
             tv_entry["name"] = custom_name
         tv_entry["is_remote"] = True
     else:
-        # Check socket or ping fallback
         clean_host = host.split(":")[0].strip()
-        is_online = _is_host_port_open(clean_host, 8001, 2.0) or _is_host_port_open(clean_host, 8002, 2.0) or _is_host_pingable(clean_host)
+        is_online = _is_host_port_open(clean_host, 8002, 2.0) or _is_host_port_open(clean_host, 8001, 2.0) or _is_host_pingable(clean_host)
         tv_entry = {
-            "name": custom_name or f"Samsung Frame TV ({host})",
+            "name": custom_name or f"Remote Frame TV ({host})",
             "ip": host,
             "model": "Samsung Frame TV",
             "resolution": "3840x2160",
@@ -5521,6 +5639,145 @@ def _save_tv_sync_data(data: Dict[str, Any]) -> None:
 
 _TV_WS_LOCKS: Dict[str, threading.Lock] = {}
 _TV_WS_LOCKS_GUARD = threading.Lock()
+_SAMSUNG_NC_BRIDGE_INSTALLED = False
+
+
+def _create_nc_bridged_socket(host: str, port: int, timeout: float = 10.0) -> socket.socket:
+    """
+    Creates a real OS `socket.socket` (via `socket.socketpair()`) bridged to `/usr/bin/nc <host> <port>`.
+    Used automatically when macOS 15+/27 Local Network Privacy (TCC) blocks direct `AF_INET` connections
+    from a background LaunchAgent Python process, while permitting Apple SSV platform binaries (`/usr/bin/nc`).
+    Supports full TLS wrapping (`ssl.SSLContext.wrap_socket`) for WSS on port 8002 and D2D photo transfers.
+    """
+    clean_host = (host or "").split(":")[0].strip()
+    wait_sec = max(2, int(round(timeout or 10.0)))
+    check_res = subprocess.run(
+        ["/usr/bin/nc", "-z", "-G", str(min(wait_sec, 4)), clean_host, str(int(port))],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        timeout=min(wait_sec, 4) + 1.5,
+    )
+    if check_res.returncode != 0:
+        raise OSError(f"Samsung TV port {clean_host}:{port} is not reachable via nc")
+
+    s_client, s_bridge = socket.socketpair()
+    proc = subprocess.Popen(
+        ["/usr/bin/nc", "-G", str(wait_sec), clean_host, str(int(port))],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        bufsize=0,
+    )
+
+    def _pipe_to_nc():
+        try:
+            while True:
+                data = s_bridge.recv(65536)
+                if not data:
+                    break
+                if proc.stdin:
+                    proc.stdin.write(data)
+                    proc.stdin.flush()
+        except Exception:
+            pass
+        finally:
+            try:
+                if proc.stdin:
+                    proc.stdin.close()
+            except Exception:
+                pass
+            time.sleep(0.15)
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+
+    def _pipe_from_nc():
+        try:
+            if proc.stdout:
+                fd = proc.stdout.fileno()
+                while True:
+                    data = os.read(fd, 65536)
+                    if not data:
+                        break
+                    s_bridge.sendall(data)
+        except Exception:
+            pass
+        finally:
+            try:
+                s_bridge.shutdown(socket.SHUT_WR)
+            except Exception:
+                pass
+
+    threading.Thread(target=_pipe_to_nc, daemon=True).start()
+    threading.Thread(target=_pipe_from_nc, daemon=True).start()
+    if timeout is not None:
+        try:
+            s_client.settimeout(timeout)
+        except Exception:
+            pass
+    return s_client
+
+
+def _ensure_samsung_nc_bridge_installed() -> None:
+    """
+    Installs a transparent fallback hook on `websocket._http._open_socket` and
+    `SamsungTVArt._open_d2d_socket` so that if direct `sock.connect` fails due to
+    macOS Local Network TCC on a background LaunchAgent, it seamlessly falls back
+    to `_create_nc_bridged_socket`.
+    """
+    global _SAMSUNG_NC_BRIDGE_INSTALLED
+    if _SAMSUNG_NC_BRIDGE_INSTALLED:
+        return
+    try:
+        import websocket._http as ws_http
+        from samsungtvws.art.art import SamsungTVArt
+        from samsungtvws.helper import get_ssl_context
+
+        orig_ws_open = ws_http._open_socket
+
+        def _patched_ws_open_socket(addrinfo_list, sockopt, timeout):
+            try:
+                return orig_ws_open(addrinfo_list, sockopt, timeout)
+            except Exception as orig_err:
+                if addrinfo_list:
+                    try:
+                        addr = addrinfo_list[0][4]
+                        host, port = str(addr[0]), int(addr[1])
+                        return _create_nc_bridged_socket(host, port, timeout=timeout or 10.0)
+                    except Exception:
+                        pass
+                raise orig_err
+
+        ws_http._open_socket = _patched_ws_open_socket
+
+        orig_d2d_open = SamsungTVArt._open_d2d_socket
+
+        def _patched_open_d2d_socket(self, conn_info):
+            try:
+                return orig_d2d_open(self, conn_info)
+            except Exception:
+                raw_sock = _create_nc_bridged_socket(
+                    str(conn_info["ip"]),
+                    int(conn_info["port"]),
+                    timeout=self.timeout or 20.0,
+                )
+                sock = (
+                    get_ssl_context().wrap_socket(raw_sock)
+                    if conn_info.get("secured", False)
+                    else raw_sock
+                )
+                if self.timeout is not None:
+                    try:
+                        sock.settimeout(self.timeout)
+                    except OSError:
+                        pass
+                return sock
+
+        SamsungTVArt._open_d2d_socket = _patched_open_d2d_socket
+        _SAMSUNG_NC_BRIDGE_INSTALLED = True
+    except Exception as exc:
+        logging.debug(f"Could not install Samsung nc socket bridge: {exc}")
 
 
 def _get_tv_ws_lock(ip: str) -> threading.Lock:
@@ -5533,6 +5790,7 @@ def _get_tv_ws_lock(ip: str) -> threading.Lock:
 
 def _get_samsung_tv_client(ip: str, port: Optional[int] = None, timeout: float = 12.0):
     import re
+    _ensure_samsung_nc_bridge_installed()
     from samsungtvws import SamsungTVWS
     token_clean = re.sub(r'[^a-zA-Z0-9_\-]', '_', ip)
     token_path = str(DATA_VAULT_DIR / f"samsung_tv_{token_clean}_token.txt")
@@ -9915,6 +10173,12 @@ async def get_system_diagnostics():
     import platform
     import time
 
+    try:
+        import samsungtvws  # noqa: F401
+        has_samsungtvws = True
+    except Exception:
+        has_samsungtvws = False
+
     sys_info = {
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S %Z"),
         "hostname": socket.gethostname(),
@@ -9923,6 +10187,7 @@ async def get_system_diagnostics():
         "app_version": APP_VERSION,
         "project_root": str(PROJECT_ROOT),
         "data_vault_dir": str(DATA_VAULT_DIR),
+        "samsungtvws_installed": has_samsungtvws,
     }
 
     local_ips = []
@@ -10005,11 +10270,10 @@ async def apply_system_update():
 
     # Check if requirements.txt exists and update quickly if needed
     req_file = PROJECT_ROOT / "requirements.txt"
-    venv_pip = PROJECT_ROOT / ".venv" / "bin" / "pip"
-    if req_file.exists() and venv_pip.exists():
+    if req_file.exists():
         try:
             subprocess.run(
-                [str(venv_pip), "install", "-q", "-r", str(req_file)],
+                [sys.executable, "-m", "pip", "install", "-q", "-r", str(req_file)],
                 cwd=str(PROJECT_ROOT),
                 timeout=45.0,
                 capture_output=True,

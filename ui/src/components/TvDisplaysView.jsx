@@ -945,6 +945,23 @@ export default function TvDisplaysView({
     }
   };
 
+  const handleRemoveTv = async (e, tv) => {
+    e.stopPropagation();
+    if (!tv?.ip) return;
+    try {
+      const res = await fetch('/api/samsung-tvs/remove', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ip: tv.ip }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      showGlobalToast(`Removed ${tv.name || tv.ip}`);
+      await fetchDisplays();
+    } catch (err) {
+      showGlobalToast(`Failed to remove TV: ${err.message}`);
+    }
+  };
+
   const studioPhoto = studioPhotoIdx !== null ? activePhotos[studioPhotoIdx] : null;
   const previewPhoto = colPhotos[colPreviewIdx] || colPhotos[0] || null;
 
@@ -1049,6 +1066,16 @@ export default function TvDisplaysView({
                         {tv.ip} {tv.model ? `· ${tv.model}` : ''}
                       </div>
                     </div>
+                    {displays.length > 1 && (
+                      <button
+                        type="button"
+                        onClick={(e) => handleRemoveTv(e, tv)}
+                        title={`Remove ${tv.name || tv.ip} from list`}
+                        className="p-1 rounded text-studio-textDim hover:text-red-400 hover:bg-red-500/10 transition-colors"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    )}
                   </div>
 
                   <div className="mt-3 pt-2.5 border-t border-studio-border/60 flex items-center justify-between text-[11px]">
