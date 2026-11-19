@@ -5624,26 +5624,45 @@ def _get_tv_sync_registry_path() -> Path:
     return DATA_VAULT_DIR / "tv_displays_sync.json"
 
 
+def _get_ssd_tv_sync_mirror_path() -> Optional[Path]:
+    ssd_vault = Path("/Volumes/2TB_Archive/Operating Files (Do Not Touch)/Data_Vault")
+    if ssd_vault.is_dir():
+        return ssd_vault / "tv_displays_sync.json"
+    return None
+
+
 def _load_tv_sync_data() -> Dict[str, Any]:
     p = _get_tv_sync_registry_path()
-    if not p.exists():
+    ssd_p = _get_ssd_tv_sync_mirror_path()
+    candidates = [c for c in (p, ssd_p) if c is not None and c.exists()]
+    if not candidates:
         return {}
-    try:
-        data = json.loads(p.read_text(encoding="utf-8"))
-        if isinstance(data, dict):
-            return data
-    except Exception:
-        pass
+    # Prefer the most recently modified sync file across local vault and portable SSD
+    candidates.sort(key=lambda x: x.stat().st_mtime, reverse=True)
+    for cand in candidates:
+        try:
+            data = json.loads(cand.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return data
+        except Exception:
+            pass
     return {}
 
 
 def _save_tv_sync_data(data: Dict[str, Any]) -> None:
+    payload_str = json.dumps(data, indent=2)
     try:
         p = _get_tv_sync_registry_path()
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        p.write_text(payload_str, encoding="utf-8")
     except Exception as exc:
         logging.warning(f"Could not save tv_displays_sync.json: {exc}")
+    try:
+        ssd_p = _get_ssd_tv_sync_mirror_path()
+        if ssd_p is not None and ssd_p != _get_tv_sync_registry_path():
+            ssd_p.write_text(payload_str, encoding="utf-8")
+    except Exception as exc:
+        logging.debug(f"Could not mirror tv_displays_sync.json to SSD: {exc}")
 
 
 _TV_WS_LOCKS: Dict[str, threading.Lock] = {}
@@ -6407,9 +6426,46 @@ async def select_samsung_tv_art(payload: SamsungTvArtActionRequest):
             except Exception as e_sel:
                 err_msg = str(e_sel)
                 if "-10" in err_msg or "failed" in err_msg.lower():
-                    logging.warning(f"Orphaned/deleted CID {cid} on TV {ip}: {err_msg}. Auto-purging ghost CID.")
                     sync_data = _load_tv_sync_data()
                     tv_entry = _resolve_tv_sync_entry(sync_data, ip)
+                    matched_rec = next(
+                        (p for p in tv_entry.get("photos", []) if p.get("content_id") == cid and (p.get("file_hash") or p.get("file_path"))),
+                        None,
+                    )
+                    if matched_rec is not None:
+                        logging.info(f"Curated CID {cid} missing on TV {ip} (-10). Self-healing by re-uploading matted 4K artwork...")
+                        f_hash = matched_rec.get("file_hash") or ""
+                        f_path = matched_rec.get("file_path") or ""
+                        im_rgb = _load_tv_source_image(f_path, f_hash)
+                        if im_rgb is not None:
+                            mat_mode = matched_rec.get("mat_mode") or "studio"
+                            effective_placement = "none" if mat_mode == "none" else (matched_rec.get("mat_placement") or "slim_optical")
+                            tv_4k = generate_fine_art_mat(
+                                im_rgb,
+                                color_hex=matched_rec.get("mat_color") or "#F4EFE6",
+                                placement=effective_placement,
+                                aspect_ratio=matched_rec.get("mat_aspect") or "original",
+                                crop_x=float(matched_rec.get("crop_x", 0.5)),
+                                crop_y=float(matched_rec.get("crop_y", 0.5)),
+                                mat_style=matched_rec.get("mat_style") or "single",
+                                inner_mat_color=matched_rec.get("inner_mat_color") or "#F4EFE6",
+                                canvas_w=3840,
+                                canvas_h=2160,
+                            )
+                            buf = io.BytesIO()
+                            tv_4k.save(buf, format="JPEG", quality=94, subsampling=0, progressive=False)
+                            new_cid = art.upload(buf.getvalue(), file_type="JPEG", matte="none")
+                            if new_cid:
+                                matched_rec["content_id"] = new_cid
+                                matched_rec["uploaded_at"] = datetime.now().isoformat()
+                                prev_deleted = set(tv_entry.get("deleted_cids", []))
+                                prev_deleted.add(cid)
+                                tv_entry["deleted_cids"] = list(prev_deleted)[-200:]
+                                _save_tv_sync_data(sync_data)
+                                art.select_image(new_cid, show=True)
+                                return {"status": "ok", "content_id": new_cid, "re_uploaded": True}
+
+                    logging.warning(f"Orphaned/deleted CID {cid} on TV {ip}: {err_msg}. Auto-purging ghost CID.")
                     prev_deleted = set(tv_entry.get("deleted_cids", []))
                     prev_deleted.add(cid)
                     tv_entry["deleted_cids"] = list(prev_deleted)[-200:]
