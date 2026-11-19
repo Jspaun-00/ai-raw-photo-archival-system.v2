@@ -137,11 +137,23 @@ local function discoverCatalogs(currentCatPath)
     }
 
     local candidateRoots = {}
+    local seenRoot = {}
+    local function addCandidateRoot(volPath)
+        if volPath and not seenRoot[volPath] and LrFileUtils.exists(volPath) == "directory" then
+            seenRoot[volPath] = true
+            table.insert(candidateRoots, volPath)
+        end
+    end
+
+    -- Explicitly probe standard external drives first in case /Volumes listing is restricted by macOS TCC
+    addCandidateRoot("/Volumes/2TB_Archive")
+    addCandidateRoot("/Volumes/Pegasus32 R8")
+
     if LrFileUtils.exists("/Volumes") then
         for vol in LrFileUtils.directoryEntries("/Volumes") do
             local vName = LrPathUtils.leafName(vol) or ""
             if LrFileUtils.exists(vol) == "directory" and not isSystemOrHiddenVolume(vName) then
-                table.insert(candidateRoots, vol)
+                addCandidateRoot(vol)
             end
         end
     end

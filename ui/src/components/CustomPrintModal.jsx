@@ -149,24 +149,24 @@ export default function CustomPrintModal({
         }}
       >
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-800 bg-slate-950/80">
+        <div className="flex items-center justify-between px-5 py-3 border-b border-slate-800 bg-slate-950/80">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-purple-500/20 border border-purple-400/30 flex items-center justify-center text-purple-300">
-              <Printer className="w-5 h-5 text-purple-400" />
+            <div className="w-8 h-8 rounded-lg bg-purple-500/20 border border-purple-400/30 flex items-center justify-center text-purple-300">
+              <Printer className="w-4 h-4 text-purple-400" />
             </div>
             <div>
-              <h2 className="text-lg font-bold text-white flex items-center gap-2">
+              <h2 className="text-base font-bold text-white flex items-center gap-2">
                 Custom Print Sizing Export
                 {collectionName && (
-                  <span className="text-xs font-black px-2.5 py-0.5 rounded-md bg-amber-400/20 border border-amber-400/50 text-amber-300">
+                  <span className="text-xs font-black px-2 py-0.5 rounded-md bg-amber-400/20 border border-amber-400/50 text-amber-300">
                     📁 {collectionName}
                   </span>
                 )}
-                <span className="text-xs px-2.5 py-0.5 rounded-full bg-purple-900/60 border border-purple-400/50 text-purple-200 font-normal">
+                <span className="text-[11px] px-2 py-0.5 rounded-full bg-purple-900/60 border border-purple-400/50 text-purple-200 font-normal">
                   JPEG
                 </span>
               </h2>
-              <p className="text-xs text-slate-400">
+              <p className="text-[11px] text-slate-400">
                 Exporting <strong className="text-white">{photoCount}</strong> photo{photoCount === 1 ? '' : 's'} with Lightroom edits & embedded IPTC metadata
               </p>
             </div>
@@ -175,21 +175,21 @@ export default function CustomPrintModal({
             type="button"
             onClick={onClose}
             disabled={isBusy}
-            className="p-2 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition cursor-pointer"
+            className="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition cursor-pointer"
           >
-            <X className="w-5 h-5" />
+            <X className="w-4 h-4" />
           </button>
         </div>
 
         {/* Content */}
-        <div className="p-6 space-y-6 overflow-y-auto max-h-[75vh]">
+        <div className="p-4 sm:p-5 space-y-4 overflow-y-auto max-h-[78vh]">
           {/* Section 1: Presets */}
-          <div className="space-y-3">
+          <div className="space-y-2">
             <label className="text-xs font-semibold uppercase tracking-wider text-purple-300 flex items-center gap-1.5">
               <Sliders className="w-3.5 h-3.5" />
               1. Choose Target Long-Edge Size:
             </label>
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
               {presets.map((p) => {
                 const isSelected = targetLongEdge === p.px;
                 return (
@@ -197,19 +197,19 @@ export default function CustomPrintModal({
                     key={p.px}
                     type="button"
                     onClick={() => handleSelectPreset(p.px)}
-                    className={`flex flex-col text-left p-3 rounded-xl border transition cursor-pointer ${
+                    className={`flex flex-col text-left p-2.5 rounded-xl border transition cursor-pointer ${
                       isSelected
                         ? 'bg-purple-950/60 border-purple-400 shadow-md ring-1 ring-purple-400/50'
                         : 'bg-slate-800/60 border-slate-700/80 hover:bg-slate-800 hover:border-slate-600'
                     }`}
                   >
                     <div className="flex items-center justify-between">
-                      <span className={`text-sm font-bold ${isSelected ? 'text-purple-200' : 'text-slate-200'}`}>
+                      <span className={`text-xs sm:text-sm font-bold ${isSelected ? 'text-purple-200' : 'text-slate-200'}`}>
                         {p.label}
                       </span>
-                      {isSelected && <Check className="w-4 h-4 text-purple-400" />}
+                      {isSelected && <Check className="w-3.5 h-3.5 text-purple-400" />}
                     </div>
-                    <span className="text-[11px] text-slate-400 mt-1 leading-tight">
+                    <span className="text-[10.5px] text-slate-400 mt-0.5 leading-tight">
                       {p.desc}
                     </span>
                   </button>
@@ -218,7 +218,7 @@ export default function CustomPrintModal({
             </div>
 
             {/* Custom Pixel Input */}
-            <div className="mt-3 flex items-center gap-3 bg-slate-950/60 p-3 rounded-xl border border-slate-800">
+            <div className="mt-2 flex items-center gap-3 bg-slate-950/60 p-2.5 rounded-xl border border-slate-800">
               <span className="text-xs text-slate-300 font-medium whitespace-nowrap">
                 Or Custom Long Edge:
               </span>
@@ -230,7 +230,7 @@ export default function CustomPrintModal({
                   step="100"
                   value={customInput}
                   onChange={handleCustomInputChange}
-                  className="w-full bg-slate-900 border border-slate-700 focus:border-purple-400 rounded-lg px-3 py-1.5 text-sm text-white font-mono outline-none transition"
+                  className="w-full bg-slate-900 border border-slate-700 focus:border-purple-400 rounded-lg px-3 py-1 text-xs sm:text-sm text-white font-mono outline-none transition"
                   placeholder="e.g. 6000"
                 />
                 <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-slate-500 font-mono pointer-events-none">
@@ -241,28 +241,28 @@ export default function CustomPrintModal({
           </div>
 
           {/* Section 2: Print Density (DPI) */}
-          <div className="space-y-3">
+          <div className="space-y-2">
             <label className="text-xs font-semibold uppercase tracking-wider text-purple-300 flex items-center gap-1.5">
               <Sparkles className="w-3.5 h-3.5" />
               2. Print Density Resolution (DPI):
             </label>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-2 gap-2.5">
               <button
                 type="button"
                 onClick={() => setDpi(300)}
-                className={`p-3 rounded-xl border text-left transition cursor-pointer ${
+                className={`p-2.5 rounded-xl border text-left transition cursor-pointer ${
                   dpi === 300
                     ? 'bg-purple-950/60 border-purple-400 shadow-md ring-1 ring-purple-400/50'
                     : 'bg-slate-800/60 border-slate-700/80 hover:bg-slate-800 hover:border-slate-600'
                 }`}
               >
                 <div className="flex items-center justify-between">
-                  <span className={`text-sm font-bold ${dpi === 300 ? 'text-purple-200' : 'text-slate-200'}`}>
+                  <span className={`text-xs sm:text-sm font-bold ${dpi === 300 ? 'text-purple-200' : 'text-slate-200'}`}>
                     300 DPI
                   </span>
-                  {dpi === 300 && <Check className="w-4 h-4 text-purple-400" />}
+                  {dpi === 300 && <Check className="w-3.5 h-3.5 text-purple-400" />}
                 </div>
-                <div className="text-[11px] text-slate-400 mt-1">
+                <div className="text-[10.5px] text-slate-400 mt-0.5">
                   Standard Gallery Master (Maximum sharpness for close viewing)
                 </div>
               </button>
@@ -270,19 +270,19 @@ export default function CustomPrintModal({
               <button
                 type="button"
                 onClick={() => setDpi(240)}
-                className={`p-3 rounded-xl border text-left transition cursor-pointer ${
+                className={`p-2.5 rounded-xl border text-left transition cursor-pointer ${
                   dpi === 240
                     ? 'bg-purple-950/60 border-purple-400 shadow-md ring-1 ring-purple-400/50'
                     : 'bg-slate-800/60 border-slate-700/80 hover:bg-slate-800 hover:border-slate-600'
                 }`}
               >
                 <div className="flex items-center justify-between">
-                  <span className={`text-sm font-bold ${dpi === 240 ? 'text-purple-200' : 'text-slate-200'}`}>
+                  <span className={`text-xs sm:text-sm font-bold ${dpi === 240 ? 'text-purple-200' : 'text-slate-200'}`}>
                     240 DPI
                   </span>
-                  {dpi === 240 && <Check className="w-4 h-4 text-purple-400" />}
+                  {dpi === 240 && <Check className="w-3.5 h-3.5 text-purple-400" />}
                 </div>
-                <div className="text-[11px] text-slate-400 mt-1">
+                <div className="text-[10.5px] text-slate-400 mt-0.5">
                   Fine Art Inkjet (Excellent for larger format giclée prints)
                 </div>
               </button>
@@ -290,20 +290,16 @@ export default function CustomPrintModal({
           </div>
 
           {/* Section 3: Live Print Size Calculation Summary */}
-          <div className="p-3.5 rounded-xl bg-slate-950/70 border border-slate-800 flex items-start gap-3">
+          <div className="p-2.5 rounded-xl bg-slate-950/70 border border-slate-800 flex items-start gap-2.5">
             <Info className="w-4 h-4 text-purple-400 shrink-0 mt-0.5" />
-            <div className="text-xs text-slate-300 leading-relaxed">
-              Target output: <strong className="text-purple-300 font-mono">{targetLongEdge.toLocaleString()} px</strong> long edge at <strong className="text-purple-300 font-mono">{dpi} DPI</strong>.
-              <br />
-              Equivalent physical print size: approximately <strong className="text-white">{printInchesLongEdge}&quot; × {printInchesShortEdge}&quot;</strong> (for standard 3:2 landscape).
-              <br />
-              Exports directly to <span className="text-emerald-400 font-mono">~/Desktop/MRDarkroom_Exports/</span>.
+            <div className="text-[11px] text-slate-300 leading-relaxed">
+              Target output: <strong className="text-purple-300 font-mono">{targetLongEdge.toLocaleString()} px</strong> long edge at <strong className="text-purple-300 font-mono">{dpi} DPI</strong> (~<strong className="text-white">{printInchesLongEdge}&quot; × {printInchesShortEdge}&quot;</strong> for 3:2 landscape). Exports directly to <span className="text-emerald-400 font-mono">~/Desktop/MRDarkroom_Exports/</span>.
             </div>
           </div>
         </div>
 
         {/* Footer: 4 Direct Destinations (Desktop, iCloud, Choose Folder, Push to Samsung TV) */}
-        <div className="flex items-center justify-between px-6 py-4 border-t border-slate-800 bg-slate-950/90 flex-wrap gap-3">
+        <div className="flex items-center justify-between px-5 py-3 border-t border-slate-800 bg-slate-950/90 flex-wrap gap-2.5">
           <button
             type="button"
             onClick={onClose}

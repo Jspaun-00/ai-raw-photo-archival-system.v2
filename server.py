@@ -4631,6 +4631,9 @@ def _run_collection_export_worker(collection_id: int, col_detail: Dict[str, Any]
 
             used_source = "master"
             src_to_load: Optional[Path] = None
+            f_hash = p.get("file_hash") or ""
+            p16_hash_cand = DEFAULT_PREVIEWS_1600_DIR / f"{f_hash}.webp" if f_hash else None
+            t36_hash_cand = DEFAULT_THUMBS_360_DIR / f"{f_hash}.webp" if f_hash else None
 
             if master_fp.exists() and master_fp.is_file():
                 src_to_load = master_fp
@@ -4638,8 +4641,14 @@ def _run_collection_export_worker(collection_id: int, col_detail: Dict[str, Any]
             elif p.get("preview_1600_path") and Path(p["preview_1600_path"]).exists():
                 src_to_load = Path(p["preview_1600_path"])
                 used_source = "preview_1600"
+            elif p16_hash_cand and p16_hash_cand.exists():
+                src_to_load = p16_hash_cand
+                used_source = "preview_1600"
             elif p.get("thumb_360_path") and Path(p["thumb_360_path"]).exists():
                 src_to_load = Path(p["thumb_360_path"])
+                used_source = "thumb_360"
+            elif t36_hash_cand and t36_hash_cand.exists():
+                src_to_load = t36_hash_cand
                 used_source = "thumb_360"
 
             if src_to_load is None:
@@ -5763,8 +5772,8 @@ def _ensure_samsung_nc_bridge_installed() -> None:
                         addr = addrinfo_list[0][4]
                         host, port = str(addr[0]), int(addr[1])
                         return _create_nc_bridged_socket(host, port, timeout=timeout or 10.0)
-                    except Exception:
-                        pass
+                    except Exception as nc_err:
+                        raise nc_err
                 raise orig_err
 
         ws_http._open_socket = _patched_ws_open_socket
@@ -5806,6 +5815,47 @@ def _get_tv_ws_lock(ip: str) -> threading.Lock:
         return _TV_WS_LOCKS[key]
 
 
+def _close_samsung_art_safely(art_client: Any = None, tv_client: Any = None) -> None:
+    """Safely closes Samsung TV Art and Remote WebSocket channels so the TV daemon never leaks sockets."""
+    for obj in (art_client, tv_client):
+        if obj is not None:
+            try:
+                obj.close()
+            except Exception:
+                pass
+
+
+def _snap_samsung_slideshow_duration(duration_mins: Optional[int]) -> int:
+    """
+    Samsung Frame TV Art API 4.0+/6.0+ strictly accepts only [3, 15, 60, 720, 1440] minutes
+    (or 0 to turn off). Passing arbitrary numbers like 5, 10, 30, or 360 fails with error -7.
+    """
+    if duration_mins is None:
+        return 15
+    d = int(duration_mins)
+    if d <= 0:
+        return 0
+    valid = (3, 15, 60, 720, 1440)
+    return min(valid, key=lambda v: abs(v - d))
+
+
+def _ensure_samsung_art_display_awake(art: Any) -> None:
+    """
+    Ensures the Samsung Frame TV stays in Art Mode without shutting off after ~30 seconds
+    due to Samsung's 'Night Mode' (brightness_sensor_setting='on') in evening/dim rooms.
+    """
+    try:
+        art.set_brightness_sensor_setting(False)
+    except Exception:
+        pass
+    try:
+        curr_mode = str(art.get_artmode()).lower()
+        if curr_mode not in ("on", "true", "1"):
+            art.set_artmode("on")
+    except Exception:
+        pass
+
+
 def _get_samsung_tv_client(ip: str, port: Optional[int] = None, timeout: float = 12.0):
     import re
     _ensure_samsung_nc_bridge_installed()
@@ -5828,9 +5878,8 @@ def _get_samsung_tv_client(ip: str, port: Optional[int] = None, timeout: float =
 def _connect_samsung_tv_art(ip: str, timeout: float = 8.0):
     """
     Connects to Samsung Frame TV art client with automatic dual-port fallback.
-    Tries secure port 8002 first. If connection fails, times out, or encounters
-    handshake/pairing errors (common on new laptops/Wi-Fi), falls back to port 8001.
-    Returns (tv_client, art_client, active_port).
+    Tries secure port 8002 first with full timeout. Only tries port 8001 briefly
+    if port 8002 failed. Returns (tv_client, art_client, active_port).
     """
     host = ip
     custom_port = None
@@ -5844,16 +5893,20 @@ def _connect_samsung_tv_art(ip: str, timeout: float = 8.0):
 
     ports = [custom_port] if custom_port else [8002, 8001]
     last_exc = None
-    per_port_timeout = max(3.0, timeout / len(ports)) if len(ports) > 1 else timeout
 
-    for p in ports:
+    for idx, p in enumerate(ports):
+        client = None
+        art = None
+        p_timeout = max(5.0, timeout) if idx == 0 else 3.0
         try:
-            client = _get_samsung_tv_client(host, port=p, timeout=per_port_timeout)
+            client = _get_samsung_tv_client(host, port=p, timeout=p_timeout)
             art = client.art()
             art.get_artmode()
             return client, art, p
         except Exception as exc:
-            last_exc = exc
+            _close_samsung_art_safely(art, client)
+            if idx == 0 or last_exc is None:
+                last_exc = exc
             logging.debug(f"Samsung TV ({host}:{p}) art connection attempt failed: {exc}")
             continue
 
@@ -5943,14 +5996,33 @@ async def get_samsung_tv_displays():
             # Stored local sync records for this TV (preserves user's custom sequence order!)
             # Matches by full ip key or clean host to guarantee sync data is never lost across ports
             local_tv_photos = []
+            deleted_cids_set = set()
             for k, v in sync_data.items():
                 if k == ip or (clean_host and k and k.split(":")[0].strip() == clean_host):
                     local_tv_photos = v.get("photos", [])
+                    deleted_cids_set.update(v.get("deleted_cids", []))
                     if local_tv_photos:
                         break
 
-            local_by_cid = {p.get("content_id"): p for p in local_tv_photos if p.get("content_id")}
-            local_order_map = {p.get("content_id"): idx for idx, p in enumerate(local_tv_photos) if p.get("content_id")}
+            # Ensure every local photo has its thumb_url and mat defaults populated
+            normalized_local_photos = []
+            for p in local_tv_photos:
+                rec = dict(p)
+                f_hash = rec.get("file_hash")
+                if f_hash and not rec.get("thumb_url"):
+                    rec["thumb_url"] = f"/previews_1600/{f_hash}.webp"
+                rec.setdefault("mat_mode", "studio")
+                rec.setdefault("mat_color", "#F4EFE6")
+                rec.setdefault("mat_placement", "slim_optical")
+                rec.setdefault("mat_aspect", "original")
+                rec.setdefault("mat_style", "single")
+                rec.setdefault("inner_mat_color", "#F4EFE6")
+                rec.setdefault("crop_x", 0.5)
+                rec.setdefault("crop_y", 0.5)
+                normalized_local_photos.append(rec)
+
+            local_by_cid = {p.get("content_id"): p for p in normalized_local_photos if p.get("content_id")}
+            local_order_map = {p.get("content_id"): idx for idx, p in enumerate(normalized_local_photos) if p.get("content_id")}
 
             if ip and clean_host:
                 # Fast HTTP probe first with socket & ping fallbacks to determine availability
@@ -5968,6 +6040,8 @@ async def get_samsung_tv_displays():
 
                 tv_lock = _get_tv_ws_lock(ip)
                 with tv_lock:
+                    tv_client = None
+                    art = None
                     try:
                         tv_client, art, active_port = _connect_samsung_tv_art(ip, timeout=8.0)
                         art_mode_res = art.get_artmode()
@@ -5984,9 +6058,12 @@ async def get_samsung_tv_displays():
                         try:
                             ss = art.get_slideshow_status()
                             if isinstance(ss, dict):
+                                raw_val = str(ss.get("value") or "").lower().strip()
+                                is_ss_on = raw_val not in ("", "off", "false", "0") and bool(ss.get("type") == "slideshow" or ss.get("category_id"))
+                                dur_parsed = int(raw_val) if raw_val.isdigit() else 15
                                 display_entry["slideshow"] = {
-                                    "status": True if ss.get("type") == "slideshow" or ss.get("category_id") else False,
-                                    "duration": int(ss.get("value") or 15),
+                                    "status": is_ss_on,
+                                    "duration": _snap_samsung_slideshow_duration(dur_parsed) or 15,
                                     "current": ss.get("current_content_id"),
                                 }
                         except Exception:
@@ -5995,64 +6072,47 @@ async def get_samsung_tv_displays():
                         try:
                             available_items = art.available()
                             if isinstance(available_items, list):
-                                merged_photos = []
-                                seen_cids = set()
+                                # Always include all normalized_local_photos in their exact curated order so
+                                # thumbnails NEVER go blank during the 30-60s Tizen takes to index new uploads!
+                                curated = list(normalized_local_photos)
+                                seen_cids = set(local_by_cid.keys()) | deleted_cids_set
+                                external = []
                                 for item in available_items:
                                     cid = item.get("content_id")
                                     if not cid or cid in seen_cids:
                                         continue
                                     # Skip built-in Samsung ROM artworks (e.g. SAM-S4509) that are not user uploads
-                                    if not str(cid).startswith("MY_F") and cid not in local_by_cid:
+                                    if not str(cid).startswith("MY_F"):
                                         continue
                                     seen_cids.add(cid)
-
-                                    # If we have full darkroom metadata saved for this content_id:
-                                    if cid in local_by_cid:
-                                        rec = dict(local_by_cid[cid])
-                                        f_hash = rec.get("file_hash")
-                                        if f_hash and not rec.get("thumb_url"):
-                                            rec["thumb_url"] = f"/previews_1600/{f_hash}.webp"
-                                        rec.setdefault("mat_mode", "studio")
-                                        rec.setdefault("mat_color", "#F4EFE6")
-                                        rec.setdefault("mat_placement", "slim_optical")
-                                        rec.setdefault("mat_aspect", "original")
-                                        rec.setdefault("mat_style", "single")
-                                        rec.setdefault("inner_mat_color", "#F4EFE6")
-                                        rec.setdefault("crop_x", 0.5)
-                                        rec.setdefault("crop_y", 0.5)
-                                        merged_photos.append(rec)
-                                    else:
-                                        merged_photos.append({
-                                            "content_id": cid,
-                                            "category_id": item.get("category_id"),
-                                            "title": f"TV Art ({cid})",
-                                            "filename": f"{cid}.jpg",
-                                            "shoot_date": item.get("image_date") or "Samsung Frame",
-                                            "star_rating": 5,
-                                            "width": item.get("width") or 3840,
-                                            "height": item.get("height") or 2160,
-                                            "is_external": True,
-                                        })
-                                curated = [p for p in merged_photos if p.get("thumb_url")]
-                                external = [p for p in merged_photos if not p.get("thumb_url")]
-                                # Preserve the exact custom sequence order stored in local_tv_photos
-                                curated.sort(key=lambda p: local_order_map.get(p.get("content_id"), 9999))
+                                    external.append({
+                                        "content_id": cid,
+                                        "category_id": item.get("category_id"),
+                                        "title": f"TV Art ({cid})",
+                                        "filename": f"{cid}.jpg",
+                                        "shoot_date": item.get("image_date") or "Samsung Frame",
+                                        "star_rating": 5,
+                                        "width": item.get("width") or 3840,
+                                        "height": item.get("height") or 2160,
+                                        "is_external": True,
+                                    })
                                 display_entry["photos"] = curated + external
                         except Exception as e_avail:
                             logging.warning(f"Error fetching art.available() for {ip}: {e_avail}")
-                            display_entry["photos"] = local_tv_photos
+                            display_entry["photos"] = normalized_local_photos
                     except Exception as e_conn:
                         logging.info(f"TV ({ip}) art connection warning: {e_conn}")
-                        # If TV accepts TCP socket on 8001/8002 or answers ping, it is unequivocally online!
                         if _is_host_port_open(clean_host, 8001, timeout=2.0) or _is_host_port_open(clean_host, 8002, timeout=2.0) or _is_host_pingable(clean_host):
                             display_entry["online"] = True
                             display_entry["art_mode"] = "standby"
                         else:
                             display_entry["online"] = False
-                        display_entry["photos"] = local_tv_photos
+                        display_entry["photos"] = normalized_local_photos
+                    finally:
+                        _close_samsung_art_safely(art, tv_client)
 
-                if not display_entry.get("photos") and local_tv_photos:
-                    display_entry["photos"] = local_tv_photos
+                if not display_entry.get("photos") and normalized_local_photos:
+                    display_entry["photos"] = normalized_local_photos
 
             displays.append(display_entry)
 
@@ -6111,11 +6171,16 @@ async def reorder_samsung_tv_art(payload: SamsungTvReorderArtRequest):
             if first_cid:
                 tv_lock = _get_tv_ws_lock(ip)
                 with tv_lock:
+                    tv_client = None
+                    art = None
                     try:
                         tv_client, art, _ = _connect_samsung_tv_art(ip, timeout=10.0)
+                        _ensure_samsung_art_display_awake(art)
                         art.select_image(first_cid, show=True)
                     except Exception as e_sel:
                         logging.warning(f"Could not select first reordered photo {first_cid}: {e_sel}")
+                    finally:
+                        _close_samsung_art_safely(art, tv_client)
 
         return {"status": "ok", "photos": new_photos}
 
@@ -6145,48 +6210,59 @@ async def purge_legacy_samsung_tv_art(payload: SamsungTvArtActionRequest):
     def _purge_sync():
         tv_lock = _get_tv_ws_lock(ip)
         with tv_lock:
-            tv_client, art, _ = _connect_samsung_tv_art(ip, timeout=15.0)
-            sync_data = _load_tv_sync_data()
-            tv_entry = _resolve_tv_sync_entry(sync_data, ip)
-            curated_cids = [p.get("content_id") for p in tv_entry.get("photos", []) if p.get("content_id")]
-            curated_set = set(curated_cids)
-
-            legacy_cids = []
+            tv_client = None
+            art = None
             try:
-                avail = art.available()
-                if isinstance(avail, list):
-                    seen = set()
-                    for item in avail:
-                        cid = item.get("content_id")
-                        if cid and cid not in seen and cid not in curated_set and str(cid).startswith("MY_F"):
-                            seen.add(cid)
-                            legacy_cids.append(cid)
-            except Exception as e_avail:
-                logging.warning(f"Error reading available items on {ip}: {e_avail}")
+                tv_client, art, _ = _connect_samsung_tv_art(ip, timeout=15.0)
+                sync_data = _load_tv_sync_data()
+                tv_entry = _resolve_tv_sync_entry(sync_data, ip)
+                curated_cids = [p.get("content_id") for p in tv_entry.get("photos", []) if p.get("content_id")]
+                curated_set = set(curated_cids)
 
-            if not legacy_cids:
-                return {"status": "ok", "purged_count": 0}
-
-            if curated_cids:
+                legacy_cids = []
                 try:
-                    art.select_image(curated_cids[0], show=True)
-                except Exception:
-                    pass
+                    avail = art.available()
+                    if isinstance(avail, list):
+                        seen = set()
+                        for item in avail:
+                            cid = item.get("content_id")
+                            if cid and cid not in seen and cid not in curated_set and str(cid).startswith("MY_F"):
+                                seen.add(cid)
+                                legacy_cids.append(cid)
+                except Exception as e_avail:
+                    logging.warning(f"Error reading available items on {ip}: {e_avail}")
 
-            purged_count = 0
-            try:
-                art.delete_list(legacy_cids)
-                purged_count = len(legacy_cids)
-            except Exception as e_batch:
-                logging.warning(f"Batch delete fallback on {ip}: {e_batch}")
-                for cid in legacy_cids:
+                if not legacy_cids:
+                    return {"status": "ok", "purged_count": 0}
+
+                if curated_cids:
                     try:
-                        art.delete(cid)
-                        purged_count += 1
-                    except Exception as e_del:
-                        logging.warning(f"Could not purge {cid} from {ip}: {e_del}")
+                        _ensure_samsung_art_display_awake(art)
+                        art.select_image(curated_cids[0], show=True)
+                    except Exception:
+                        pass
 
-            return {"status": "ok", "purged_count": purged_count}
+                purged_count = 0
+                try:
+                    art.delete_list(legacy_cids)
+                    purged_count = len(legacy_cids)
+                except Exception as e_batch:
+                    logging.warning(f"Batch delete fallback on {ip}: {e_batch}")
+                    for cid in legacy_cids:
+                        try:
+                            art.delete(cid)
+                            purged_count += 1
+                        except Exception as e_del:
+                            logging.warning(f"Could not purge {cid} from {ip}: {e_del}")
+
+                prev_deleted = set(tv_entry.get("deleted_cids", []))
+                prev_deleted.update(legacy_cids)
+                tv_entry["deleted_cids"] = list(prev_deleted)[-200:]
+                _save_tv_sync_data(sync_data)
+
+                return {"status": "ok", "purged_count": purged_count}
+            finally:
+                _close_samsung_art_safely(art, tv_client)
 
     try:
         res = await loop.run_in_executor(None, _purge_sync)
@@ -6214,28 +6290,37 @@ async def remove_samsung_tv_art(payload: SamsungTvArtActionRequest):
     def _delete_sync():
         tv_lock = _get_tv_ws_lock(ip)
         with tv_lock:
-            tv_client, art, _ = _connect_samsung_tv_art(ip, timeout=12.0)
-            sync_data = _load_tv_sync_data()
-            tv_entry = _resolve_tv_sync_entry(sync_data, ip)
-            remaining = [p for p in tv_entry.get("photos", []) if p.get("content_id") != cid]
-
-            if remaining:
-                try:
-                    curr = art.get_current()
-                    if isinstance(curr, dict) and curr.get("content_id") == cid:
-                        art.select_image(remaining[0]["content_id"], show=True)
-                except Exception:
-                    pass
-
+            tv_client = None
+            art = None
             try:
-                art.delete(cid)
-            except Exception as e_del:
-                logging.warning(f"TV delete warning for {cid} on {ip}: {e_del}")
+                tv_client, art, _ = _connect_samsung_tv_art(ip, timeout=12.0)
+                sync_data = _load_tv_sync_data()
+                tv_entry = _resolve_tv_sync_entry(sync_data, ip)
+                remaining = [p for p in tv_entry.get("photos", []) if p.get("content_id") != cid]
 
-            tv_entry["photos"] = remaining
-            _save_tv_sync_data(sync_data)
+                if remaining:
+                    try:
+                        curr = art.get_current()
+                        if isinstance(curr, dict) and curr.get("content_id") == cid:
+                            _ensure_samsung_art_display_awake(art)
+                            art.select_image(remaining[0]["content_id"], show=True)
+                    except Exception:
+                        pass
 
-            return {"status": "ok", "content_id": cid}
+                try:
+                    art.delete(cid)
+                except Exception as e_del:
+                    logging.warning(f"TV delete warning for {cid} on {ip}: {e_del}")
+
+                tv_entry["photos"] = remaining
+                prev_deleted = set(tv_entry.get("deleted_cids", []))
+                prev_deleted.add(cid)
+                tv_entry["deleted_cids"] = list(prev_deleted)[-200:]
+                _save_tv_sync_data(sync_data)
+
+                return {"status": "ok", "content_id": cid, "photos": remaining}
+            finally:
+                _close_samsung_art_safely(art, tv_client)
 
     try:
         res = await loop.run_in_executor(None, _delete_sync)
@@ -6262,9 +6347,15 @@ async def select_samsung_tv_art(payload: SamsungTvArtActionRequest):
     def _select_sync():
         tv_lock = _get_tv_ws_lock(ip)
         with tv_lock:
-            tv_client, art, _ = _connect_samsung_tv_art(ip, timeout=10.0)
-            art.select_image(cid, show=True)
-            return {"status": "ok", "content_id": cid}
+            tv_client = None
+            art = None
+            try:
+                tv_client, art, _ = _connect_samsung_tv_art(ip, timeout=10.0)
+                _ensure_samsung_art_display_awake(art)
+                art.select_image(cid, show=True)
+                return {"status": "ok", "content_id": cid}
+            finally:
+                _close_samsung_art_safely(art, tv_client)
 
     try:
         res = await loop.run_in_executor(None, _select_sync)
@@ -6291,9 +6382,16 @@ async def set_samsung_tv_art_mode(payload: SamsungTvPowerRequest):
     def _artmode_sync():
         tv_lock = _get_tv_ws_lock(ip)
         with tv_lock:
+            tv_client = None
+            art = None
             try:
                 tv_client, art, _ = _connect_samsung_tv_art(ip, timeout=8.0)
                 target_val = "on" if mode == "on" else "off"
+                if target_val == "on":
+                    try:
+                        art.set_brightness_sensor_setting(False)
+                    except Exception:
+                        pass
                 try:
                     curr = str(art.get_artmode()).lower()
                     if curr == target_val:
@@ -6305,6 +6403,8 @@ async def set_samsung_tv_art_mode(payload: SamsungTvPowerRequest):
             except Exception as e:
                 logging.warning(f"Art mode set warning for {ip}: {e}")
                 return {"status": "warning", "message": str(e), "mode": mode}
+            finally:
+                _close_samsung_art_safely(art, tv_client)
 
     res = await loop.run_in_executor(None, _artmode_sync)
     return res
@@ -6316,7 +6416,8 @@ async def set_samsung_tv_slideshow(payload: SamsungTvSlideshowRequest):
     Configures or toggles the persistent Samsung Frame TV slideshow.
     """
     ip = payload.ip.strip()
-    dur = int(payload.duration or 15)
+    raw_dur = int(payload.duration or 15)
+    dur = _snap_samsung_slideshow_duration(raw_dur) or 15
     status_on = payload.status.strip().lower() == "on"
 
     loop = asyncio.get_running_loop()
@@ -6324,39 +6425,26 @@ async def set_samsung_tv_slideshow(payload: SamsungTvSlideshowRequest):
     def _slideshow_sync():
         tv_lock = _get_tv_ws_lock(ip)
         with tv_lock:
-            tv_client, art, _ = _connect_samsung_tv_art(ip, timeout=12.0)
-
+            tv_client = None
+            art = None
             try:
-                art_status = art.get_artmode()
-                if str(art_status).lower() not in ("on", "true", "1"):
-                    art.set_artmode(True)
-                    time.sleep(0.4)
-            except Exception:
-                pass
+                tv_client, art, _ = _connect_samsung_tv_art(ip, timeout=12.0)
+                _ensure_samsung_art_display_awake(art)
 
-            cats_to_try = ["MY-C0002", "MY-C0008", "MY-C0004"]
-            last_err = None
-
-            if status_on:
-                success = False
-                for cat in cats_to_try:
+                if status_on:
                     try:
-                        art.set_slideshow_status(duration=dur, type=False, category_id=cat)
-                        success = True
-                        break
+                        art.set_slideshow_status(duration=dur, type=False, category_id="MY-C0002")
                     except Exception as e:
-                        last_err = e
-                if not success and last_err:
-                    logging.warning(f"Error setting slideshow duration={dur} on TV ({ip}): {last_err}")
-                    return {"status": "warning", "message": f"TV slideshow setup: {last_err}", "duration": dur}
-            else:
-                for cat in cats_to_try:
+                        logging.warning(f"Error setting slideshow duration={dur} on TV ({ip}): {e}")
+                        return {"status": "warning", "message": f"TV slideshow setup: {e}", "duration": dur}
+                else:
                     try:
-                        art.set_slideshow_status(duration=0, type=False, category_id=cat)
-                        break
+                        art.set_slideshow_status(duration=0, type=False, category_id="MY-C0002")
                     except Exception:
                         pass
-            return {"status": "ok", "slideshow_status": "on" if status_on else "off", "duration": dur}
+                return {"status": "ok", "slideshow_status": "on" if status_on else "off", "duration": dur}
+            finally:
+                _close_samsung_art_safely(art, tv_client)
 
     try:
         res = await loop.run_in_executor(None, _slideshow_sync)
@@ -6392,7 +6480,18 @@ async def update_samsung_tv_art_mat(payload: SamsungTvUpdateMatRequest):
             if payload.apply_to_all:
                 if not photos_list:
                     raise RuntimeError("No curated photos registered on this TV.")
-                targets = list(photos_list)
+                # Put the currently edited photo FIRST in upload order so the TV screen switches
+                # to the new mat in ~2.5s without ever going blank during bulk updates!
+                priority = []
+                rest = []
+                for p in photos_list:
+                    if (payload.content_id and p.get("content_id") == payload.content_id) or (
+                        not priority and payload.file_hash and p.get("file_hash") == payload.file_hash
+                    ):
+                        priority.append(p)
+                    else:
+                        rest.append(p)
+                targets = priority + rest
             else:
                 # Match exact content_id first so duplicate file_hash entries aren't all uploaded at once
                 targets = [
@@ -6430,90 +6529,108 @@ async def update_samsung_tv_art_mat(payload: SamsungTvUpdateMatRequest):
                 if not targets:
                     raise RuntimeError(f"Photo {payload.content_id or payload.file_hash} not found in TV curation registry.")
 
-            tv_client, art, _ = _connect_samsung_tv_art(ip, timeout=35.0)
+            tv_client = None
+            art = None
+            try:
+                tv_client, art, _ = _connect_samsung_tv_art(ip, timeout=35.0)
+                _ensure_samsung_art_display_awake(art)
 
-            updated_cids = []
-            old_cids_to_delete = []
+                updated_cids = []
+                old_cids_to_delete = []
+                selected_hero = False
 
-            for p_rec in targets:
-                f_hash = p_rec.get("file_hash") or ""
-                f_path = p_rec.get("file_path") or ""
-                old_cid = p_rec.get("content_id")
+                for p_rec in targets:
+                    f_hash = p_rec.get("file_hash") or ""
+                    f_path = p_rec.get("file_path") or ""
+                    old_cid = p_rec.get("content_id")
 
-                im_rgb = _load_tv_source_image(f_path, f_hash)
-                if im_rgb is None:
-                    continue
+                    im_rgb = _load_tv_source_image(f_path, f_hash)
+                    if im_rgb is None:
+                        continue
 
-                effective_placement = "none" if payload.mat_mode == "none" else (payload.mat_placement or "slim_optical")
-                tv_4k = generate_fine_art_mat(
-                    im_rgb,
-                    color_hex=payload.mat_color or "#F4EFE6",
-                    placement=effective_placement,
-                    aspect_ratio=payload.mat_aspect or "original",
-                    crop_x=payload.crop_x if payload.crop_x is not None else 0.5,
-                    crop_y=payload.crop_y if payload.crop_y is not None else 0.5,
-                    mat_style=payload.mat_style or "single",
-                    inner_mat_color=payload.inner_mat_color or "#F4EFE6",
-                    canvas_w=3840,
-                    canvas_h=2160,
-                )
+                    effective_placement = "none" if payload.mat_mode == "none" else (payload.mat_placement or "slim_optical")
+                    tv_4k = generate_fine_art_mat(
+                        im_rgb,
+                        color_hex=payload.mat_color or "#F4EFE6",
+                        placement=effective_placement,
+                        aspect_ratio=payload.mat_aspect or "original",
+                        crop_x=payload.crop_x if payload.crop_x is not None else 0.5,
+                        crop_y=payload.crop_y if payload.crop_y is not None else 0.5,
+                        mat_style=payload.mat_style or "single",
+                        inner_mat_color=payload.inner_mat_color or "#F4EFE6",
+                        canvas_w=3840,
+                        canvas_h=2160,
+                    )
 
-                buf = io.BytesIO()
-                tv_4k.save(buf, format="JPEG", quality=94, subsampling=0, progressive=False)
-                new_cid = None
-                for attempt in range(2):
-                    try:
-                        new_cid = art.upload(buf.getvalue(), file_type="JPEG", matte="none")
-                        break
-                    except Exception as e_up:
-                        if attempt == 0:
-                            time.sleep(0.5)
-                            tv_client, art, _ = _connect_samsung_tv_art(ip, timeout=35.0)
-                        else:
-                            raise e_up
-
-                if new_cid:
-                    if old_cid and old_cid != new_cid:
-                        old_cids_to_delete.append(old_cid)
-                    p_rec["content_id"] = new_cid
-                    p_rec["mat_mode"] = payload.mat_mode
-                    p_rec["mat_color"] = payload.mat_color
-                    p_rec["mat_placement"] = effective_placement
-                    p_rec["mat_aspect"] = payload.mat_aspect or "original"
-                    p_rec["mat_style"] = payload.mat_style or "single"
-                    p_rec["inner_mat_color"] = payload.inner_mat_color or "#F4EFE6"
-                    p_rec["crop_x"] = float(payload.crop_x if payload.crop_x is not None else 0.5)
-                    p_rec["crop_y"] = float(payload.crop_y if payload.crop_y is not None else 0.5)
-                    p_rec["uploaded_at"] = datetime.now().isoformat()
-                    updated_cids.append(new_cid)
-
-            if not updated_cids:
-                raise RuntimeError("Could not load high-resolution preview or source image for the selected photo.")
-
-            _save_tv_sync_data(sync_data)
-
-            if updated_cids:
-                try:
-                    art.select_image(updated_cids[0], show=True)
-                except Exception as e_sel:
-                    logging.warning(f"Could not select updated TV image {updated_cids[0]}: {e_sel}")
-
-            if old_cids_to_delete:
-                try:
-                    art.delete_list(old_cids_to_delete)
-                except Exception:
-                    for ocid in old_cids_to_delete:
+                    buf = io.BytesIO()
+                    tv_4k.save(buf, format="JPEG", quality=94, subsampling=0, progressive=False)
+                    new_cid = None
+                    for attempt in range(2):
                         try:
-                            art.delete(ocid)
-                        except Exception:
-                            pass
+                            new_cid = art.upload(buf.getvalue(), file_type="JPEG", matte="none")
+                            break
+                        except Exception as e_up:
+                            if attempt == 0:
+                                _close_samsung_art_safely(art, tv_client)
+                                time.sleep(0.5)
+                                tv_client, art, _ = _connect_samsung_tv_art(ip, timeout=35.0)
+                            else:
+                                raise e_up
 
-            return {
-                "status": "ok",
-                "updated_count": len(updated_cids),
-                "new_content_id": updated_cids[0] if updated_cids else None,
-                "photos": current_sync_tv["photos"],
-            }
+                    if new_cid:
+                        if old_cid and old_cid != new_cid:
+                            old_cids_to_delete.append(old_cid)
+                        p_rec["content_id"] = new_cid
+                        p_rec["mat_mode"] = payload.mat_mode
+                        p_rec["mat_color"] = payload.mat_color
+                        p_rec["mat_placement"] = effective_placement
+                        p_rec["mat_aspect"] = payload.mat_aspect or "original"
+                        p_rec["mat_style"] = payload.mat_style or "single"
+                        p_rec["inner_mat_color"] = payload.inner_mat_color or "#F4EFE6"
+                        p_rec["crop_x"] = float(payload.crop_x if payload.crop_x is not None else 0.5)
+                        p_rec["crop_y"] = float(payload.crop_y if payload.crop_y is not None else 0.5)
+                        if f_hash and not p_rec.get("thumb_url"):
+                            p_rec["thumb_url"] = f"/previews_1600/{f_hash}.webp"
+                        p_rec["uploaded_at"] = datetime.now().isoformat()
+                        updated_cids.append(new_cid)
+
+                        # Display the very first updated artwork immediately on the TV so the screen
+                        # updates within ~2.5s and never goes blank during a multi-photo batch!
+                        if not selected_hero:
+                            try:
+                                art.select_image(new_cid, show=True)
+                                selected_hero = True
+                            except Exception as e_sel:
+                                logging.warning(f"Could not select updated TV image {new_cid}: {e_sel}")
+
+                if not updated_cids:
+                    raise RuntimeError("Could not load high-resolution preview or source image for the selected photo.")
+
+                if old_cids_to_delete:
+                    prev_deleted = set(current_sync_tv.get("deleted_cids", []))
+                    prev_deleted.update(old_cids_to_delete)
+                    current_sync_tv["deleted_cids"] = list(prev_deleted)[-200:]
+
+                _save_tv_sync_data(sync_data)
+
+                if old_cids_to_delete:
+                    try:
+                        art.delete_list(old_cids_to_delete)
+                    except Exception:
+                        for ocid in old_cids_to_delete:
+                            try:
+                                art.delete(ocid)
+                            except Exception:
+                                pass
+
+                return {
+                    "status": "ok",
+                    "updated_count": len(updated_cids),
+                    "new_content_id": updated_cids[0] if updated_cids else None,
+                    "photos": current_sync_tv["photos"],
+                }
+            finally:
+                _close_samsung_art_safely(art, tv_client)
 
     try:
         res = await loop.run_in_executor(None, _update_mat_worker)
@@ -6575,108 +6692,119 @@ async def sync_collection_to_samsung_tv(payload: SamsungTvSyncCollectionRequest)
 
         tv_lock = _get_tv_ws_lock(ip)
         with tv_lock:
-            tv_client, art, _ = _connect_samsung_tv_art(ip, timeout=35.0)
+            tv_client = None
+            art = None
+            try:
+                tv_client, art, _ = _connect_samsung_tv_art(ip, timeout=35.0)
+                _ensure_samsung_art_display_awake(art)
 
-            sync_data = _load_tv_sync_data()
-            current_sync_tv = _resolve_tv_sync_entry(sync_data, ip)
+                sync_data = _load_tv_sync_data()
+                current_sync_tv = _resolve_tv_sync_entry(sync_data, ip)
 
-            old_cids_to_delete = []
-            if payload.mode == "overwrite":
-                old_cids_to_delete = [p.get("content_id") for p in current_sync_tv.get("photos", []) if p.get("content_id")]
-                current_sync_tv["photos"] = []
+                old_cids_to_delete = []
+                if payload.mode == "overwrite":
+                    old_cids_to_delete = [p.get("content_id") for p in current_sync_tv.get("photos", []) if p.get("content_id")]
+                    current_sync_tv["photos"] = []
 
-            uploaded_records = []
-            effective_placement = "none" if payload.mat_mode == "none" else (payload.mat_placement or "slim_optical")
+                uploaded_records = []
+                effective_placement = "none" if payload.mat_mode == "none" else (payload.mat_placement or "slim_optical")
+                selected_hero = False
 
-            for idx, row in enumerate(target_rows, 1):
-                f_hash = row.get("file_hash") or ""
-                src_path = row.get("file_path")
-                im_rgb = _load_tv_source_image(src_path, f_hash, row.get("catalog_name"))
-                if im_rgb is None:
-                    continue
+                for idx, row in enumerate(target_rows, 1):
+                    f_hash = row.get("file_hash") or ""
+                    src_path = row.get("file_path")
+                    im_rgb = _load_tv_source_image(src_path, f_hash, row.get("catalog_name"))
+                    if im_rgb is None:
+                        continue
 
-                tv_4k = generate_fine_art_mat(
-                    im_rgb,
-                    color_hex=payload.mat_color or "#F4EFE6",
-                    placement=effective_placement,
-                    aspect_ratio=payload.mat_aspect or "original",
-                    crop_x=payload.crop_x if payload.crop_x is not None else 0.5,
-                    crop_y=payload.crop_y if payload.crop_y is not None else 0.5,
-                    mat_style=payload.mat_style or "single",
-                    inner_mat_color=payload.inner_mat_color or "#F4EFE6",
-                    canvas_w=3840,
-                    canvas_h=2160,
-                )
+                    tv_4k = generate_fine_art_mat(
+                        im_rgb,
+                        color_hex=payload.mat_color or "#F4EFE6",
+                        placement=effective_placement,
+                        aspect_ratio=payload.mat_aspect or "original",
+                        crop_x=payload.crop_x if payload.crop_x is not None else 0.5,
+                        crop_y=payload.crop_y if payload.crop_y is not None else 0.5,
+                        mat_style=payload.mat_style or "single",
+                        inner_mat_color=payload.inner_mat_color or "#F4EFE6",
+                        canvas_w=3840,
+                        canvas_h=2160,
+                    )
 
-                buf = io.BytesIO()
-                tv_4k.save(buf, format="JPEG", quality=94, subsampling=0, progressive=False)
-                cid = art.upload(buf.getvalue(), file_type="JPEG", matte="none")
+                    buf = io.BytesIO()
+                    tv_4k.save(buf, format="JPEG", quality=94, subsampling=0, progressive=False)
+                    cid = art.upload(buf.getvalue(), file_type="JPEG", matte="none")
 
-                if cid:
-                    # If additive mode replaces an existing entry for the same file_hash, delete its old plate
-                    if payload.mode != "overwrite" and f_hash:
-                        existing_same_hash = [p for p in current_sync_tv["photos"] if p.get("file_hash") == f_hash]
-                        for ex in existing_same_hash:
-                            ex_cid = ex.get("content_id")
-                            if ex_cid and ex_cid != cid:
-                                old_cids_to_delete.append(ex_cid)
-                        current_sync_tv["photos"] = [p for p in current_sync_tv["photos"] if p.get("file_hash") != f_hash]
+                    if cid:
+                        if payload.mode != "overwrite" and f_hash:
+                            existing_same_hash = [p for p in current_sync_tv["photos"] if p.get("file_hash") == f_hash]
+                            for ex in existing_same_hash:
+                                ex_cid = ex.get("content_id")
+                                if ex_cid and ex_cid != cid:
+                                    old_cids_to_delete.append(ex_cid)
+                            current_sync_tv["photos"] = [p for p in current_sync_tv["photos"] if p.get("file_hash") != f_hash]
 
-                    photo_entry = {
-                        "content_id": cid,
-                        "file_hash": f_hash,
-                        "file_path": row.get("file_path"),
-                        "filename": Path(row.get("file_path") or "photo.jpg").name,
-                        "title": row.get("title") or Path(row.get("file_path") or "photo.jpg").stem,
-                        "shoot_date": row.get("shoot_date") or "",
-                        "star_rating": int(row.get("star_rating") or 0),
-                        "mat_mode": payload.mat_mode,
-                        "mat_color": payload.mat_color,
-                        "mat_placement": effective_placement,
-                        "mat_aspect": payload.mat_aspect or "original",
-                        "mat_style": payload.mat_style or "single",
-                        "inner_mat_color": payload.inner_mat_color or "#F4EFE6",
-                        "crop_x": float(payload.crop_x if payload.crop_x is not None else 0.5),
-                        "crop_y": float(payload.crop_y if payload.crop_y is not None else 0.5),
-                        "thumb_url": f"/previews_1600/{f_hash}.webp" if f_hash else None,
-                        "uploaded_at": datetime.now().isoformat(),
-                    }
-                    uploaded_records.append(photo_entry)
-                    current_sync_tv["photos"].append(photo_entry)
+                        photo_entry = {
+                            "content_id": cid,
+                            "file_hash": f_hash,
+                            "file_path": row.get("file_path"),
+                            "filename": Path(row.get("file_path") or "photo.jpg").name,
+                            "title": row.get("title") or Path(row.get("file_path") or "photo.jpg").stem,
+                            "shoot_date": row.get("shoot_date") or "",
+                            "star_rating": int(row.get("star_rating") or 0),
+                            "mat_mode": payload.mat_mode,
+                            "mat_color": payload.mat_color,
+                            "mat_placement": effective_placement,
+                            "mat_aspect": payload.mat_aspect or "original",
+                            "mat_style": payload.mat_style or "single",
+                            "inner_mat_color": payload.inner_mat_color or "#F4EFE6",
+                            "crop_x": float(payload.crop_x if payload.crop_x is not None else 0.5),
+                            "crop_y": float(payload.crop_y if payload.crop_y is not None else 0.5),
+                            "thumb_url": f"/previews_1600/{f_hash}.webp" if f_hash else None,
+                            "uploaded_at": datetime.now().isoformat(),
+                        }
+                        uploaded_records.append(photo_entry)
+                        current_sync_tv["photos"].append(photo_entry)
 
-            _save_tv_sync_data(sync_data)
-
-            if uploaded_records:
-                try:
-                    art.select_image(uploaded_records[0]["content_id"], show=True)
-                except Exception as e_sel:
-                    logging.warning(f"Error selecting active TV art: {e_sel}")
+                        if not selected_hero:
+                            try:
+                                art.select_image(cid, show=True)
+                                selected_hero = True
+                            except Exception as e_sel:
+                                logging.warning(f"Error selecting active TV art: {e_sel}")
 
                 if old_cids_to_delete:
-                    try:
-                        art.delete_list(old_cids_to_delete)
-                    except Exception:
-                        for ocid in old_cids_to_delete:
-                            try:
-                                art.delete(ocid)
-                            except Exception:
-                                pass
+                    prev_deleted = set(current_sync_tv.get("deleted_cids", []))
+                    prev_deleted.update(old_cids_to_delete)
+                    current_sync_tv["deleted_cids"] = list(prev_deleted)[-200:]
 
-                dur_m = int(payload.slideshow_minutes or 15)
-                if len(current_sync_tv["photos"]) > 1 or dur_m > 0:
-                    for cat in ["MY-C0002", "MY-C0008", "MY-C0004"]:
+                _save_tv_sync_data(sync_data)
+
+                if uploaded_records:
+                    if old_cids_to_delete:
                         try:
-                            art.set_slideshow_status(duration=dur_m, type=False, category_id=cat)
-                            break
+                            art.delete_list(old_cids_to_delete)
                         except Exception:
-                            pass
+                            for ocid in old_cids_to_delete:
+                                try:
+                                    art.delete(ocid)
+                                except Exception:
+                                    pass
 
-            return {
-                "status": "ok",
-                "uploaded_count": len(uploaded_records),
-                "total_on_tv": len(current_sync_tv["photos"]),
-                "photos": current_sync_tv["photos"],
-            }
+                    dur_m = _snap_samsung_slideshow_duration(payload.slideshow_minutes or 15)
+                    if len(current_sync_tv["photos"]) > 1 and dur_m > 0:
+                        try:
+                            art.set_slideshow_status(duration=dur_m, type=False, category_id="MY-C0002")
+                        except Exception as e_ss:
+                            logging.warning(f"Slideshow status warning on {ip}: {e_ss}")
+
+                return {
+                    "status": "ok",
+                    "uploaded_count": len(uploaded_records),
+                    "total_on_tv": len(current_sync_tv["photos"]),
+                    "photos": current_sync_tv["photos"],
+                }
+            finally:
+                _close_samsung_art_safely(art, tv_client)
 
     try:
         res = await loop.run_in_executor(None, _sync_worker)
@@ -7001,13 +7129,16 @@ def _run_batch_export_worker(
 
             src_to_load = None
             used_source = "master"
+            f_hash = p.get("file_hash") or ""
             alt_2tb = Path("/Volumes/2TB_Archive/Aerial Keepers/Keepers Images") / orig_fp.name if orig_fp.name else None
             p16_cand = Path(p["preview_1600_path"]) if p.get("preview_1600_path") else None
             if p16_cand and not p16_cand.is_absolute():
                 p16_cand = DATA_VAULT_DIR / p16_cand
+            p16_hash_cand = DEFAULT_PREVIEWS_1600_DIR / f"{f_hash}.webp" if f_hash else None
             t36_cand = Path(p["thumb_360_path"]) if p.get("thumb_360_path") else None
             if t36_cand and not t36_cand.is_absolute():
                 t36_cand = DATA_VAULT_DIR / t36_cand
+            t36_hash_cand = DEFAULT_THUMBS_360_DIR / f"{f_hash}.webp" if f_hash else None
 
             if orig_fp.exists():
                 src_to_load = orig_fp
@@ -7019,8 +7150,14 @@ def _run_batch_export_worker(
             elif p16_cand and p16_cand.exists():
                 src_to_load = p16_cand
                 used_source = "preview_1600"
+            elif p16_hash_cand and p16_hash_cand.exists():
+                src_to_load = p16_hash_cand
+                used_source = "preview_1600"
             elif t36_cand and t36_cand.exists():
                 src_to_load = t36_cand
+                used_source = "thumb_360"
+            elif t36_hash_cand and t36_hash_cand.exists():
+                src_to_load = t36_hash_cand
                 used_source = "thumb_360"
 
             if not src_to_load or not src_to_load.exists():
@@ -7333,98 +7470,114 @@ def _run_batch_export_worker(
         samsung_tv_uploaded_ids: List[str] = []
         if is_samsung_tv and exported_files and not cancelled_early:
             try:
-                import re
-                from samsungtvws import SamsungTVWS
-                token_clean = re.sub(r'[^a-zA-Z0-9_\-]', '_', resolved_tv_ip)
-                token_path = str(DATA_VAULT_DIR / f"samsung_tv_{token_clean}_token.txt")
-
-                tv_host = resolved_tv_ip
-                tv_port = 8002
-                if ":" in resolved_tv_ip:
-                    parts = resolved_tv_ip.split(":", 1)
-                    tv_host = parts[0].strip()
-                    try:
-                        tv_port = int(parts[1].strip())
-                    except Exception:
-                        tv_port = 8002
-
+                tv_host = resolved_tv_ip.split(":", 1)[0].strip() if ":" in resolved_tv_ip else resolved_tv_ip
                 with _get_tv_ws_lock(tv_host):
-                    tv = SamsungTVWS(host=tv_host, port=tv_port, token_file=token_path, timeout=35, name="MR Darkroom Studio")
-                    art = tv.art()
-                    sync_data = _load_tv_sync_data()
-                    tv_sync_entry = sync_data.setdefault(tv_host, {"ip": tv_host, "photos": []})
-                    if not isinstance(tv_sync_entry.get("photos"), list):
-                        tv_sync_entry["photos"] = []
+                    tv_client = None
+                    art = None
+                    try:
+                        tv_client, art, _ = _connect_samsung_tv_art(resolved_tv_ip, timeout=35.0)
+                        _ensure_samsung_art_display_awake(art)
+                        sync_data = _load_tv_sync_data()
+                        tv_sync_entry = _resolve_tv_sync_entry(sync_data, resolved_tv_ip)
 
-                    effective_placement = "none" if mat_mode == "none" else (mat_placement or "optical_center")
+                        effective_placement = "none" if mat_mode == "none" else (mat_placement or "optical_center")
+                        old_cids_to_delete: List[str] = []
 
-                    for s_idx, exp_f in enumerate(exported_files, 1):
-                        if not JOB_MANAGER.check_pause_or_cancel():
-                            break
-                        JOB_MANAGER.update_progress(
-                            processed=s_idx,
-                            total=len(exported_files),
-                            current_file=exp_f["filename"],
-                            phase=f"Pushing [{s_idx}/{len(exported_files)}] to Samsung TV ({resolved_tv_ip})...",
-                        )
-                        p_rec = exp_f.get("photo_record") or {}
-                        with Image.open(exp_f["path"]) as tv_im:
-                            tv_im_rgb = tv_im.convert("RGB")
-                            if mode == "tv_showcase":
-                                tv_4k = tv_im_rgb.resize((3840, 2160), resample=Image.Resampling.LANCZOS)
-                            else:
-                                tv_4k = generate_fine_art_mat(
-                                    tv_im_rgb,
-                                    color_hex=mat_color or "#F4EFE6",
-                                    placement=effective_placement,
-                                    aspect_ratio=mat_aspect or "original",
-                                    mat_style=mat_style or "single",
-                                    inner_mat_color=inner_mat_color or "#F4EFE6",
-                                    canvas_w=3840,
-                                    canvas_h=2160,
-                                )
+                        for s_idx, exp_f in enumerate(exported_files, 1):
+                            if not JOB_MANAGER.check_pause_or_cancel():
+                                break
+                            JOB_MANAGER.update_progress(
+                                processed=s_idx,
+                                total=len(exported_files),
+                                current_file=exp_f["filename"],
+                                phase=f"Pushing [{s_idx}/{len(exported_files)}] to Samsung TV ({resolved_tv_ip})...",
+                            )
+                            p_rec = exp_f.get("photo_record") or {}
+                            with Image.open(exp_f["path"]) as tv_im:
+                                tv_im_rgb = tv_im.convert("RGB")
+                                if mode == "tv_showcase":
+                                    tv_4k = tv_im_rgb.resize((3840, 2160), resample=Image.Resampling.LANCZOS)
+                                else:
+                                    tv_4k = generate_fine_art_mat(
+                                        tv_im_rgb,
+                                        color_hex=mat_color or "#F4EFE6",
+                                        placement=effective_placement,
+                                        aspect_ratio=mat_aspect or "original",
+                                        mat_style=mat_style or "single",
+                                        inner_mat_color=inner_mat_color or "#F4EFE6",
+                                        canvas_w=3840,
+                                        canvas_h=2160,
+                                    )
 
-                            buf = io.BytesIO()
-                            tv_4k.save(buf, format="JPEG", quality=94, subsampling=0, progressive=False)
-                            cid = art.upload(buf.getvalue(), file_type="JPEG", matte="none")
-                            if cid:
-                                samsung_tv_uploaded_ids.append(cid)
-                                f_hash = p_rec.get("file_hash")
-                                crop_cfg = (
-                                    (crops or {}).get(f_hash)
-                                    or (crops or {}).get(p_rec.get("file_path"))
-                                    or {}
-                                )
-                                tv_sync_entry["photos"].append({
-                                    "content_id": cid,
-                                    "file_hash": f_hash,
-                                    "file_path": p_rec.get("file_path"),
-                                    "filename": Path(p_rec.get("file_path") or exp_f["filename"]).name,
-                                    "title": p_rec.get("title") or Path(p_rec.get("file_path") or exp_f["filename"]).stem,
-                                    "shoot_date": p_rec.get("exif_time") or "",
-                                    "star_rating": int(p_rec.get("star_rating") or 0),
-                                    "mat_mode": mat_mode or "studio",
-                                    "mat_color": mat_color or "#F4EFE6",
-                                    "mat_placement": effective_placement,
-                                    "mat_aspect": mat_aspect or "original",
-                                    "mat_style": mat_style or "single",
-                                    "inner_mat_color": inner_mat_color or "#F4EFE6",
-                                    "crop_x": float(crop_cfg.get("norm_x", 0.5)),
-                                    "crop_y": float(crop_cfg.get("norm_y", 0.5)),
-                                    "thumb_url": f"/previews_1600/{f_hash}.webp" if f_hash else None,
-                                    "uploaded_at": datetime.now().isoformat(),
-                                })
+                                buf = io.BytesIO()
+                                tv_4k.save(buf, format="JPEG", quality=94, subsampling=0, progressive=False)
+                                cid = art.upload(buf.getvalue(), file_type="JPEG", matte="none")
+                                if cid:
+                                    samsung_tv_uploaded_ids.append(cid)
+                                    f_hash = p_rec.get("file_hash")
+                                    if f_hash:
+                                        existing_same_hash = [p for p in tv_sync_entry["photos"] if p.get("file_hash") == f_hash]
+                                        for ex in existing_same_hash:
+                                            ex_cid = ex.get("content_id")
+                                            if ex_cid and ex_cid != cid:
+                                                old_cids_to_delete.append(ex_cid)
+                                        tv_sync_entry["photos"] = [p for p in tv_sync_entry["photos"] if p.get("file_hash") != f_hash]
+                                    crop_cfg = (
+                                        (crops or {}).get(f_hash)
+                                        or (crops or {}).get(p_rec.get("file_path"))
+                                        or {}
+                                    )
+                                    tv_sync_entry["photos"].append({
+                                        "content_id": cid,
+                                        "file_hash": f_hash,
+                                        "file_path": p_rec.get("file_path"),
+                                        "filename": Path(p_rec.get("file_path") or exp_f["filename"]).name,
+                                        "title": p_rec.get("title") or Path(p_rec.get("file_path") or exp_f["filename"]).stem,
+                                        "shoot_date": p_rec.get("exif_time") or "",
+                                        "star_rating": int(p_rec.get("star_rating") or 0),
+                                        "mat_mode": mat_mode or "studio",
+                                        "mat_color": mat_color or "#F4EFE6",
+                                        "mat_placement": effective_placement,
+                                        "mat_aspect": mat_aspect or "original",
+                                        "mat_style": mat_style or "single",
+                                        "inner_mat_color": inner_mat_color or "#F4EFE6",
+                                        "crop_x": float(crop_cfg.get("norm_x", 0.5)),
+                                        "crop_y": float(crop_cfg.get("norm_y", 0.5)),
+                                        "thumb_url": f"/previews_1600/{f_hash}.webp" if f_hash else None,
+                                        "uploaded_at": datetime.now().isoformat(),
+                                    })
+                                    if len(samsung_tv_uploaded_ids) == 1:
+                                        try:
+                                            art.select_image(cid, show=True)
+                                        except Exception:
+                                            pass
 
-                    _save_tv_sync_data(sync_data)
+                        if old_cids_to_delete:
+                            prev_deleted = set(tv_sync_entry.get("deleted_cids", []))
+                            prev_deleted.update(old_cids_to_delete)
+                            tv_sync_entry["deleted_cids"] = list(prev_deleted)[-200:]
 
-                    if samsung_tv_uploaded_ids:
-                        art.select_image(samsung_tv_uploaded_ids[0], show=True)
-                        dur_mins = int(slideshow_minutes) if (slideshow_minutes is not None and int(slideshow_minutes) > 0) else 15
-                        if len(samsung_tv_uploaded_ids) > 1 or dur_mins > 0:
+                        _save_tv_sync_data(sync_data)
+
+                        if old_cids_to_delete:
                             try:
-                                art.set_slideshow_status(duration=dur_mins, type=False, category_id="MY-C0002")
-                            except Exception as e_ss:
-                                logging.warning(f"Samsung TV set_slideshow_status warning: {e_ss}")
+                                art.delete_list(old_cids_to_delete)
+                            except Exception:
+                                for ocid in old_cids_to_delete:
+                                    try:
+                                        art.delete(ocid)
+                                    except Exception:
+                                        pass
+
+                        if len(samsung_tv_uploaded_ids) > 1 and slideshow_minutes and int(slideshow_minutes) > 0:
+                            dur_mins = _snap_samsung_slideshow_duration(int(slideshow_minutes))
+                            if dur_mins > 0:
+                                try:
+                                    art.set_slideshow_status(duration=dur_mins, type=False, category_id="MY-C0002")
+                                except Exception as e_ss:
+                                    logging.warning(f"Samsung TV set_slideshow_status warning: {e_ss}")
+                    finally:
+                        _close_samsung_art_safely(art, tv_client)
             except Exception as e_sam:
                 logging.error(f"Samsung TV push error ({resolved_tv_ip}): {e_sam}")
 

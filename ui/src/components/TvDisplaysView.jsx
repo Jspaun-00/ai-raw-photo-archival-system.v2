@@ -52,12 +52,9 @@ const BORDER_STYLE_OPTIONS = [
 ];
 
 const SLIDESHOW_INTERVALS = [
-  { value: 5, label: '5 Mins' },
-  { value: 10, label: '10 Mins' },
+  { value: 3, label: '3 Mins' },
   { value: 15, label: '15 Mins' },
-  { value: 30, label: '30 Mins' },
   { value: 60, label: '1 Hour' },
-  { value: 360, label: '6 Hours' },
   { value: 720, label: '12 Hours' },
   { value: 1440, label: '24 Hours' },
 ];
@@ -657,6 +654,23 @@ export default function TvDisplaysView({
         data = { detail: rawText || `HTTP ${res.status}` };
       }
       if (!res.ok) throw new Error(data.detail || `Update failed (${res.status})`);
+      // Immediately update local state with returned photos so thumbnails NEVER go blank while Tizen indexes!
+      if (Array.isArray(data.photos)) {
+        setDisplays((prev) =>
+          prev.map((d) =>
+            d.ip === activeDisplay.ip
+              ? {
+                  ...d,
+                  current_content_id: data.new_content_id || d.current_content_id,
+                  photos: data.photos.map((p) => ({
+                    ...p,
+                    thumb_url: p.thumb_url || (p.file_hash ? `/previews_1600/${p.file_hash}.webp` : null),
+                  })),
+                }
+              : d
+          )
+        );
+      }
       showGlobalToast(
         applyToAll
           ? `Updated all ${data.updated_count} artworks on Samsung TV!`
@@ -904,6 +918,22 @@ export default function TvDisplaysView({
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || `Sync failed (${res.status})`);
+
+      if (Array.isArray(data.photos)) {
+        setDisplays((prev) =>
+          prev.map((d) =>
+            d.ip === activeDisplay.ip
+              ? {
+                  ...d,
+                  photos: data.photos.map((p) => ({
+                    ...p,
+                    thumb_url: p.thumb_url || (p.file_hash ? `/previews_1600/${p.file_hash}.webp` : null),
+                  })),
+                }
+              : d
+          )
+        );
+      }
 
       showGlobalToast(
         syncMode === 'overwrite'
@@ -1228,12 +1258,12 @@ export default function TvDisplaysView({
               </div>
             </div>
 
-            {/* Scrollable Center Workbench: Canvas & Controls */}
-            <div className="flex-1 min-h-0 overflow-y-auto px-6 py-4">
-              <div className="max-w-[1600px] w-full mx-auto flex flex-col xl:flex-row gap-6 items-stretch">
+            {/* Scrollable Center Workbench: Canvas & Controls (Side-by-Side on 13"+ Laptops) */}
+            <div className="flex-1 min-h-0 overflow-y-auto px-4 py-3">
+              <div className="max-w-[1600px] w-full mx-auto flex flex-col lg:flex-row gap-4 items-start">
                 {/* LEFT: Live 16:9 Samsung Frame TV Canvas with Soft 3/4 45° Angled Bevel */}
-                <div className="xl:w-[48%] flex flex-col justify-between bg-black/80 p-3.5 rounded-xl border border-neutral-700 shadow-2xl">
-                  <div className="flex items-center justify-between mb-2 px-1">
+                <div className="w-full lg:w-[50%] flex flex-col justify-between bg-black/80 p-3 rounded-xl border border-neutral-700 shadow-2xl">
+                  <div className="flex items-center justify-between mb-1.5 px-1">
                     <div className="flex items-center gap-2">
                       <span className="px-2 py-0.5 bg-amber-500/20 border border-amber-500/40 text-amber-300 font-mono text-[10px] font-bold rounded uppercase">
                         Live 4K Frame TV View
@@ -1245,7 +1275,7 @@ export default function TvDisplaysView({
                   </div>
 
                   {/* Simulated Physical Frame TV Bezel */}
-                  <div className="p-2 bg-[#14161d] rounded-lg border-2 border-neutral-800 shadow-inner">
+                  <div className="p-1.5 bg-[#14161d] rounded-lg border-2 border-neutral-800 shadow-inner">
                     <FrameTvMatPreview
                       thumbSrc={studioPhoto.thumb_url || (studioPhoto.file_hash ? `/previews_1600/${studioPhoto.file_hash}.webp` : null)}
                       title={studioPhoto.title || studioPhoto.filename}
@@ -1266,13 +1296,13 @@ export default function TvDisplaysView({
                     />
                   </div>
 
-                  <div className="mt-2 flex items-center justify-between text-[11px] text-studio-textMuted px-1">
+                  <div className="mt-1.5 flex items-center justify-between text-[10.5px] text-studio-textMuted px-1">
                     <span className="flex items-center gap-1.5">
-                      <Move className="w-3.5 h-3.5 text-amber-400" />
+                      <Move className="w-3 h-3 text-amber-400" />
                       <span>
                         {editMatMode === 'none' || editMatAspect !== 'original'
-                          ? 'Drag directly on the photo above to pan & position your crop underneath the mat'
-                          : 'Presenting 100% uncropped Lightroom/native aspect ratio inside soft 45° beveled mat'}
+                          ? 'Drag photo above to pan crop inside mat window'
+                          : '100% uncropped native aspect ratio inside soft 45° beveled mat'}
                       </span>
                     </span>
                     {(editCropX !== 0.5 || editCropY !== 0.5) && (
@@ -1290,20 +1320,20 @@ export default function TvDisplaysView({
                   </div>
                 </div>
 
-                {/* RIGHT: Expanded Full-Width Aspect Ratio, Single/Double Mat, Border & Color Controls */}
-                <div className="xl:w-[52%] flex flex-col justify-between space-y-3.5 bg-studio-panel/90 p-4 rounded-xl border border-studio-border">
-                  <div className="space-y-3.5">
+                {/* RIGHT: Compact Aspect Ratio, Single/Double Mat, Border & Color Controls */}
+                <div className="w-full lg:w-[50%] flex flex-col justify-between space-y-2.5 bg-studio-panel/90 p-3 rounded-xl border border-studio-border">
+                  <div className="space-y-2.5">
                     {/* 1. Window Aspect Ratio Selector */}
                     <div>
-                      <div className="flex items-center justify-between mb-1.5">
-                        <label className="text-[11px] font-bold uppercase tracking-wider text-amber-300">
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="text-[10.5px] font-bold uppercase tracking-wider text-amber-300">
                           1. Photo Window Aspect Ratio
                         </label>
-                        <span className="text-[10.5px] font-mono text-studio-textMuted">
+                        <span className="text-[10px] font-mono text-studio-textMuted truncate max-w-[240px]">
                           {ASPECT_RATIO_OPTIONS.find((a) => a.id === editMatAspect)?.desc}
                         </span>
                       </div>
-                      <div className="flex flex-wrap gap-1.5">
+                      <div className="flex flex-wrap gap-1">
                         {ASPECT_RATIO_OPTIONS.map((opt) => {
                           const active = editMatMode !== 'none' && editMatAspect === opt.id;
                           return (
@@ -1315,7 +1345,7 @@ export default function TvDisplaysView({
                                 setEditMatAspect(opt.id);
                               }}
                               title={opt.desc}
-                              className={`px-3 py-1.5 rounded-lg border text-[11px] font-mono font-bold whitespace-nowrap transition-all ${
+                              className={`px-2.5 py-1 rounded-md border text-[10.5px] font-mono font-bold whitespace-nowrap transition-all ${
                                 active
                                   ? 'bg-amber-500 text-studio-bg border-amber-400 shadow-sm'
                                   : 'bg-studio-bg border-studio-border text-studio-textMuted hover:text-white'
@@ -1330,8 +1360,8 @@ export default function TvDisplaysView({
 
                     {/* 2. Mat Border Size, Optical Placement & Single vs Double Mat */}
                     <div>
-                      <div className="flex flex-wrap items-center justify-between gap-2 mb-1.5">
-                        <label className="text-[11px] font-bold uppercase tracking-wider text-amber-300">
+                      <div className="flex flex-wrap items-center justify-between gap-2 mb-1">
+                        <label className="text-[10.5px] font-bold uppercase tracking-wider text-amber-300">
                           2. Mat Border Width &amp; Bevel Style
                         </label>
                         {editMatMode !== 'none' && (
@@ -1339,30 +1369,30 @@ export default function TvDisplaysView({
                             <button
                               type="button"
                               onClick={() => setEditMatStyle('single')}
-                              className={`px-2.5 py-1 rounded-md text-[10.5px] font-bold flex items-center gap-1 transition-all ${
+                              className={`px-2 py-0.5 rounded text-[10px] font-bold flex items-center gap-1 transition-all ${
                                 editMatStyle === 'single'
                                   ? 'bg-amber-500 text-studio-bg shadow-sm'
                                   : 'text-studio-textMuted hover:text-white'
                               }`}
                             >
-                              <span>Single Mat (1 Bevel)</span>
+                              <span>Single Mat</span>
                             </button>
                             <button
                               type="button"
                               onClick={() => setEditMatStyle('double')}
-                              className={`px-2.5 py-1 rounded-md text-[10.5px] font-bold flex items-center gap-1 transition-all ${
+                              className={`px-2 py-0.5 rounded text-[10px] font-bold flex items-center gap-1 transition-all ${
                                 editMatStyle === 'double'
                                   ? 'bg-amber-500 text-studio-bg shadow-sm'
                                   : 'text-studio-textMuted hover:text-white'
                               }`}
                             >
                               <Layers className="w-3 h-3" />
-                              <span>Double Mat (Layered 2-Bevel)</span>
+                              <span>Double Mat (2×)</span>
                             </button>
                           </div>
                         )}
                       </div>
-                      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-1.5">
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-1">
                         {BORDER_STYLE_OPTIONS.map((bOpt) => {
                           const isSelected =
                             (bOpt.id === 'none' && editMatMode === 'none') ||
@@ -1380,14 +1410,13 @@ export default function TvDisplaysView({
                                 }
                               }}
                               title={bOpt.desc}
-                              className={`p-2 rounded-lg border text-left transition-all ${
+                              className={`px-2 py-1.5 rounded-md border text-left transition-all ${
                                 isSelected
                                   ? 'bg-amber-500/20 border-amber-400 text-white font-bold ring-1 ring-amber-400'
                                   : 'bg-studio-bg border-studio-border text-studio-textMuted hover:text-white'
                               }`}
                             >
-                              <div className="text-[11px] leading-tight whitespace-nowrap">{bOpt.label}</div>
-                              <div className="text-[9.5px] text-studio-textDim truncate mt-0.5">{bOpt.desc}</div>
+                              <div className="text-[10.5px] leading-tight truncate">{bOpt.label}</div>
                             </button>
                           );
                         })}
@@ -1396,14 +1425,14 @@ export default function TvDisplaysView({
 
                     {/* 3. Outer & Inner Museum Mat Board Color Studio */}
                     {editMatMode === 'studio' && (
-                      <div className="pt-1">
+                      <div className="pt-0.5">
                         <MatColorPicker
                           color={editMatColor}
                           onChange={setEditMatColor}
                           isDoubleMat={editMatStyle === 'double'}
                           innerColor={editInnerMatColor}
                           onInnerChange={setEditInnerMatColor}
-                          compact={false}
+                          compact={true}
                         />
                       </div>
                     )}
@@ -1832,17 +1861,17 @@ export default function TvDisplaysView({
       {/* ===================================================================== */}
       {isSyncModalOpen && activeDisplay && (
         <div
-          className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+          className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-2.5 sm:p-4"
           onClick={() => !isSyncing && setIsSyncModalOpen(false)}
         >
           <div
-            className="bg-studio-panel border border-studio-border rounded-2xl max-w-3xl w-full p-6 shadow-2xl space-y-4 max-h-[92vh] overflow-y-auto"
+            className="bg-studio-panel border border-studio-border rounded-2xl max-w-5xl w-full p-4 sm:p-5 shadow-2xl space-y-3 max-h-[95vh] overflow-y-auto"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="flex items-center justify-between border-b border-studio-border pb-3">
+            <div className="flex items-center justify-between border-b border-studio-border pb-2.5">
               <div className="flex items-center gap-2.5">
-                <Tv className="w-5 h-5 text-studio-accent" />
-                <h3 className="text-base font-bold text-white">
+                <Tv className="w-4 h-4 text-studio-accent" />
+                <h3 className="text-sm sm:text-base font-bold text-white">
                   {syncMode === 'overwrite'
                     ? `Replace Theme on ${activeDisplay.name || activeDisplay.ip}`
                     : `Add Collection to ${activeDisplay.name || activeDisplay.ip}`}
@@ -1851,242 +1880,249 @@ export default function TvDisplaysView({
               <button
                 type="button"
                 onClick={() => !isSyncing && setIsSyncModalOpen(false)}
-                className="text-studio-textMuted hover:text-white text-sm font-mono"
+                className="text-studio-textMuted hover:text-white text-sm font-mono px-2 py-0.5 rounded hover:bg-studio-bg"
               >
                 ✕
               </button>
             </div>
 
-            <form onSubmit={handleSyncSubmit} className="space-y-4 text-xs">
-              {/* Sync Mode Selector */}
-              <div className="grid grid-cols-2 gap-2.5">
-                <button
-                  type="button"
-                  onClick={() => setSyncMode('additive')}
-                  className={`p-2.5 rounded-xl border text-left transition-all ${
-                    syncMode === 'additive'
-                      ? 'bg-amber-500/15 border-amber-500 text-white'
-                      : 'bg-studio-bg border-studio-border text-studio-textMuted'
-                  }`}
-                >
-                  <div className="font-bold text-amber-300">➕ Additive Curate</div>
-                  <div className="text-[10.5px] opacity-80">Appends photos alongside existing TV art.</div>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setSyncMode('overwrite')}
-                  className={`p-2.5 rounded-xl border text-left transition-all ${
-                    syncMode === 'overwrite'
-                      ? 'bg-purple-500/15 border-purple-500 text-white'
-                      : 'bg-studio-bg border-studio-border text-studio-textMuted'
-                  }`}
-                >
-                  <div className="font-bold text-purple-300">🔄 Replace Theme (Overwrite)</div>
-                  <div className="text-[10.5px] opacity-80">Clears old curated photos &amp; loops only this collection.</div>
-                </button>
-              </div>
+            <form onSubmit={handleSyncSubmit} className="space-y-3 text-xs">
+              {/* 2-Column Side-by-Side Layout for MacBook Screens */}
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start">
+                {/* LEFT COLUMN (7 Cols): Large Live 4K Frame TV Preview + Collection & Mode Controls */}
+                <div className="lg:col-span-7 space-y-2.5">
+                  {/* Live Pre-Push Visual Preview Card with Collection Photo Switcher */}
+                  <div className="space-y-1.5 bg-black/80 p-2.5 rounded-xl border border-neutral-700">
+                    <div className="flex items-center justify-between text-[11px]">
+                      <span className="text-amber-300 uppercase font-bold tracking-wider">
+                        👁️ Live 4K Frame TV Preview (Soft 45° Angled Bevel)
+                      </span>
+                      {colPhotos.length > 1 && (
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => setColPreviewIdx((colPreviewIdx - 1 + colPhotos.length) % colPhotos.length)}
+                            className="px-1.5 py-0.5 bg-studio-panel border border-studio-border rounded text-white"
+                          >
+                            ◀
+                          </button>
+                          <span className="font-mono text-[10.5px] text-studio-textMuted">
+                            Photo {colPreviewIdx + 1} / {colPhotos.length}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => setColPreviewIdx((colPreviewIdx + 1) % colPhotos.length)}
+                            className="px-1.5 py-0.5 bg-studio-panel border border-studio-border rounded text-white"
+                          >
+                            ▶
+                          </button>
+                        </div>
+                      )}
+                    </div>
 
-              {/* Collection Picker */}
-              <div>
-                <label className="block text-studio-textMuted font-semibold mb-1 uppercase text-[11px]">
-                  Select Collection to Push:
-                </label>
-                <select
-                  value={selectedColId}
-                  onChange={(e) => setSelectedColId(e.target.value)}
-                  required
-                  className="w-full bg-studio-bg border border-studio-border rounded-lg p-2.5 text-white text-xs outline-none focus:border-studio-accent"
-                >
-                  <option value="">-- Choose a Curated Collection --</option>
-                  {collections.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      📚 {c.name} ({c.item_count || c.photo_count || 0} photos)
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              {/* Aspect Ratio, Single/Double Mat & Border Size Controls */}
-              <div className="space-y-3.5 bg-studio-bg/70 p-4 rounded-xl border border-studio-border">
-                <div>
-                  <div className="flex items-center justify-between mb-1.5">
-                    <span className="text-[11px] font-bold text-amber-300 uppercase tracking-wider">
-                      1. Photo Window Aspect Ratio:
-                    </span>
-                    <span className="text-[10.5px] font-mono text-studio-textMuted">
-                      {ASPECT_RATIO_OPTIONS.find((a) => a.id === syncMatAspect)?.desc}
-                    </span>
-                  </div>
-                  <div className="flex flex-wrap gap-1.5">
-                    {ASPECT_RATIO_OPTIONS.map((opt) => {
-                      const active = syncMatMode !== 'none' && syncMatAspect === opt.id;
-                      return (
-                        <button
-                          key={opt.id}
-                          type="button"
-                          onClick={() => {
-                            setSyncMatMode('studio');
-                            setSyncMatAspect(opt.id);
-                          }}
-                          className={`px-3 py-1.5 rounded-lg border text-[11px] font-mono font-bold whitespace-nowrap transition-all ${
-                            active
-                              ? 'bg-amber-500 text-studio-bg border-amber-400'
-                              : 'bg-studio-panel border-studio-border text-studio-textMuted hover:text-white'
-                          }`}
-                        >
-                          {opt.shortLabel || opt.label}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                <div>
-                  <div className="flex flex-wrap items-center justify-between gap-2 mb-1.5">
-                    <span className="text-[11px] font-bold text-amber-300 uppercase tracking-wider">
-                      2. Mat Border Width &amp; Bevel Style:
-                    </span>
-                    {syncMatMode !== 'none' && (
-                      <div className="flex items-center gap-1 bg-studio-panel p-0.5 rounded-lg border border-studio-border">
-                        <button
-                          type="button"
-                          onClick={() => setSyncMatStyle('single')}
-                          className={`px-2.5 py-1 rounded-md text-[10.5px] font-bold transition-all ${
-                            syncMatStyle === 'single'
-                              ? 'bg-amber-500 text-studio-bg'
-                              : 'text-studio-textMuted hover:text-white'
-                          }`}
-                        >
-                          Single Mat (1 Bevel)
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setSyncMatStyle('double')}
-                          className={`px-2.5 py-1 rounded-md text-[10.5px] font-bold transition-all ${
-                            syncMatStyle === 'double'
-                              ? 'bg-amber-500 text-studio-bg'
-                              : 'text-studio-textMuted hover:text-white'
-                          }`}
-                        >
-                          Double Mat (2 Bevels)
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-1.5">
-                    {BORDER_STYLE_OPTIONS.map((bOpt) => {
-                      const isSelected =
-                        (bOpt.id === 'none' && syncMatMode === 'none') ||
-                        (bOpt.id !== 'none' && syncMatMode === 'studio' && syncMatPlacement === bOpt.id);
-                      return (
-                        <button
-                          key={bOpt.id}
-                          type="button"
-                          onClick={() => {
-                            if (bOpt.id === 'none') {
-                              setSyncMatMode('none');
-                            } else {
-                              setSyncMatMode('studio');
-                              setSyncMatPlacement(bOpt.id);
-                            }
-                          }}
-                          className={`p-2 rounded-lg border text-left transition-all ${
-                            isSelected
-                              ? 'bg-amber-500/20 border-amber-400 text-white font-bold'
-                              : 'bg-studio-panel border-studio-border text-studio-textMuted hover:text-white'
-                          }`}
-                        >
-                          <div className="text-[11px] whitespace-nowrap">{bOpt.label}</div>
-                          <div className="text-[9.5px] text-studio-textDim truncate">{bOpt.desc}</div>
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                {syncMatMode === 'studio' && (
-                  <div className="pt-1">
-                    <MatColorPicker
-                      color={syncMatColor}
-                      onChange={setSyncMatColor}
-                      isDoubleMat={syncMatStyle === 'double'}
-                      innerColor={syncInnerMatColor}
-                      onInnerChange={setSyncInnerMatColor}
-                      compact={false}
+                    <FrameTvMatPreview
+                      thumbSrc={previewPhoto?.file_hash ? `/previews_1600/${previewPhoto.file_hash}.webp` : null}
+                      title={
+                        previewLoading
+                          ? 'Loading collection sample...'
+                          : previewPhoto?.filename || previewPhoto?.title || 'Select a collection below'
+                      }
+                      matMode={syncMatMode}
+                      matColor={syncMatColor}
+                      matPlacement={syncMatPlacement}
+                      matAspect={syncMatAspect}
+                      matStyle={syncMatStyle}
+                      innerMatColor={syncInnerMatColor}
+                      cropX={syncCropX}
+                      cropY={syncCropY}
+                      interactivePan={true}
+                      onCropChange={(nx, ny) => {
+                        setSyncCropX(nx);
+                        setSyncCropY(ny);
+                      }}
+                      bevelThickness={10}
                     />
                   </div>
-                )}
-              </div>
 
-              {/* Live Pre-Push Visual Preview Card with Collection Photo Switcher */}
-              <div className="space-y-2 bg-black/80 p-3 rounded-xl border border-neutral-700">
-                <div className="flex items-center justify-between text-[11px]">
-                  <span className="text-amber-300 uppercase font-bold tracking-wider">
-                    👁️ Live 4K Frame TV Preview (Soft 45° Angled Bevel)
-                  </span>
-                  {colPhotos.length > 1 && (
-                    <div className="flex items-center gap-1.5">
-                      <button
-                        type="button"
-                        onClick={() => setColPreviewIdx((colPreviewIdx - 1 + colPhotos.length) % colPhotos.length)}
-                        className="px-1.5 py-0.5 bg-studio-panel border border-studio-border rounded text-white"
+                  {/* Collection Picker + Slideshow Interval Row */}
+                  <div className="grid grid-cols-1 sm:grid-cols-12 gap-2.5">
+                    <div className="sm:col-span-7">
+                      <label className="block text-studio-textMuted font-semibold mb-1 uppercase text-[10px]">
+                        Select Collection to Push:
+                      </label>
+                      <select
+                        value={selectedColId}
+                        onChange={(e) => setSelectedColId(e.target.value)}
+                        required
+                        className="w-full bg-studio-bg border border-studio-border rounded-lg p-2 text-white text-xs outline-none focus:border-studio-accent"
                       >
-                        ◀
-                      </button>
-                      <span className="font-mono text-[10.5px] text-studio-textMuted">
-                        Photo {colPreviewIdx + 1} of {colPhotos.length}
+                        <option value="">-- Choose a Curated Collection --</option>
+                        {collections.map((c) => (
+                          <option key={c.id} value={c.id}>
+                            📚 {c.name} ({c.item_count || c.photo_count || 0} photos)
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div className="sm:col-span-5">
+                      <label className="block text-studio-textMuted font-semibold mb-1 uppercase text-[10px]">
+                        Slideshow Interval:
+                      </label>
+                      <select
+                        value={syncSlideshowMins}
+                        onChange={(e) => setSyncSlideshowMins(Number(e.target.value))}
+                        className="w-full bg-studio-bg border border-studio-border rounded-lg p-2 text-white text-xs outline-none focus:border-studio-accent"
+                      >
+                        {SLIDESHOW_INTERVALS.map((intv) => (
+                          <option key={intv.value} value={intv.value}>
+                            ⏱️ {intv.label} per photo
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  {/* Sync Mode Selector */}
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setSyncMode('additive')}
+                      className={`p-2 rounded-xl border text-left transition-all ${
+                        syncMode === 'additive'
+                          ? 'bg-amber-500/15 border-amber-500 text-white'
+                          : 'bg-studio-bg border-studio-border text-studio-textMuted'
+                      }`}
+                    >
+                      <div className="font-bold text-amber-300 text-[11px]">➕ Additive Curate</div>
+                      <div className="text-[10px] opacity-80 truncate">Appends alongside existing TV art.</div>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setSyncMode('overwrite')}
+                      className={`p-2 rounded-xl border text-left transition-all ${
+                        syncMode === 'overwrite'
+                          ? 'bg-purple-500/15 border-purple-500 text-white'
+                          : 'bg-studio-bg border-studio-border text-studio-textMuted'
+                      }`}
+                    >
+                      <div className="font-bold text-purple-300 text-[11px]">🔄 Replace Theme (Overwrite)</div>
+                      <div className="text-[10px] opacity-80 truncate">Clears old art &amp; loops this collection.</div>
+                    </button>
+                  </div>
+                </div>
+
+                {/* RIGHT COLUMN (5 Cols): Aspect Ratio, Single/Double Mat & Compact Color Palette */}
+                <div className="lg:col-span-5 space-y-2.5 bg-studio-bg/70 p-3 rounded-xl border border-studio-border">
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-[10.5px] font-bold text-amber-300 uppercase tracking-wider">
+                        1. Photo Window Aspect Ratio
                       </span>
-                      <button
-                        type="button"
-                        onClick={() => setColPreviewIdx((colPreviewIdx + 1) % colPhotos.length)}
-                        className="px-1.5 py-0.5 bg-studio-panel border border-studio-border rounded text-white"
-                      >
-                        ▶
-                      </button>
+                      <span className="text-[9.5px] font-mono text-studio-textMuted truncate max-w-[160px]">
+                        {ASPECT_RATIO_OPTIONS.find((a) => a.id === syncMatAspect)?.desc}
+                      </span>
+                    </div>
+                    <div className="flex flex-wrap gap-1">
+                      {ASPECT_RATIO_OPTIONS.map((opt) => {
+                        const active = syncMatMode !== 'none' && syncMatAspect === opt.id;
+                        return (
+                          <button
+                            key={opt.id}
+                            type="button"
+                            onClick={() => {
+                              setSyncMatMode('studio');
+                              setSyncMatAspect(opt.id);
+                            }}
+                            className={`px-2 py-1 rounded-md border text-[10.5px] font-mono font-bold whitespace-nowrap transition-all ${
+                              active
+                                ? 'bg-amber-500 text-studio-bg border-amber-400'
+                                : 'bg-studio-panel border-studio-border text-studio-textMuted hover:text-white'
+                            }`}
+                          >
+                            {opt.shortLabel || opt.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="flex flex-wrap items-center justify-between gap-1.5 mb-1">
+                      <span className="text-[10.5px] font-bold text-amber-300 uppercase tracking-wider">
+                        2. Border &amp; Bevel
+                      </span>
+                      {syncMatMode !== 'none' && (
+                        <div className="flex items-center gap-0.5 bg-studio-panel p-0.5 rounded-lg border border-studio-border">
+                          <button
+                            type="button"
+                            onClick={() => setSyncMatStyle('single')}
+                            className={`px-2 py-0.5 rounded text-[10px] font-bold transition-all ${
+                              syncMatStyle === 'single'
+                                ? 'bg-amber-500 text-studio-bg'
+                                : 'text-studio-textMuted hover:text-white'
+                            }`}
+                          >
+                            Single Mat
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setSyncMatStyle('double')}
+                            className={`px-2 py-0.5 rounded text-[10px] font-bold transition-all ${
+                              syncMatStyle === 'double'
+                                ? 'bg-amber-500 text-studio-bg'
+                                : 'text-studio-textMuted hover:text-white'
+                            }`}
+                          >
+                            Double Mat
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-1">
+                      {BORDER_STYLE_OPTIONS.map((bOpt) => {
+                        const isSelected =
+                          (bOpt.id === 'none' && syncMatMode === 'none') ||
+                          (bOpt.id !== 'none' && syncMatMode === 'studio' && syncMatPlacement === bOpt.id);
+                        return (
+                          <button
+                            key={bOpt.id}
+                            type="button"
+                            onClick={() => {
+                              if (bOpt.id === 'none') {
+                                setSyncMatMode('none');
+                              } else {
+                                setSyncMatMode('studio');
+                                setSyncMatPlacement(bOpt.id);
+                              }
+                            }}
+                            title={bOpt.desc}
+                            className={`px-2 py-1.5 rounded-lg border text-left transition-all ${
+                              isSelected
+                                ? 'bg-amber-500/20 border-amber-400 text-white font-bold'
+                                : 'bg-studio-panel border-studio-border text-studio-textMuted hover:text-white'
+                            }`}
+                          >
+                            <div className="text-[10.5px] truncate">{bOpt.label}</div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {syncMatMode === 'studio' && (
+                    <div className="pt-0.5">
+                      <MatColorPicker
+                        color={syncMatColor}
+                        onChange={setSyncMatColor}
+                        isDoubleMat={syncMatStyle === 'double'}
+                        innerColor={syncInnerMatColor}
+                        onInnerChange={setSyncInnerMatColor}
+                        compact={true}
+                      />
                     </div>
                   )}
                 </div>
-
-                <FrameTvMatPreview
-                  thumbSrc={previewPhoto?.file_hash ? `/previews_1600/${previewPhoto.file_hash}.webp` : null}
-                  title={
-                    previewLoading
-                      ? 'Loading collection sample...'
-                      : previewPhoto?.filename || previewPhoto?.title || 'Select a collection above'
-                  }
-                  matMode={syncMatMode}
-                  matColor={syncMatColor}
-                  matPlacement={syncMatPlacement}
-                  matAspect={syncMatAspect}
-                  matStyle={syncMatStyle}
-                  innerMatColor={syncInnerMatColor}
-                  cropX={syncCropX}
-                  cropY={syncCropY}
-                  interactivePan={true}
-                  onCropChange={(nx, ny) => {
-                    setSyncCropX(nx);
-                    setSyncCropY(ny);
-                  }}
-                  bevelThickness={10}
-                />
-              </div>
-
-              {/* Slideshow Interval */}
-              <div>
-                <label className="block text-studio-textMuted font-semibold mb-1 uppercase text-[11px]">
-                  Automatic Slideshow Interval:
-                </label>
-                <select
-                  value={syncSlideshowMins}
-                  onChange={(e) => setSyncSlideshowMins(Number(e.target.value))}
-                  className="w-full bg-studio-bg border border-studio-border rounded-lg p-2.5 text-white text-xs outline-none focus:border-studio-accent"
-                >
-                  {SLIDESHOW_INTERVALS.map((intv) => (
-                    <option key={intv.value} value={intv.value}>
-                      ⏱️ {intv.label} per photo
-                    </option>
-                  ))}
-                </select>
               </div>
 
               <div className="pt-2 flex items-center justify-end gap-2 border-t border-studio-border">
@@ -2094,14 +2130,14 @@ export default function TvDisplaysView({
                   type="button"
                   onClick={() => setIsSyncModalOpen(false)}
                   disabled={isSyncing}
-                  className="px-4 py-2 bg-studio-bg border border-studio-border text-studio-text rounded-lg text-xs font-semibold hover:text-white"
+                  className="px-4 py-1.5 bg-studio-bg border border-studio-border text-studio-text rounded-lg text-xs font-semibold hover:text-white"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
                   disabled={isSyncing || !selectedColId}
-                  className="px-5 py-2 bg-studio-accent text-studio-bg rounded-lg text-xs font-bold hover:bg-amber-400 transition-all shadow-md"
+                  className="px-5 py-1.5 bg-studio-accent text-studio-bg rounded-lg text-xs font-bold hover:bg-amber-400 transition-all shadow-md"
                 >
                   {isSyncing
                     ? 'Rendering 45° Bevel & Uploading...'

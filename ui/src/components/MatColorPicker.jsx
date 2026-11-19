@@ -194,43 +194,43 @@ export default function MatColorPicker({
   };
 
   return (
-    <div className={`space-y-3 rounded-xl border border-white/10 bg-[#121316] ${compact ? 'p-2.5' : 'p-3.5'} text-xs select-none shadow-lg`}>
+    <div className={`${compact ? 'space-y-2 p-2.5' : 'space-y-2.5 p-3'} rounded-xl border border-white/10 bg-[#121316] text-xs select-none shadow-lg`}>
       {/* ---------------------------------------------------------------------- */}
       {/* DOUBLE MAT LAYER SELECTOR & SWAP BAR                                   */}
       {/* ---------------------------------------------------------------------- */}
       {isDoubleMat && (
-        <div className="flex items-center justify-between gap-2 pb-2.5 border-b border-white/10 flex-wrap">
-          <div className="flex items-center gap-1.5 p-1 rounded-lg bg-black/40 border border-white/10">
+        <div className="flex items-center justify-between gap-2 pb-2 border-b border-white/10 flex-wrap">
+          <div className="flex items-center gap-1 p-0.5 rounded-lg bg-black/40 border border-white/10">
             <button
               type="button"
               onClick={() => setActiveTab('outer')}
-              className={`flex items-center gap-2 px-3 py-1.5 rounded-md font-bold transition-all ${
+              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md font-bold text-[11px] transition-all ${
                 activeTab === 'outer'
                   ? 'bg-amber-400 text-zinc-950 shadow-md'
                   : 'text-zinc-300 hover:text-white'
               }`}
             >
               <span
-                className="w-3.5 h-3.5 rounded-full border border-black/40 shadow-sm shrink-0"
+                className="w-3 h-3 rounded-full border border-black/40 shadow-sm shrink-0"
                 style={{ backgroundColor: color }}
               />
-              <span>1. Outer Mat Board ({findMatTone(color)?.short || color})</span>
+              <span>1. Outer Mat ({findMatTone(color)?.short || color})</span>
             </button>
 
             <button
               type="button"
               onClick={() => setActiveTab('inner')}
-              className={`flex items-center gap-2 px-3 py-1.5 rounded-md font-bold transition-all ${
+              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md font-bold text-[11px] transition-all ${
                 activeTab === 'inner'
                   ? 'bg-amber-400 text-zinc-950 shadow-md'
                   : 'text-zinc-300 hover:text-white'
               }`}
             >
               <span
-                className="w-3.5 h-3.5 rounded-full border border-black/40 shadow-sm shrink-0"
+                className="w-3 h-3 rounded-full border border-black/40 shadow-sm shrink-0"
                 style={{ backgroundColor: innerColor }}
               />
-              <span>2. Inner Reveal Accent ({findMatTone(innerColor)?.short || innerColor})</span>
+              <span>2. Inner Reveal ({findMatTone(innerColor)?.short || innerColor})</span>
             </button>
           </div>
 
@@ -238,10 +238,10 @@ export default function MatColorPicker({
             type="button"
             onClick={handleSwapDoubleColors}
             title="Swap Outer and Inner Mat Colors"
-            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-zinc-800/80 hover:bg-zinc-700 text-amber-300 border border-amber-500/30 font-semibold cursor-pointer transition active:scale-95 text-[11px]"
+            className="flex items-center gap-1 px-2 py-1 rounded-lg bg-zinc-800/80 hover:bg-zinc-700 text-amber-300 border border-amber-500/30 font-semibold cursor-pointer transition active:scale-95 text-[10.5px]"
           >
-            <ArrowLeftRight className="w-3.5 h-3.5" />
-            <span>⇄ Swap Layers</span>
+            <ArrowLeftRight className="w-3 h-3" />
+            <span>⇄ Swap</span>
           </button>
         </div>
       )}
@@ -249,47 +249,49 @@ export default function MatColorPicker({
       {/* ---------------------------------------------------------------------- */}
       {/* HEADER: ACTIVE COLOR PREVIEW + QUICK SHADES + HEX CONTROLS             */}
       {/* ---------------------------------------------------------------------- */}
-      <div className="flex items-center justify-between gap-3 flex-wrap">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
         {/* Active Selected Color Badge */}
-        <div className="flex items-center gap-2.5">
+        <div className="flex items-center gap-2">
           <div
-            className="w-8 h-8 rounded-lg border-2 border-white/25 shadow-md flex items-center justify-center shrink-0 relative overflow-hidden"
+            className="w-7 h-7 rounded-lg border-2 border-white/25 shadow-md flex items-center justify-center shrink-0 relative overflow-hidden"
             style={{ backgroundColor: currentColor }}
           >
             <div className="absolute inset-0 bg-gradient-to-br from-white/20 to-black/20 pointer-events-none" />
           </div>
           <div>
-            <div className="flex items-center gap-2">
-              <span className="font-bold text-white text-[13px]">
+            <div className="flex items-center gap-1.5">
+              <span className="font-bold text-white text-xs">
                 {activeMatchedTone?.name || 'Custom Framing Tone'}
               </span>
-              <span className="font-mono text-[11px] text-amber-300 bg-amber-400/10 border border-amber-500/30 px-1.5 py-0.5 rounded">
+              <span className="font-mono text-[10.5px] text-amber-300 bg-amber-400/10 border border-amber-500/30 px-1.5 py-0.2 rounded">
                 {currentColor}
               </span>
             </div>
-            <div className="text-[10px] text-zinc-400 font-mono">
-              {activeMatchedTone?.desc || 'Archival fine-art paper matting'}
-            </div>
+            {!compact && (
+              <div className="text-[10px] text-zinc-400 font-mono">
+                {activeMatchedTone?.desc || 'Archival fine-art paper matting'}
+              </div>
+            )}
           </div>
         </div>
 
         {/* View Switcher: 20 Tones Checkerboard vs. Archival Spectrum */}
-        <div className="flex items-center gap-1 bg-black/40 p-0.5 rounded-lg border border-white/10 text-[11px]">
+        <div className="flex items-center gap-1 bg-black/40 p-0.5 rounded-lg border border-white/10 text-[10.5px]">
           <button
             type="button"
             onClick={() => setViewMode('checkerboard')}
-            className={`px-2.5 py-1 rounded font-bold transition ${
+            className={`px-2 py-0.5 rounded font-bold transition ${
               viewMode === 'checkerboard'
                 ? 'bg-amber-400 text-zinc-950'
                 : 'text-zinc-400 hover:text-white'
             }`}
           >
-            Checkerboard (20 Tones)
+            20 Tones
           </button>
           <button
             type="button"
             onClick={() => setViewMode('spectrum')}
-            className={`px-2.5 py-1 rounded font-bold transition ${
+            className={`px-2 py-0.5 rounded font-bold transition ${
               viewMode === 'spectrum'
                 ? 'bg-amber-400 text-zinc-950'
                 : 'text-zinc-400 hover:text-white'
@@ -300,13 +302,13 @@ export default function MatColorPicker({
         </div>
 
         {/* Direct Hex & System Picker Input */}
-        <div className="flex items-center gap-1.5">
+        <div className="flex items-center gap-1">
           {window.EyeDropper && (
             <button
               type="button"
               onClick={handleEyedropper}
               title="Pick color from photo with Eyedropper"
-              className="p-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 border border-white/15 cursor-pointer"
+              className="p-1 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 border border-white/15 cursor-pointer"
             >
               <Pipette className="w-3.5 h-3.5" />
             </button>
@@ -316,26 +318,26 @@ export default function MatColorPicker({
             value={currentColor}
             onChange={(e) => currentSetColor(e.target.value.toUpperCase())}
             title="Custom Hex Color Wheel"
-            className="w-7 h-7 rounded-lg cursor-pointer border border-white/20 bg-transparent p-0 overflow-hidden"
+            className="w-6 h-6 rounded-md cursor-pointer border border-white/20 bg-transparent p-0 overflow-hidden"
           />
         </div>
       </div>
 
       {/* ---------------------------------------------------------------------- */}
-      {/* 5-STEP TONAL SHADE & TINT CHECKERBOARD (MICRO-ADJUSTMENTS)              */}
+      {/* 5-STEP TONAL SHADE & TINT CHECKERBOARD (COMPACT SINGLE-BAR)            */}
       {/* ---------------------------------------------------------------------- */}
-      <div className="p-2.5 rounded-lg bg-black/35 border border-white/10 space-y-2">
-        <div className="flex items-center justify-between text-[11px]">
-          <span className="text-zinc-400 font-bold uppercase tracking-wider flex items-center gap-1.5">
-            <Sliders className="w-3.5 h-3.5 text-amber-400" />
-            <span>Tone &amp; Shade Variations (Sensible Archival Tint &harr; Shade):</span>
+      <div className="p-2 rounded-lg bg-black/35 border border-white/10 space-y-1.5">
+        <div className="flex items-center justify-between text-[10.5px]">
+          <span className="text-zinc-400 font-bold uppercase tracking-wider flex items-center gap-1">
+            <Sliders className="w-3 h-3 text-amber-400" />
+            <span>Tone &amp; Shade Variations:</span>
           </span>
-          <span className="text-[10px] text-zinc-500 font-mono">
-            Click any square to lighten or deepen this tone
+          <span className="text-[9.5px] text-zinc-500 font-mono hidden sm:inline">
+            Click to lighten or deepen
           </span>
         </div>
 
-        <div className="grid grid-cols-5 gap-1.5">
+        <div className="grid grid-cols-5 gap-1">
           {dynamicShades.map((s) => {
             const isCurrent = s.hex.toLowerCase() === currentColor.toLowerCase();
             return (
@@ -343,23 +345,20 @@ export default function MatColorPicker({
                 key={s.label}
                 type="button"
                 onClick={() => currentSetColor(s.hex)}
-                className={`relative group rounded-md p-1.5 border transition-all flex flex-col items-center justify-center gap-1 cursor-pointer ${
+                className={`relative group rounded-md p-1 border transition-all flex flex-col items-center justify-center gap-0.5 cursor-pointer ${
                   isCurrent
-                    ? 'border-amber-400 ring-2 ring-amber-400/80 bg-amber-400/10 shadow-md'
+                    ? 'border-amber-400 ring-1 ring-amber-400/80 bg-amber-400/10 shadow-sm'
                     : 'border-white/15 hover:border-white/40 bg-zinc-900/60'
                 }`}
               >
                 <div
-                  className="w-full h-5 rounded border border-black/40 shadow-inner flex items-center justify-center"
+                  className="w-full h-3.5 rounded border border-black/40 shadow-inner flex items-center justify-center"
                   style={{ backgroundColor: s.hex }}
                 >
-                  {isCurrent && <Check className="w-3 h-3 text-zinc-900 drop-shadow-sm stroke-[3]" />}
+                  {isCurrent && <Check className="w-2.5 h-2.5 text-zinc-900 drop-shadow-sm stroke-[3]" />}
                 </div>
-                <span className="text-[10px] font-mono text-zinc-300 font-medium">
+                <span className="text-[9.5px] font-mono text-zinc-300 font-medium leading-tight">
                   {s.label}
-                </span>
-                <span className="text-[9px] font-mono text-zinc-500">
-                  {s.hex}
                 </span>
               </button>
             );
@@ -371,15 +370,15 @@ export default function MatColorPicker({
       {/* VIEW A: 20 CURATED MUSEUM TONES CHECKERBOARD GRID                      */}
       {/* ---------------------------------------------------------------------- */}
       {viewMode === 'checkerboard' && (
-        <div className="space-y-2">
+        <div className="space-y-1.5">
           {/* Family Filter Pills */}
-          <div className="flex items-center gap-1 overflow-x-auto pb-1 scrollbar-none text-[11px]">
+          <div className="flex items-center gap-1 overflow-x-auto pb-0.5 scrollbar-none text-[10.5px]">
             {TONAL_FAMILIES.map((f) => (
               <button
                 key={f.id}
                 type="button"
                 onClick={() => setSelectedFamily(f.id)}
-                className={`px-2.5 py-1 rounded-full whitespace-nowrap font-medium transition cursor-pointer ${
+                className={`px-2 py-0.5 rounded-full whitespace-nowrap font-medium transition cursor-pointer ${
                   selectedFamily === f.id
                     ? 'bg-amber-400 text-zinc-950 font-bold shadow'
                     : 'bg-zinc-800/80 text-zinc-400 hover:text-white border border-white/10'
@@ -391,7 +390,7 @@ export default function MatColorPicker({
           </div>
 
           {/* 20-Tone Checkerboard Swatch Grid */}
-          <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-5 gap-1.5 max-h-[220px] overflow-y-auto pr-1">
+          <div className={`grid grid-cols-2 sm:grid-cols-4 md:grid-cols-5 gap-1 ${compact ? 'max-h-[155px]' : 'max-h-[185px]'} overflow-y-auto pr-1`}>
             {displayedTones.map((t) => {
               const isSelected = currentColor.toLowerCase() === t.hex.toLowerCase();
               return (
@@ -400,23 +399,23 @@ export default function MatColorPicker({
                   type="button"
                   onClick={() => currentSetColor(t.hex)}
                   title={`${t.name} (${t.hex}) — ${t.desc}`}
-                  className={`group relative p-2 rounded-lg border text-left flex items-center gap-2 cursor-pointer transition-all ${
+                  className={`group relative px-2 py-1.5 rounded-lg border text-left flex items-center gap-1.5 cursor-pointer transition-all ${
                     isSelected
-                      ? 'border-amber-400 ring-2 ring-amber-400/80 bg-amber-400/15 shadow-md'
+                      ? 'border-amber-400 ring-1 ring-amber-400/80 bg-amber-400/15 shadow-sm'
                       : 'border-white/10 hover:border-white/30 bg-zinc-900/60 hover:bg-zinc-900'
                   }`}
                 >
                   <div
-                    className="w-5 h-5 rounded-md border border-black/40 shadow-sm shrink-0 flex items-center justify-center"
+                    className="w-4 h-4 rounded border border-black/40 shadow-sm shrink-0 flex items-center justify-center"
                     style={{ backgroundColor: t.hex }}
                   >
-                    {isSelected && <Check className="w-3 h-3 text-zinc-950 drop-shadow-sm stroke-[3]" />}
+                    {isSelected && <Check className="w-2.5 h-2.5 text-zinc-950 drop-shadow-sm stroke-[3]" />}
                   </div>
                   <div className="min-w-0 flex-1">
-                    <div className="text-[11px] font-bold text-white truncate leading-tight">
+                    <div className="text-[10.5px] font-bold text-white truncate leading-tight">
                       {t.short}
                     </div>
-                    <div className="text-[9.5px] font-mono text-zinc-400 truncate">
+                    <div className="text-[9px] font-mono text-zinc-400 truncate leading-tight">
                       {t.hex}
                     </div>
                   </div>
