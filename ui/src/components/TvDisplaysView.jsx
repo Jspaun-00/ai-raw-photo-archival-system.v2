@@ -810,54 +810,64 @@ export default function TvDisplaysView({
     }
   };
 
-  // Set Brightness Level (single TV or all TVs)
+  // Set Brightness Level (single TV or all TVs) with optimistic UI update
   const handleSetBrightness = async (targetIp, level, applyToAll = false) => {
-    if (actionBusy) return;
-    setActionBusy(true);
+    const targetLvl = Math.max(0, Math.min(10, level));
+    
+    // Optimistic UI state update (instant 1ms feedback!)
+    setDisplays((prev) =>
+      prev.map((d) =>
+        applyToAll || d.ip === targetIp
+          ? { ...d, brightness: targetLvl, brightness_sensor_setting: 'off', motion_timer: 'off' }
+          : d
+      )
+    );
+
     try {
       const res = await fetch('/api/samsung-tvs/brightness', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           ip: targetIp,
-          brightness: level,
+          brightness: targetLvl,
           apply_to_all: applyToAll,
           disarm_auto_brightness: true,
         }),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const pct = Math.round((level / 10) * 100);
-      const targetLabel = applyToAll ? 'ALL registered Frame TVs' : `TV (${targetIp})`;
-      showGlobalToast(`Brightness set to Level ${level} (${pct}%) on ${targetLabel}`);
-      await fetchDisplays();
+      const pct = Math.round((targetLvl / 10) * 100);
+      const targetLabel = applyToAll ? 'ALL Frame TVs' : 'TV';
+      showGlobalToast(`Brightness set to Level ${targetLvl} (${pct}%) on ${targetLabel}`);
     } catch (err) {
       showGlobalToast(`Brightness update failed: ${err.message}`);
-    } finally {
-      setActionBusy(false);
+      await fetchDisplays(); // restore true state on error
     }
   };
 
-  // Set Sensor Settings / Safeguards (single TV or all TVs)
-  const handleSetSensorSettings = async (targetIp, settingsObj, applyToAll = false) => {
-    if (actionBusy) return;
-    setActionBusy(true);
+  // Set Sensor Settings (motion timer / auto brightness sensor)
+  const handleSetSensorSettings = async (targetIp, settings, applyToAll = false) => {
+    setDisplays((prev) =>
+      prev.map((d) =>
+        applyToAll || (targetIp && d.ip === targetIp)
+          ? { ...d, ...settings }
+          : d
+      )
+    );
     try {
       const res = await fetch('/api/samsung-tvs/sensor-settings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           ip: targetIp,
-          ...settingsObj,
+          ...settings,
           apply_to_all: applyToAll,
         }),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      showGlobalToast(`Updated TV sensor safeguards & eco settings`);
-      await fetchDisplays();
+      showGlobalToast('Updated TV sensor settings');
     } catch (err) {
-      showGlobalToast(`Sensor settings update failed: ${err.message}`);
-    } finally {
-      setActionBusy(false);
+      showGlobalToast(`Sensor setting update failed: ${err.message}`);
+      await fetchDisplays();
     }
   };
 
@@ -1736,9 +1746,9 @@ export default function TvDisplaysView({
               </div>
             </div>
 
-            {/* Brightness & Sensor Safeguards Controller Bar */}
+            {/* Brightness Controller Bar */}
             <div className="px-6 py-2.5 bg-studio-panel/60 border-b border-studio-border flex flex-wrap items-center justify-between gap-3 text-xs shadow-inner">
-              {/* Brightness Controls */}
+              {/* Brightness Controls & Presets */}
               <div className="flex items-center flex-wrap gap-3">
                 <div className="flex items-center gap-2">
                   <Sun className="w-4 h-4 text-amber-400" />
@@ -1816,54 +1826,6 @@ export default function TvDisplaysView({
                     ⚡ 80%
                   </button>
                 </div>
-              </div>
-
-              {/* Sensor Safeguards & Eco Controls */}
-              <div className="flex items-center gap-2">
-                {/* Motion Sensor Safeguard Toggle */}
-                <button
-                  type="button"
-                  onClick={() => {
-                    const nextTimer = activeDisplay.motion_timer === 'off' ? '15' : 'off';
-                    handleSetSensorSettings(activeDisplay.ip, { motion_timer: nextTimer });
-                  }}
-                  disabled={actionBusy || !activeDisplay.online}
-                  title={
-                    activeDisplay.motion_timer === 'off'
-                      ? 'Motion sensor timer is OFF. Display stays on continuously.'
-                      : `Motion sensor will turn display off after ${activeDisplay.motion_timer}m inactivity. Click to disable.`
-                  }
-                  className={`px-2.5 py-1 rounded-lg border text-[11px] font-semibold flex items-center gap-1.5 transition-all ${
-                    activeDisplay.motion_timer === 'off'
-                      ? 'bg-emerald-950/60 border-emerald-500/50 text-emerald-300 hover:bg-emerald-900/60'
-                      : 'bg-amber-950/60 border-amber-500/50 text-amber-300 hover:bg-amber-900/60'
-                  }`}
-                >
-                  <ShieldCheck className="w-3.5 h-3.5" />
-                  <span>Motion Sensor: {activeDisplay.motion_timer === 'off' ? 'OFF (Safe)' : `${activeDisplay.motion_timer}m`}</span>
-                </button>
-
-                {/* Auto Brightness Eco Sensor Toggle */}
-                <button
-                  type="button"
-                  onClick={() => {
-                    const nextVal = activeDisplay.brightness_sensor_setting === 'off' ? 'on' : 'off';
-                    handleSetSensorSettings(activeDisplay.ip, { brightness_sensor_setting: nextVal });
-                  }}
-                  disabled={actionBusy || !activeDisplay.online}
-                  title={
-                    activeDisplay.brightness_sensor_setting === 'off'
-                      ? 'Internal Eco Auto-Brightness is OFF. Brightness is locked static.'
-                      : 'Internal Eco Auto-Brightness is ON. TV will auto-adjust levels.'
-                  }
-                  className={`px-2.5 py-1 rounded-lg border text-[11px] font-semibold flex items-center gap-1.5 transition-all ${
-                    activeDisplay.brightness_sensor_setting === 'off'
-                      ? 'bg-emerald-950/60 border-emerald-500/50 text-emerald-300 hover:bg-emerald-900/60'
-                      : 'bg-blue-950/60 border-blue-500/50 text-blue-300 hover:bg-blue-900/60'
-                  }`}
-                >
-                  <span>Auto-Eco Sensor: {activeDisplay.brightness_sensor_setting === 'off' ? 'OFF (Static)' : 'ON (Auto)'}</span>
-                </button>
 
                 {displays.length > 1 && (
                   <button
@@ -1871,11 +1833,17 @@ export default function TvDisplaysView({
                     onClick={() => handleSetBrightness(null, activeDisplay.brightness ?? 4, true)}
                     disabled={actionBusy || !activeDisplay.online}
                     title="Broadcast this display's brightness to ALL other Frame TVs"
-                    className="px-2.5 py-1 bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-300 rounded-lg text-[11px] font-bold flex items-center gap-1 transition-all"
+                    className="px-2.5 py-1 bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-300 rounded-lg text-[11px] font-bold flex items-center gap-1 transition-all ml-1"
                   >
                     <span>⚡ Sync All TVs</span>
                   </button>
                 )}
+              </div>
+
+              {/* Silent Disarm Safeguard Badge */}
+              <div className="flex items-center gap-1.5 text-[11px] font-mono text-emerald-400/90 bg-emerald-950/40 border border-emerald-500/30 px-2.5 py-1 rounded-lg">
+                <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+                <span>Persistent Eco Off (Static Mode)</span>
               </div>
             </div>
 

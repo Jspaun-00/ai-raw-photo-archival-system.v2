@@ -6526,6 +6526,10 @@ async def set_samsung_tv_brightness(payload: SamsungTvBrightnessRequest):
                         art.set_brightness_sensor_setting(False)
                     except Exception:
                         pass
+                    try:
+                        art.set_motion_timer("off")
+                    except Exception:
+                        pass
                 art.set_brightness(target_brightness)
                 return {"ip": ip, "status": "ok", "brightness": target_brightness}
             except Exception as e:
