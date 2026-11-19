@@ -11,6 +11,12 @@ local LrProgressScope = import 'LrProgressScope'
 local LrTasks = import 'LrTasks'
 local LrView = import 'LrView'
 
+-- CRITICAL: In Lightroom Classic's Lua 5.1 VM, SDK methods (photo:getRawMetadata, catalog:findPhotos,
+-- LrTasks.execute, catalog:withWriteAccessDo, etc.) yield the coroutine!
+-- Standard Lua `pcall()` fails with "attempt to yield across metamethod/C-call boundary" on yielding calls.
+-- Always use `LrTasks.pcall` for protected calls inside async tasks!
+local taskPcall = LrTasks.pcall or pcall
+
 local homeDir = LrPathUtils.getStandardFilePath('home') or os.getenv("HOME") or '/Users/mitch'
 local pluginDir = _PLUGIN.path
 local prefs = LrPrefs.prefsForPlugin()
@@ -34,27 +40,23 @@ local function scanDirectoryForBestLrcat(dirPath)
     local bestPath = nil
     local bestScore = -1
 
-    pcall(function()
-        for entry in LrFileUtils.directoryEntries(dirPath) do
-            local ext = string.lower(LrPathUtils.extension(entry) or "")
-            local leaf = LrPathUtils.leafName(entry) or ""
-            if ext == "lrcat" and not string.match(leaf, "^%._") then
-                local vNum = tonumber(string.match(leaf, "%-v(%d+)%.lrcat$")) or 0
-                local mtime = 0
-                pcall(function()
-                    local attrs = LrFileUtils.fileAttributes(entry)
-                    if attrs and attrs.fileModificationDate then
-                        mtime = tonumber(attrs.fileModificationDate) or 0
-                    end
-                end)
-                local score = (vNum * 10000000000) + mtime
-                if score > bestScore then
-                    bestScore = score
-                    bestPath = entry
-                end
+    for entry in LrFileUtils.directoryEntries(dirPath) do
+        local ext = string.lower(LrPathUtils.extension(entry) or "")
+        local leaf = LrPathUtils.leafName(entry) or ""
+        if ext == "lrcat" and not string.match(leaf, "^%._") then
+            local vNum = tonumber(string.match(leaf, "%-v(%d+)%.lrcat$")) or 0
+            local mtime = 0
+            local attrs = LrFileUtils.fileAttributes(entry)
+            if attrs and attrs.fileModificationDate then
+                mtime = tonumber(attrs.fileModificationDate) or 0
+            end
+            local score = (vNum * 10000000000) + mtime
+            if score > bestScore then
+                bestScore = score
+                bestPath = entry
             end
         end
-    end)
+    end
     return bestPath
 end
 
@@ -135,16 +137,14 @@ local function discoverCatalogs(currentCatPath)
     }
 
     local candidateRoots = {}
-    pcall(function()
-        if LrFileUtils.exists("/Volumes") then
-            for vol in LrFileUtils.directoryEntries("/Volumes") do
-                local vName = LrPathUtils.leafName(vol) or ""
-                if LrFileUtils.exists(vol) == "directory" and not isSystemOrHiddenVolume(vName) then
-                    table.insert(candidateRoots, vol)
-                end
+    if LrFileUtils.exists("/Volumes") then
+        for vol in LrFileUtils.directoryEntries("/Volumes") do
+            local vName = LrPathUtils.leafName(vol) or ""
+            if LrFileUtils.exists(vol) == "directory" and not isSystemOrHiddenVolume(vName) then
+                table.insert(candidateRoots, vol)
             end
         end
-    end)
+    end
 
     -- Sort external volumes so 2TB / Archive / SSD drives appear first
     table.sort(candidateRoots, function(a, b)
@@ -190,26 +190,24 @@ local function discoverCatalogs(currentCatPath)
     for _, rootDir in ipairs(candidateRoots) do
         local rootName = LrPathUtils.leafName(rootDir) or "Drive"
         if rootDir ~= LrPathUtils.child(homeDir, "Pictures") and rootDir ~= LrPathUtils.child(homeDir, "Desktop") then
-            pcall(function()
-                for subDir in LrFileUtils.directoryEntries(rootDir) do
-                    local subName = LrPathUtils.leafName(subDir) or ""
-                    if LrFileUtils.exists(subDir) == "directory" and not isExcludedSubfolder(subName) then
-                        local lrcat = scanDirectoryForBestLrcat(subDir)
-                        if lrcat and not seenLrcat[lrcat] and lrcat ~= currentCatPath then
-                            seenLrcat[lrcat] = true
-                            local imgFolder = resolveImagesFolderForCatalogDir(subDir, nil)
-                            table.insert(catalogs, {
-                                key = "dyn_" .. string.gsub(string.lower(subName .. "_" .. rootName), "[^a-z0-9_]", "_"),
-                                name = subName,
-                                volume = rootName,
-                                catalog_path = lrcat,
-                                images_folder = imgFolder,
-                                display_label = string.format("%s  [%s]", subName, rootName),
-                            })
-                        end
+            for subDir in LrFileUtils.directoryEntries(rootDir) do
+                local subName = LrPathUtils.leafName(subDir) or ""
+                if LrFileUtils.exists(subDir) == "directory" and not isExcludedSubfolder(subName) then
+                    local lrcat = scanDirectoryForBestLrcat(subDir)
+                    if lrcat and not seenLrcat[lrcat] and lrcat ~= currentCatPath then
+                        seenLrcat[lrcat] = true
+                        local imgFolder = resolveImagesFolderForCatalogDir(subDir, nil)
+                        table.insert(catalogs, {
+                            key = "dyn_" .. string.gsub(string.lower(subName .. "_" .. rootName), "[^a-z0-9_]", "_"),
+                            name = subName,
+                            volume = rootName,
+                            catalog_path = lrcat,
+                            images_folder = imgFolder,
+                            display_label = string.format("%s  [%s]", subName, rootName),
+                        })
                     end
                 end
-            end)
+            end
         end
     end
 
@@ -235,47 +233,42 @@ local function discoverCatalogs(currentCatPath)
     return catalogs
 end
 
+-- Checks if a photo has a 5-star rating WITHOUT standard `pcall` (since getRawMetadata yields in Lua 5.1!)
 local function isPhotoFiveStars(photo)
     if not photo then return false end
-    local isFive = false
-    pcall(function()
-        local rawRating = photo:getRawMetadata("rating")
-        if tonumber(rawRating) == 5 then
-            isFive = true
-        end
-    end)
-    if isFive then return true end
-    pcall(function()
-        local fmtRating = photo:getFormattedMetadata("rating")
-        if tonumber(fmtRating) == 5 then
-            isFive = true
-        end
-    end)
-    return isFive
+    local rawRating = photo:getRawMetadata("rating")
+    if tonumber(rawRating) == 5 then
+        return true
+    end
+    local fmtRating = photo:getFormattedMetadata("rating")
+    if tonumber(fmtRating) == 5 or (type(fmtRating) == "string" and string.find(fmtRating, "5")) then
+        return true
+    end
+    return false
 end
 
 local function findFiveStarPhotosInCatalog(catalog)
     local foundMap = {}
     local allFiveStars = {}
     local selectedFiveStars = {}
-
-    -- 1. Check user's current selection / target photos first
     local targetPhotos = {}
-    pcall(function()
+
+    -- 1. Check user's current selection / target photos first (using taskPcall so coroutine yields work!)
+    taskPcall(function()
         targetPhotos = catalog:getTargetPhotos() or {}
-    end)
-    for _, p in ipairs(targetPhotos) do
-        if isPhotoFiveStars(p) then
-            table.insert(selectedFiveStars, p)
-            if not foundMap[p] then
-                foundMap[p] = true
-                table.insert(allFiveStars, p)
+        for _, p in ipairs(targetPhotos) do
+            if isPhotoFiveStars(p) then
+                table.insert(selectedFiveStars, p)
+                if not foundMap[p] then
+                    foundMap[p] = true
+                    table.insert(allFiveStars, p)
+                end
             end
         end
-    end
+    end)
 
-    -- 2. Query catalog via findPhotos (single criteria table)
-    pcall(function()
+    -- 2. Query catalog via findPhotos (using taskPcall so coroutine yields work!)
+    taskPcall(function()
         local searched = catalog:findPhotos {
             searchDesc = {
                 criteria = "rating",
@@ -293,14 +286,20 @@ local function findFiveStarPhotosInCatalog(catalog)
         end
     end)
 
-    -- 3. Fallback: if findPhotos returned nothing, scan catalog:getAllPhotos() directly
+    -- 3. Guaranteed fallback: scan catalog:getAllPhotos() directly via batchGetRawMetadata / getRawMetadata
     if #allFiveStars == 0 then
-        pcall(function()
+        taskPcall(function()
             local everyPhoto = catalog:getAllPhotos() or {}
-            for _, p in ipairs(everyPhoto) do
-                if isPhotoFiveStars(p) and not foundMap[p] then
-                    foundMap[p] = true
-                    table.insert(allFiveStars, p)
+            if #everyPhoto > 0 then
+                local batchRatings = catalog:batchGetRawMetadata(everyPhoto, { "rating" })
+                for _, p in ipairs(everyPhoto) do
+                    local r = batchRatings and batchRatings[p] and batchRatings[p].rating
+                    if tonumber(r) == 5 or isPhotoFiveStars(p) then
+                        if not foundMap[p] then
+                            foundMap[p] = true
+                            table.insert(allFiveStars, p)
+                        end
+                    end
                 end
             end
         end)
@@ -319,13 +318,11 @@ local function checkPendingQueueForCurrentCatalog(catalog)
     if catDir then
         table.insert(candidateQueues, LrPathUtils.child(catDir, ".keeper_import_queue.json"))
     end
-    pcall(function()
-        if LrFileUtils.exists("/Volumes") then
-            for vol in LrFileUtils.directoryEntries("/Volumes") do
-                table.insert(candidateQueues, LrPathUtils.child(vol, ".keeper_import_queue.json"))
-            end
+    if LrFileUtils.exists("/Volumes") then
+        for vol in LrFileUtils.directoryEntries("/Volumes") do
+            table.insert(candidateQueues, LrPathUtils.child(vol, ".keeper_import_queue.json"))
         end
-    end)
+    end
 
     local activeQueue = nil
     local content = nil
@@ -357,13 +354,14 @@ local function checkPendingQueueForCurrentCatalog(catalog)
         end
     end
 
-    for _, qp in ipairs(candidateQueues) do
-        if LrFileUtils.exists(qp) then
-            pcall(function() LrFileUtils.delete(qp) end)
+    if #photoPaths == 0 then
+        for _, qp in ipairs(candidateQueues) do
+            if LrFileUtils.exists(qp) then
+                pcall(function() LrFileUtils.delete(qp) end)
+            end
         end
+        return false
     end
-
-    if #photoPaths == 0 then return false end
 
     local catalogName = string.match(content, '"catalog_name":%s*"([^"]+)"') or LrPathUtils.leafName(currentCatPath)
     local importedPhotos = {}
@@ -384,8 +382,14 @@ local function checkPendingQueueForCurrentCatalog(catalog)
         end
     end, { timeout = 30 })
 
+    for _, qp in ipairs(candidateQueues) do
+        if LrFileUtils.exists(qp) then
+            pcall(function() LrFileUtils.delete(qp) end)
+        end
+    end
+
     if #importedPhotos > 0 then
-        pcall(function() catalog:setSelectedPhotos(importedPhotos[1], importedPhotos) end)
+        taskPcall(function() catalog:setSelectedPhotos(importedPhotos[1], importedPhotos) end)
         LrDialogs.message(
             "MR Keepers Transfer",
             string.format("✓ Imported %d pending 5★ Keeper DNG(s) into '%s'!", #importedPhotos, catalogName),
@@ -397,7 +401,7 @@ local function checkPendingQueueForCurrentCatalog(catalog)
 end
 
 LrFunctionContext.postAsyncTaskWithContext("MRKeepersTransferTask", function(context)
-    local okTask, taskErr = pcall(function()
+    local okTask, taskErr = taskPcall(function()
         logMsg("Triggered Send 5★ Keepers to Destination Catalog...")
 
         local catalog = LrApplication.activeCatalog()
@@ -408,7 +412,7 @@ LrFunctionContext.postAsyncTaskWithContext("MRKeepersTransferTask", function(con
 
         -- 0. If this catalog has pending incoming keepers waiting in queue, import them right away
         local importedPending = false
-        pcall(function()
+        taskPcall(function()
             importedPending = checkPendingQueueForCurrentCatalog(catalog)
         end)
         if importedPending then
@@ -469,7 +473,7 @@ LrFunctionContext.postAsyncTaskWithContext("MRKeepersTransferTask", function(con
         props.customChosenPath = prefs.customCatalogPath or ""
         props.customPathDisplay = (prefs.customCatalogPath and ("Selected: " .. prefs.customCatalogPath)) or "Click 'Browse...' to select any .lrcat catalog or destination folder"
 
-        -- 4. Build catalog radio rows (without using unpack for Lua 5.1-5.4 compatibility)
+        -- 4. Build catalog radio rows
         local catalogColumnSpec = { spacing = 3 }
 
         if #availableCatalogs == 0 then
@@ -732,12 +736,10 @@ LrFunctionContext.postAsyncTaskWithContext("MRKeepersTransferTask", function(con
         LrFileUtils.createAllDirectories(LrPathUtils.parent(localQueuePath))
         LrFileUtils.writeFile(localQueuePath, queueData)
 
-        pcall(function()
-            local parentDir = LrPathUtils.parent(chosenCatalog.images_folder)
-            if parentDir and LrFileUtils.exists(parentDir) then
-                LrFileUtils.writeFile(LrPathUtils.child(parentDir, ".keeper_import_queue.json"), queueData)
-            end
-        end)
+        local parentDir = LrPathUtils.parent(chosenCatalog.images_folder)
+        if parentDir and LrFileUtils.exists(parentDir) then
+            LrFileUtils.writeFile(LrPathUtils.child(parentDir, ".keeper_import_queue.json"), queueData)
+        end
 
         -- 9. If current catalog is already the destination catalog, import directly
         local isSameCatalog = (#chosenCatalog.catalog_path > 0) and (
@@ -764,21 +766,23 @@ LrFunctionContext.postAsyncTaskWithContext("MRKeepersTransferTask", function(con
             pcall(function() LrFileUtils.delete(localQueuePath) end)
 
             if #importedPhotos > 0 then
-                pcall(function() catalog:setSelectedPhotos(importedPhotos[1], importedPhotos) end)
+                taskPcall(function() catalog:setSelectedPhotos(importedPhotos[1], importedPhotos) end)
                 LrDialogs.showBezel(string.format("✓ %d Keepers imported into %s!", #importedPhotos, chosenCatalog.name), 4)
             end
             return
         end
 
         -- 10. Switch to destination catalog and auto-import via Init.lua
+        -- CRITICAL: Do NOT wrap LrTasks.execute in standard Lua `pcall` (it yields in Lua 5.1!).
+        -- Also launch switch_catalog.sh with `nohup` so Lightroom quitting does not kill the script.
         if props.autoSwitch and #chosenCatalog.catalog_path > 0 then
             LrDialogs.showBezel(string.format("✓ Exported %d Keepers! Opening %s...", #exportedDngs, chosenCatalog.name), 3)
             LrTasks.sleep(0.5)
 
             local switchScript = LrPathUtils.child(pluginDir, "switch_catalog.sh")
-            local cmd = string.format('/bin/bash "%s" "%s" > /dev/null 2>&1 &', switchScript, chosenCatalog.catalog_path)
+            local cmd = string.format('nohup /bin/bash "%s" "%s" </dev/null >> "%s" 2>&1 &', switchScript, chosenCatalog.catalog_path, logFilePath)
             logMsg("Executing catalog switch: " .. cmd)
-            pcall(function() LrTasks.execute(cmd) end)
+            LrTasks.execute(cmd)
         else
             LrDialogs.message(
                 "Keepers Exported Successfully",

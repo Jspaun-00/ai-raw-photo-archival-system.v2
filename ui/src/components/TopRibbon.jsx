@@ -142,9 +142,24 @@ export default function TopRibbon({
     } catch (_) {
       // Server restarts during update-apply
     }
-    setTimeout(() => {
+    // Wait for old server to shut down, then poll until the restarted server responds 200 OK
+    const pollUntilReady = async () => {
+      await new Promise((r) => setTimeout(r, 2200));
+      for (let i = 0; i < 25; i += 1) {
+        try {
+          const res = await fetch('/api/catalogs', { cache: 'no-store' });
+          if (res.ok) {
+            window.location.reload();
+            return;
+          }
+        } catch (_) {
+          // Still restarting
+        }
+        await new Promise((r) => setTimeout(r, 600));
+      }
       window.location.reload();
-    }, 3000);
+    };
+    pollUntilReady();
   };
 
   // Deduplicate additional catalogs cleanly (excluding All Catalogs & Keepers which have dedicated pills)

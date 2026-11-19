@@ -5642,27 +5642,43 @@ _TV_WS_LOCKS_GUARD = threading.Lock()
 _SAMSUNG_NC_BRIDGE_INSTALLED = False
 
 
+def _resolve_tv_sync_entry(sync_data: Dict[str, Any], ip: str) -> Dict[str, Any]:
+    clean_host = (ip or "").split(":")[0].strip()
+    if ip in sync_data and isinstance(sync_data[ip], dict):
+        return sync_data[ip]
+    for k, v in sync_data.items():
+        if clean_host and k.split(":")[0].strip() == clean_host and isinstance(v, dict):
+            return v
+    entry = {"ip": clean_host or ip, "photos": []}
+    sync_data[clean_host or ip] = entry
+    return entry
+
+
 def _create_nc_bridged_socket(host: str, port: int, timeout: float = 10.0) -> socket.socket:
     """
     Creates a real OS `socket.socket` (via `socket.socketpair()`) bridged to `/usr/bin/nc <host> <port>`.
     Used automatically when macOS 15+/27 Local Network Privacy (TCC) blocks direct `AF_INET` connections
     from a background LaunchAgent Python process, while permitting Apple SSV platform binaries (`/usr/bin/nc`).
     Supports full TLS wrapping (`ssl.SSLContext.wrap_socket`) for WSS on port 8002 and D2D photo transfers.
+    IMPORTANT: Never run `nc -z` on ephemeral D2D upload ports (`port not in (8001, 8002)`), because Samsung TV
+    D2D listeners accept only a single TCP connection and immediately close the listener after `nc -z` disconnects!
     """
     clean_host = (host or "").split(":")[0].strip()
+    port_int = int(port)
     wait_sec = max(2, int(round(timeout or 10.0)))
-    check_res = subprocess.run(
-        ["/usr/bin/nc", "-z", "-G", str(min(wait_sec, 4)), clean_host, str(int(port))],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        timeout=min(wait_sec, 4) + 1.5,
-    )
-    if check_res.returncode != 0:
-        raise OSError(f"Samsung TV port {clean_host}:{port} is not reachable via nc")
+    if port_int in (8001, 8002):
+        check_res = subprocess.run(
+            ["/usr/bin/nc", "-z", "-G", str(min(wait_sec, 4)), clean_host, str(port_int)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=min(wait_sec, 4) + 1.5,
+        )
+        if check_res.returncode != 0:
+            raise OSError(f"Samsung TV port {clean_host}:{port_int} is not reachable via nc")
 
     s_client, s_bridge = socket.socketpair()
     proc = subprocess.Popen(
-        ["/usr/bin/nc", "-G", str(wait_sec), clean_host, str(int(port))],
+        ["/usr/bin/nc", "-G", str(wait_sec), clean_host, str(port_int)],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
@@ -5686,11 +5702,13 @@ def _create_nc_bridged_socket(host: str, port: int, timeout: float = 10.0) -> so
                     proc.stdin.close()
             except Exception:
                 pass
-            time.sleep(0.15)
             try:
-                proc.terminate()
+                proc.wait(timeout=15.0)
             except Exception:
-                pass
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
 
     def _pipe_from_nc():
         try:
@@ -6059,7 +6077,7 @@ async def reorder_samsung_tv_art(payload: SamsungTvReorderArtRequest):
 
     def _reorder_sync():
         sync_data = _load_tv_sync_data()
-        tv_entry = sync_data.setdefault(ip, {"ip": ip, "photos": []})
+        tv_entry = _resolve_tv_sync_entry(sync_data, ip)
         photos_list = tv_entry.get("photos", [])
         by_cid = {}
         for p in photos_list:
@@ -6101,8 +6119,14 @@ async def reorder_samsung_tv_art(payload: SamsungTvReorderArtRequest):
 
         return {"status": "ok", "photos": new_photos}
 
-    res = await loop.run_in_executor(None, _reorder_sync)
-    return res
+    try:
+        res = await loop.run_in_executor(None, _reorder_sync)
+        return res
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logging.warning(f"Reorder TV art error ({ip}): {exc}")
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 @app.post("/api/samsung-tvs/purge-legacy-art")
@@ -6123,7 +6147,8 @@ async def purge_legacy_samsung_tv_art(payload: SamsungTvArtActionRequest):
         with tv_lock:
             tv_client, art, _ = _connect_samsung_tv_art(ip, timeout=15.0)
             sync_data = _load_tv_sync_data()
-            curated_cids = [p.get("content_id") for p in sync_data.get(ip, {}).get("photos", []) if p.get("content_id")]
+            tv_entry = _resolve_tv_sync_entry(sync_data, ip)
+            curated_cids = [p.get("content_id") for p in tv_entry.get("photos", []) if p.get("content_id")]
             curated_set = set(curated_cids)
 
             legacy_cids = []
@@ -6163,8 +6188,14 @@ async def purge_legacy_samsung_tv_art(payload: SamsungTvArtActionRequest):
 
             return {"status": "ok", "purged_count": purged_count}
 
-    res = await loop.run_in_executor(None, _purge_sync)
-    return res
+    try:
+        res = await loop.run_in_executor(None, _purge_sync)
+        return res
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logging.warning(f"Purge legacy TV art error ({ip}): {exc}")
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 @app.post("/api/samsung-tvs/remove-art")
@@ -6185,7 +6216,8 @@ async def remove_samsung_tv_art(payload: SamsungTvArtActionRequest):
         with tv_lock:
             tv_client, art, _ = _connect_samsung_tv_art(ip, timeout=12.0)
             sync_data = _load_tv_sync_data()
-            remaining = [p for p in sync_data.get(ip, {}).get("photos", []) if p.get("content_id") != cid]
+            tv_entry = _resolve_tv_sync_entry(sync_data, ip)
+            remaining = [p for p in tv_entry.get("photos", []) if p.get("content_id") != cid]
 
             if remaining:
                 try:
@@ -6200,14 +6232,19 @@ async def remove_samsung_tv_art(payload: SamsungTvArtActionRequest):
             except Exception as e_del:
                 logging.warning(f"TV delete warning for {cid} on {ip}: {e_del}")
 
-            if ip in sync_data:
-                sync_data[ip]["photos"] = remaining
-                _save_tv_sync_data(sync_data)
+            tv_entry["photos"] = remaining
+            _save_tv_sync_data(sync_data)
 
             return {"status": "ok", "content_id": cid}
 
-    res = await loop.run_in_executor(None, _delete_sync)
-    return res
+    try:
+        res = await loop.run_in_executor(None, _delete_sync)
+        return res
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logging.warning(f"Remove TV art error ({ip}, {cid}): {exc}")
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 @app.post("/api/samsung-tvs/select-art")
@@ -6229,8 +6266,14 @@ async def select_samsung_tv_art(payload: SamsungTvArtActionRequest):
             art.select_image(cid, show=True)
             return {"status": "ok", "content_id": cid}
 
-    res = await loop.run_in_executor(None, _select_sync)
-    return res
+    try:
+        res = await loop.run_in_executor(None, _select_sync)
+        return res
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logging.warning(f"Select TV art error ({ip}, {cid}): {exc}")
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 @app.post("/api/samsung-tvs/art-mode")
@@ -6315,8 +6358,14 @@ async def set_samsung_tv_slideshow(payload: SamsungTvSlideshowRequest):
                         pass
             return {"status": "ok", "slideshow_status": "on" if status_on else "off", "duration": dur}
 
-    res = await loop.run_in_executor(None, _slideshow_sync)
-    return res
+    try:
+        res = await loop.run_in_executor(None, _slideshow_sync)
+        return res
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logging.warning(f"Set TV slideshow error ({ip}): {exc}")
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 @app.post("/api/samsung-tvs/update-art-mat")
@@ -6337,21 +6386,49 @@ async def update_samsung_tv_art_mat(payload: SamsungTvUpdateMatRequest):
         tv_lock = _get_tv_ws_lock(ip)
         with tv_lock:
             sync_data = _load_tv_sync_data()
-            current_sync_tv = sync_data.setdefault(ip, {"ip": ip, "photos": []})
+            current_sync_tv = _resolve_tv_sync_entry(sync_data, ip)
             photos_list = current_sync_tv.get("photos", [])
-            if not photos_list:
-                raise RuntimeError("No curated photos registered on this TV.")
 
             if payload.apply_to_all:
+                if not photos_list:
+                    raise RuntimeError("No curated photos registered on this TV.")
                 targets = list(photos_list)
             else:
+                # Match exact content_id first so duplicate file_hash entries aren't all uploaded at once
                 targets = [
                     p for p in photos_list
-                    if (payload.content_id and p.get("content_id") == payload.content_id)
-                    or (payload.file_hash and p.get("file_hash") == payload.file_hash)
+                    if payload.content_id and p.get("content_id") == payload.content_id
                 ]
-                if not targets and payload.content_id:
-                    raise RuntimeError(f"Photo {payload.content_id} not found in TV curation registry.")
+                if not targets and payload.file_hash:
+                    targets = [
+                        p for p in photos_list
+                        if p.get("file_hash") == payload.file_hash
+                    ][:1]
+                # Fallback: if photo is in SQLite photo_records by file_hash, synthesize a sync entry
+                if not targets and payload.file_hash:
+                    conn = get_db_connection(DEFAULT_DB_PATH)
+                    row = conn.execute(
+                        "SELECT * FROM photo_records WHERE file_hash = ? LIMIT 1",
+                        (payload.file_hash,),
+                    ).fetchone()
+                    conn.close()
+                    if row:
+                        r_dict = dict(row)
+                        synth = {
+                            "content_id": payload.content_id,
+                            "file_hash": payload.file_hash,
+                            "file_path": r_dict.get("file_path"),
+                            "filename": Path(r_dict.get("file_path") or "photo.jpg").name,
+                            "title": r_dict.get("title") or Path(r_dict.get("file_path") or "photo.jpg").stem,
+                            "shoot_date": r_dict.get("shoot_date") or "",
+                            "star_rating": int(r_dict.get("star_rating") or 0),
+                            "thumb_url": f"/previews_1600/{payload.file_hash}.webp",
+                        }
+                        photos_list.append(synth)
+                        targets = [synth]
+
+                if not targets:
+                    raise RuntimeError(f"Photo {payload.content_id or payload.file_hash} not found in TV curation registry.")
 
             tv_client, art, _ = _connect_samsung_tv_art(ip, timeout=35.0)
 
@@ -6410,6 +6487,9 @@ async def update_samsung_tv_art_mat(payload: SamsungTvUpdateMatRequest):
                     p_rec["uploaded_at"] = datetime.now().isoformat()
                     updated_cids.append(new_cid)
 
+            if not updated_cids:
+                raise RuntimeError("Could not load high-resolution preview or source image for the selected photo.")
+
             _save_tv_sync_data(sync_data)
 
             if updated_cids:
@@ -6435,8 +6515,14 @@ async def update_samsung_tv_art_mat(payload: SamsungTvUpdateMatRequest):
                 "photos": current_sync_tv["photos"],
             }
 
-    res = await loop.run_in_executor(None, _update_mat_worker)
-    return res
+    try:
+        res = await loop.run_in_executor(None, _update_mat_worker)
+        return res
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logging.exception(f"Update TV art mat error ({ip}): {exc}")
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 @app.post("/api/samsung-tvs/sync-collection")
@@ -6492,7 +6578,7 @@ async def sync_collection_to_samsung_tv(payload: SamsungTvSyncCollectionRequest)
             tv_client, art, _ = _connect_samsung_tv_art(ip, timeout=35.0)
 
             sync_data = _load_tv_sync_data()
-            current_sync_tv = sync_data.setdefault(ip, {"ip": ip, "photos": []})
+            current_sync_tv = _resolve_tv_sync_entry(sync_data, ip)
 
             old_cids_to_delete = []
             if payload.mode == "overwrite":
@@ -6527,6 +6613,15 @@ async def sync_collection_to_samsung_tv(payload: SamsungTvSyncCollectionRequest)
                 cid = art.upload(buf.getvalue(), file_type="JPEG", matte="none")
 
                 if cid:
+                    # If additive mode replaces an existing entry for the same file_hash, delete its old plate
+                    if payload.mode != "overwrite" and f_hash:
+                        existing_same_hash = [p for p in current_sync_tv["photos"] if p.get("file_hash") == f_hash]
+                        for ex in existing_same_hash:
+                            ex_cid = ex.get("content_id")
+                            if ex_cid and ex_cid != cid:
+                                old_cids_to_delete.append(ex_cid)
+                        current_sync_tv["photos"] = [p for p in current_sync_tv["photos"] if p.get("file_hash") != f_hash]
+
                     photo_entry = {
                         "content_id": cid,
                         "file_hash": f_hash,
@@ -6583,8 +6678,14 @@ async def sync_collection_to_samsung_tv(payload: SamsungTvSyncCollectionRequest)
                 "photos": current_sync_tv["photos"],
             }
 
-    res = await loop.run_in_executor(None, _sync_worker)
-    return res
+    try:
+        res = await loop.run_in_executor(None, _sync_worker)
+        return res
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logging.exception(f"Sync collection to TV error ({ip}): {exc}")
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 class RevealFolderRequest(BaseModel):
@@ -10344,12 +10445,29 @@ async def apply_system_update():
         logging.warning(f"Lightroom plugin auto-deploy error: {exc}")
 
     def _delayed_restart():
-        time.sleep(0.9)
+        import shlex
+        time.sleep(0.8)
         logging.info("Restarting MR Darkroom server process after update...")
         try:
-            os.execv(sys.executable, [sys.executable] + sys.argv)
+            my_pid = os.getpid()
+            log_file = str(DATA_VAULT_DIR / "server.log")
+            restart_cmd = (
+                f"kill -TERM {my_pid} 2>/dev/null || true; "
+                f"for i in 1 2 3 4 5 6 7 8 9 10; do kill -0 {my_pid} 2>/dev/null || break; sleep 0.2; done; "
+                f"kill -9 {my_pid} 2>/dev/null || true; "
+                f"lsof -ti tcp:8501 -sTCP:LISTEN | xargs kill -9 2>/dev/null || true; "
+                f"sleep 0.3; "
+                f"cd {shlex.quote(str(PROJECT_ROOT))} && "
+                f"nohup {shlex.quote(sys.executable)} -m uvicorn server:app --host 127.0.0.1 --port 8501 "
+                f"</dev/null >>{shlex.quote(log_file)} 2>&1 &"
+            )
+            subprocess.Popen(
+                ["/bin/sh", "-c", restart_cmd],
+                start_new_session=True,
+                close_fds=True,
+            )
         except Exception as exc:
-            logging.error(f"Restart execv failed: {exc}")
+            logging.error(f"Restart spawn failed: {exc}")
 
     threading.Thread(target=_delayed_restart, daemon=True).start()
 

@@ -649,7 +649,13 @@ export default function TvDisplaysView({
           apply_to_all: applyToAll,
         }),
       });
-      const data = await res.json();
+      const rawText = await res.text();
+      let data = {};
+      try {
+        data = rawText ? JSON.parse(rawText) : {};
+      } catch {
+        data = { detail: rawText || `HTTP ${res.status}` };
+      }
       if (!res.ok) throw new Error(data.detail || `Update failed (${res.status})`);
       showGlobalToast(
         applyToAll

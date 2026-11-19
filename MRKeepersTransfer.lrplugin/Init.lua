@@ -4,6 +4,7 @@ local LrFileUtils = import 'LrFileUtils'
 local LrPathUtils = import 'LrPathUtils'
 local LrDialogs = import 'LrDialogs'
 
+local taskPcall = LrTasks.pcall or pcall
 local homeDir = LrPathUtils.getStandardFilePath('home') or os.getenv("HOME") or '/Users/mitch'
 local localQueuePath = LrPathUtils.child(homeDir, "Library/Application Support/MRDarkroom/keeper_import_queue.json")
 local logFilePath = LrPathUtils.child(homeDir, "Library/Application Support/MRDarkroom/lr_plugin.log")
@@ -35,17 +36,15 @@ local function findActiveQueuePath(currentCatPath)
         end
     end
     local foundVolQueue = nil
-    pcall(function()
-        if LrFileUtils.exists("/Volumes") then
-            for vol in LrFileUtils.directoryEntries("/Volumes") do
-                local cand = LrPathUtils.child(vol, ".keeper_import_queue.json")
-                if LrFileUtils.exists(cand) then
-                    foundVolQueue = cand
-                    break
-                end
+    if LrFileUtils.exists("/Volumes") then
+        for vol in LrFileUtils.directoryEntries("/Volumes") do
+            local cand = LrPathUtils.child(vol, ".keeper_import_queue.json")
+            if LrFileUtils.exists(cand) then
+                foundVolQueue = cand
+                break
             end
         end
-    end)
+    end
     return foundVolQueue
 end
 
@@ -65,16 +64,14 @@ local function clearAllQueueFiles(currentCatPath, activeQueuePath)
             end
         end
     end
-    pcall(function()
-        if LrFileUtils.exists("/Volumes") then
-            for vol in LrFileUtils.directoryEntries("/Volumes") do
-                local cand = LrPathUtils.child(vol, ".keeper_import_queue.json")
-                if LrFileUtils.exists(cand) then
-                    pcall(function() LrFileUtils.delete(cand) end)
-                end
+    if LrFileUtils.exists("/Volumes") then
+        for vol in LrFileUtils.directoryEntries("/Volumes") do
+            local cand = LrPathUtils.child(vol, ".keeper_import_queue.json")
+            if LrFileUtils.exists(cand) then
+                pcall(function() LrFileUtils.delete(cand) end)
             end
         end
-    end)
+    end
 end
 
 local function checkAndImportQueue()
@@ -106,9 +103,6 @@ local function checkAndImportQueue()
     isImporting = true
     logMsg("Matched destination catalog: " .. tostring(currentCatPath) .. " from queue: " .. tostring(queuePath))
 
-    -- Clear queue files immediately to prevent duplicate runs
-    clearAllQueueFiles(currentCatPath, queuePath)
-
     local catalogName = string.match(content, '"catalog_name":%s*"([^"]+)"') or LrPathUtils.leafName(currentCatPath)
 
     local photoPaths = {}
@@ -126,16 +120,18 @@ local function checkAndImportQueue()
     end
 
     if #photoPaths == 0 then
-        logMsg("No existing DNG files found in queue manifest.")
+        logMsg("No existing DNG files found in queue manifest; clearing stale queue.")
+        clearAllQueueFiles(currentCatPath, queuePath)
         isImporting = false
         return
     end
 
-    -- Give Lightroom catalog UI a brief moment to finish opening
+    -- Give Lightroom catalog UI a brief moment to settle after opening
     LrTasks.sleep(2.0)
 
     local importedPhotos = {}
-    local okWrite, errWrite = pcall(function()
+    -- IMPORTANT: Use LrTasks.pcall (not standard Lua pcall) because catalog:withWriteAccessDo yields!
+    local okWrite, errWrite = taskPcall(function()
         catalog:withWriteAccessDo("Import 5★ Keepers", function(context)
             for _, p in ipairs(photoPaths) do
                 local photo = catalog:addPhoto(p)
@@ -159,12 +155,15 @@ local function checkAndImportQueue()
         end, { timeout = 30 })
     end)
 
+    -- Clear queue files after write access completes
+    clearAllQueueFiles(currentCatPath, queuePath)
+
     if not okWrite then
         logMsg("withWriteAccessDo error: " .. tostring(errWrite))
     end
 
     if #importedPhotos > 0 then
-        pcall(function()
+        taskPcall(function()
             catalog:setSelectedPhotos(importedPhotos[1], importedPhotos)
         end)
         LrDialogs.showBezel(string.format("✓ %d Keepers imported into %s!", #importedPhotos, catalogName), 4)
@@ -176,10 +175,10 @@ end
 
 LrTasks.startAsyncTask(function()
     LrTasks.sleep(1.5)
-    pcall(checkAndImportQueue)
+    taskPcall(checkAndImportQueue)
 
     while true do
         LrTasks.sleep(2.5)
-        pcall(checkAndImportQueue)
+        taskPcall(checkAndImportQueue)
     end
 end)

@@ -370,15 +370,18 @@ else
     SITE_PACKAGES_DIR="$PROJECT_ROOT/.venv/lib/python3.9/site-packages"
 fi
 
-if [ -x "$PROJECT_ROOT/.venv/bin/python" ]; then
-    PYTHON_BIN="$PROJECT_ROOT/.venv/bin/python"
-elif [ -x "$PROJECT_ROOT/Python3/bin/python3.9" ]; then
-    PYTHON_BIN="$PROJECT_ROOT/Python3/bin/python3.9"
-elif [ -x "$LOCAL_RUNTIME_CACHE/.venv/bin/python" ]; then
-    PYTHON_BIN="$LOCAL_RUNTIME_CACHE/.venv/bin/python"
-else
-    PYTHON_BIN="/usr/bin/python3"
-fi
+PYTHON_BIN="/usr/bin/python3"
+for CAND_PY in \
+    "$LOCAL_RUNTIME_CACHE/.venv/bin/python" \
+    "$PROJECT_ROOT/.venv/bin/python" \
+    "$PROJECT_ROOT/Python3/bin/python3.9" \
+    "/Library/Developer/CommandLineTools/usr/bin/python3" \
+    "/usr/bin/python3"; do
+    if [ -x "$CAND_PY" ] && "$CAND_PY" -c "import sys" >/dev/null 2>&1; then
+        PYTHON_BIN="$CAND_PY"
+        break
+    fi
+done
 export PYTHONPATH="$PROJECT_ROOT/vendor:$SITE_PACKAGES_DIR:$PROJECT_ROOT"
 export PATH="$PROJECT_ROOT/bin:$(dirname "$PYTHON_BIN"):$PATH"
 

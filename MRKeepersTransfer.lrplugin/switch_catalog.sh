@@ -12,19 +12,32 @@ if [ -z "$TARGET_CAT" ]; then
     exit 1
 fi
 
-# 1. Ask Lightroom Classic to quit gracefully via AppleScript
+echo "[switch_catalog] Requesting Adobe Lightroom Classic to quit..."
 osascript -e 'tell application "Adobe Lightroom Classic" to quit' 2>/dev/null || true
 
-# 2. Wait for process to exit (up to 30 seconds)
-for i in {1..60}; do
-    if ! pgrep -x "Adobe Lightroom Classic" > /dev/null 2>&1; then
+# Wait for Lightroom Classic binary to exit completely (up to 35 seconds)
+for i in {1..70}; do
+    if ! pgrep -f "Adobe Lightroom Classic.app/Contents/MacOS/Adobe Lightroom Classic" > /dev/null 2>&1 && \
+       ! pgrep -x "Adobe Lightroom Classic" > /dev/null 2>&1; then
         break
     fi
     sleep 0.5
 done
 
-# 3. Buffer for SQLite lockfile release
-sleep 1.2
+# Wait for SQLite .lrcat.lock and LaunchServices termination state to clear
+sleep 2.0
 
-# 4. Open Lightroom Classic with the destination catalog
-open -a "Adobe Lightroom Classic" "$TARGET_CAT"
+echo "[switch_catalog] Launching destination catalog: $TARGET_CAT"
+for attempt in {1..5}; do
+    open -a "Adobe Lightroom Classic" "$TARGET_CAT" 2>/dev/null || open "$TARGET_CAT" 2>/dev/null || true
+    sleep 2.0
+    if pgrep -f "Adobe Lightroom Classic.app/Contents/MacOS/Adobe Lightroom Classic" > /dev/null 2>&1 || \
+       pgrep -x "Adobe Lightroom Classic" > /dev/null 2>&1; then
+        osascript -e 'tell application "Adobe Lightroom Classic" to activate' 2>/dev/null || true
+        echo "[switch_catalog] Adobe Lightroom Classic launched successfully on attempt $attempt."
+        exit 0
+    fi
+done
+
+open "$TARGET_CAT" 2>/dev/null || true
+exit 0
