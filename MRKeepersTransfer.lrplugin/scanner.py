@@ -61,7 +61,33 @@ def resolve_images_folder(cat_dir, preferred_subdirs=None):
             return p
     return os.path.join(cat_dir, 'Images')
 
-def discover_catalogs():
+def is_current_catalog(cand_lrcat, current_cat_path=None):
+    if not cand_lrcat or not current_cat_path:
+        return False
+    norm_cand = os.path.normpath(cand_lrcat).rstrip('/').lower()
+    norm_curr = os.path.normpath(current_cat_path).rstrip('/').lower()
+    if norm_cand == norm_curr:
+        return True
+    if len(norm_cand) > 10 and len(norm_curr) > 10:
+        if norm_cand.endswith(norm_curr) or norm_curr.endswith(norm_cand):
+            return True
+    cand_dir = os.path.normpath(os.path.dirname(cand_lrcat)).rstrip('/').lower()
+    curr_dir = os.path.normpath(os.path.dirname(current_cat_path)).rstrip('/').lower()
+    if cand_dir and curr_dir:
+        is_same_dir = (cand_dir == curr_dir) or (
+            len(cand_dir) > 8 and len(curr_dir) > 8 and (cand_dir.endswith(curr_dir) or curr_dir.endswith(cand_dir))
+        )
+        if is_same_dir:
+            is_vol_root = cand_dir.startswith('/volumes/') and cand_dir.count('/') == 2
+            if not is_vol_root:
+                return True
+            base_cand = os.path.basename(cand_lrcat).lower().replace('.lrcat', '')
+            base_curr = os.path.basename(current_cat_path).lower().replace('.lrcat', '')
+            if base_cand == base_curr:
+                return True
+    return False
+
+def discover_catalogs(current_cat_path=None):
     known_targets = [
         {
             'key': 'landscape_keepers',
@@ -125,7 +151,7 @@ def discover_catalogs():
             candidate_dir = os.path.join(vol, target['rel_folder'])
             if os.path.exists(candidate_dir):
                 cat_path = get_best_lrcat_in_dir(candidate_dir)
-                if cat_path and cat_path not in seen_catalogs:
+                if cat_path and cat_path not in seen_catalogs and not is_current_catalog(cat_path, current_cat_path):
                     seen_catalogs.add(cat_path)
                     img_path = resolve_images_folder(candidate_dir, target['img_subdirs'])
                     found.append({
@@ -144,7 +170,7 @@ def discover_catalogs():
         try:
             # A) Check root level of volume (e.g. /Volumes/TravelDrive/*.lrcat)
             root_cat = get_best_lrcat_in_dir(root_path)
-            if root_cat and root_cat not in seen_catalogs:
+            if root_cat and root_cat not in seen_catalogs and not is_current_catalog(root_cat, current_cat_path):
                 seen_catalogs.add(root_cat)
                 cat_name = os.path.basename(os.path.dirname(root_cat)) or root_label
                 found.append({
@@ -165,7 +191,7 @@ def discover_catalogs():
             for d in subdirs:
                 # 1st level check
                 lrcat_1 = get_best_lrcat_in_dir(d)
-                if lrcat_1 and lrcat_1 not in seen_catalogs:
+                if lrcat_1 and lrcat_1 not in seen_catalogs and not is_current_catalog(lrcat_1, current_cat_path):
                     seen_catalogs.add(lrcat_1)
                     folder_name = os.path.basename(d)
                     found.append({
@@ -185,7 +211,7 @@ def discover_catalogs():
                     ]
                     for sd in sub_subdirs:
                         lrcat_2 = get_best_lrcat_in_dir(sd)
-                        if lrcat_2 and lrcat_2 not in seen_catalogs:
+                        if lrcat_2 and lrcat_2 not in seen_catalogs and not is_current_catalog(lrcat_2, current_cat_path):
                             seen_catalogs.add(lrcat_2)
                             sub_folder_name = os.path.basename(sd)
                             parent_folder_name = os.path.basename(d)

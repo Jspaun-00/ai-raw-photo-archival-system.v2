@@ -134,7 +134,97 @@ local function isExcludedSubfolder(folderName)
     return false
 end
 
-local function discoverCatalogs(currentCatPath)
+-- Normalizes paths for cross-platform/APFS comparison (standardizes slashes, lowercases, strips trailing slashes)
+local function normalizeCatalogPath(p)
+    if not p or p == "" then return "" end
+    local norm = tostring(p)
+    pcall(function()
+        if LrPathUtils and LrPathUtils.standardizePath then
+            norm = LrPathUtils.standardizePath(norm)
+        end
+    end)
+    norm = string.gsub(norm, "/+$", "")
+    return string.lower(norm)
+end
+
+-- Extracts clean base catalog name (strips .lrcat, -v12, -v13, -2 version increments and special chars)
+local function getCatalogBaseName(pathOrName)
+    if not pathOrName or pathOrName == "" then return "" end
+    local leaf = LrPathUtils.leafName(pathOrName) or pathOrName
+    local base = string.gsub(leaf, "%.[Ll][Rr][Cc][Aa][Tt]$", "")
+    -- Strip Lightroom upgrade version suffixes like -v12, -v13, -2, etc.
+    base = string.gsub(base, "%-v%d+$", "")
+    base = string.gsub(base, "%-%d+$", "")
+    -- Strip non-alphanumeric characters for fuzzy matching
+    base = string.gsub(string.lower(base), "[^%w]", "")
+    return base
+end
+
+-- Intelligently determines whether a candidate catalog matches or belongs to the currently active catalog
+local function isCurrentCatalog(candLrcat, currentCatPath, currentCatName)
+    if not candLrcat or candLrcat == "" then return false end
+    if not currentCatPath or currentCatPath == "" then return false end
+
+    local normCand = normalizeCatalogPath(candLrcat)
+    local normCurr = normalizeCatalogPath(currentCatPath)
+
+    -- 1. Exact path match
+    if normCand == normCurr then
+        return true
+    end
+
+    -- 2. Substring match (handles APFS /System/Volumes/Data symlinks vs direct /Volumes or /Users paths)
+    if string.len(normCand) > 10 and string.len(normCurr) > 10 then
+        if string.sub(normCand, -string.len(normCurr)) == normCurr or
+           string.sub(normCurr, -string.len(normCand)) == normCand then
+            return true
+        end
+    end
+
+    -- 3. Catalog directory match
+    -- In Lightroom Classic, each catalog lives in its own dedicated directory (.lrcat, .lrdata, etc.)
+    local candDir = normalizeCatalogPath(LrPathUtils.parent(candLrcat))
+    local currDir = normalizeCatalogPath(LrPathUtils.parent(currentCatPath))
+
+    if candDir ~= "" and currDir ~= "" then
+        local isSameDir = (candDir == currDir)
+        if not isSameDir and string.len(candDir) > 8 and string.len(currDir) > 8 then
+            if string.sub(candDir, -string.len(currDir)) == currDir or
+               string.sub(currDir, -string.len(candDir)) == candDir then
+                isSameDir = true
+            end
+        end
+
+        if isSameDir then
+            -- If not a top-level volume root (e.g. /Volumes/2TB_Archive directly), same folder = same catalog
+            local isVolRoot = string.match(candDir, "^/volumes/[^/]+$") ~= nil or candDir == "/" or candDir == "/volumes"
+            if not isVolRoot then
+                return true
+            end
+            -- If it is a top volume root, verify base name matches
+            if getCatalogBaseName(candLrcat) == getCatalogBaseName(currentCatPath) then
+                return true
+            end
+        end
+    end
+
+    -- 4. Active catalog name match (e.g. catalog:getName())
+    if currentCatName and currentCatName ~= "" then
+        local currBase = getCatalogBaseName(currentCatName)
+        local candBase = getCatalogBaseName(candLrcat)
+        if currBase ~= "" and currBase == candBase then
+            local candParent = string.lower(LrPathUtils.leafName(LrPathUtils.parent(candLrcat) or "") or "")
+            local currParent = string.lower(LrPathUtils.leafName(LrPathUtils.parent(currentCatPath) or "") or "")
+            if candParent ~= "" and currParent ~= "" and candParent == currParent then
+                return true
+            end
+        end
+    end
+
+    return false
+end
+
+local function discoverCatalogs(currentCatPath, currentCatName)
     local catalogs = {}
     local seenLrcat = {}
 
@@ -217,7 +307,7 @@ local function discoverCatalogs(currentCatPath)
             local folderPath = LrPathUtils.child(rootDir, def.rel_folder)
             if LrFileUtils.exists(folderPath) == "directory" then
                 local lrcat = scanDirectoryForBestLrcat(folderPath)
-                if lrcat and not seenLrcat[lrcat] and lrcat ~= currentCatPath then
+                if lrcat and not seenLrcat[lrcat] and not isCurrentCatalog(lrcat, currentCatPath, currentCatName) then
                     seenLrcat[lrcat] = true
                     local imgFolder = resolveImagesFolderForCatalogDir(folderPath, def.img_subdirs)
                     table.insert(catalogs, {
@@ -240,7 +330,7 @@ local function discoverCatalogs(currentCatPath)
 
         -- A) Check root level of volume/directory (e.g. /Volumes/TravelDrive/*.lrcat)
         local rootLrcat = scanDirectoryForBestLrcat(rootDir)
-        if rootLrcat and not seenLrcat[rootLrcat] and rootLrcat ~= currentCatPath then
+        if rootLrcat and not seenLrcat[rootLrcat] and not isCurrentCatalog(rootLrcat, currentCatPath, currentCatName) then
             seenLrcat[rootLrcat] = true
             local catName = LrPathUtils.leafName(LrPathUtils.parent(rootLrcat)) or rootName
             local imgFolder = resolveImagesFolderForCatalogDir(rootDir, nil)
@@ -261,7 +351,7 @@ local function discoverCatalogs(currentCatPath)
                 if LrFileUtils.exists(subDir) == "directory" and not isExcludedSubfolder(subName) then
                     -- 1st level check
                     local lrcat1 = scanDirectoryForBestLrcat(subDir)
-                    if lrcat1 and not seenLrcat[lrcat1] and lrcat1 ~= currentCatPath then
+                    if lrcat1 and not seenLrcat[lrcat1] and not isCurrentCatalog(lrcat1, currentCatPath, currentCatName) then
                         seenLrcat[lrcat1] = true
                         local imgFolder = resolveImagesFolderForCatalogDir(subDir, nil)
                         table.insert(catalogs, {
@@ -280,7 +370,7 @@ local function discoverCatalogs(currentCatPath)
                             local subSubName = LrPathUtils.leafName(subSubDir) or ""
                             if LrFileUtils.exists(subSubDir) == "directory" and not isExcludedSubfolder(subSubName) then
                                 local lrcat2 = scanDirectoryForBestLrcat(subSubDir)
-                                if lrcat2 and not seenLrcat[lrcat2] and lrcat2 ~= currentCatPath then
+                                if lrcat2 and not seenLrcat[lrcat2] and not isCurrentCatalog(lrcat2, currentCatPath, currentCatName) then
                                     seenLrcat[lrcat2] = true
                                     local imgFolder = resolveImagesFolderForCatalogDir(subSubDir, nil)
                                     local displayLabel = string.format("%s / %s  [%s]", subName, subSubName, rootName)
@@ -304,7 +394,7 @@ local function discoverCatalogs(currentCatPath)
     -- 3. Saved custom catalog (if previously browsed by user)
     if prefs.customCatalogPath and LrFileUtils.exists(prefs.customCatalogPath) then
         local catPath = prefs.customCatalogPath
-        if not seenLrcat[catPath] and catPath ~= currentCatPath then
+        if not seenLrcat[catPath] and not isCurrentCatalog(catPath, currentCatPath, currentCatName) then
             seenLrcat[catPath] = true
             local catName = prefs.customCatalogName or LrPathUtils.leafName(catPath)
             local imgFolder = prefs.customImagesFolder or LrPathUtils.parent(catPath)
@@ -599,10 +689,23 @@ LrFunctionContext.postAsyncTaskWithContext("MRKeepersTransferTask", function(con
             end
         end
 
-        -- 2. Discover available target catalogs dynamically across all mounted drives
-        local currentCatPath = catalog:getPath() or ""
-        local availableCatalogs = discoverCatalogs(currentCatPath)
-        logMsg(string.format("Discovered %d destination catalog(s)", #availableCatalogs))
+        -- 2. Discover available target catalogs dynamically across all mounted drives (intelligently excluding current catalog)
+        local currentCatPath = ""
+        local currentCatName = ""
+        taskPcall(function() currentCatPath = catalog:getPath() or "" end)
+        taskPcall(function() currentCatName = catalog:getName() or "" end)
+        logMsg(string.format("Active catalog: path='%s', name='%s'", tostring(currentCatPath), tostring(currentCatName)))
+
+        local rawCatalogs = discoverCatalogs(currentCatPath, currentCatName)
+        local availableCatalogs = {}
+        for _, c in ipairs(rawCatalogs) do
+            if not isCurrentCatalog(c.catalog_path, currentCatPath, currentCatName) then
+                table.insert(availableCatalogs, c)
+            else
+                logMsg("Intelligently excluded active catalog from destination list: " .. tostring(c.catalog_path))
+            end
+        end
+        logMsg(string.format("Discovered %d destination catalog(s) (excluding active catalog)", #availableCatalogs))
 
         -- 3. Set up observable UI property table bound to FunctionContext
         local f = LrView.osFactory()
@@ -631,12 +734,18 @@ LrFunctionContext.postAsyncTaskWithContext("MRKeepersTransferTask", function(con
         props.customChosenPath = prefs.customCatalogPath or ""
         props.customPathDisplay = (prefs.customCatalogPath and ("Selected: " .. prefs.customCatalogPath)) or "Click 'Browse...' to select any .lrcat catalog or destination folder"
 
-        -- 4. Build catalog radio rows with organized sections
-        local catalogColumnSpec = { spacing = 3 }
+        -- 4. Build catalog radio rows with organized sections and comfortable padding
+        local catalogColumnSpec = {
+            spacing = 5,
+            margin_left = 6,
+            margin_right = 6,
+            margin_top = 4,
+            margin_bottom = 4,
+        }
 
         if #availableCatalogs == 0 then
             table.insert(catalogColumnSpec, f:static_text {
-                title = "⚠️ No external archive drive detected in /Volumes. Plug in your 2TB Archive SSD or choose a folder below:",
+                title = "ℹ️ No other destination catalogs found. Plug in your 2TB Archive SSD or choose a folder below:",
                 text_color = LrColor(0.85, 0.35, 0.1),
                 font = "<system/bold>",
             })
@@ -649,21 +758,22 @@ LrFunctionContext.postAsyncTaskWithContext("MRKeepersTransferTask", function(con
         for _, c in ipairs(availableCatalogs) do
             if c.is_master_keeper and not hasShownMasterHeader then
                 hasShownMasterHeader = true
+                table.insert(catalogColumnSpec, f:spacer { height = 3 })
                 table.insert(catalogColumnSpec, f:static_text {
                     title = "★ 2TB ARCHIVE KEEPERS:",
                     font = "<system/bold>",
                     text_color = LrColor(0.1, 0.4, 0.8),
                 })
-                table.insert(catalogColumnSpec, f:spacer { height = 2 })
+                table.insert(catalogColumnSpec, f:spacer { height = 3 })
             elseif not c.is_master_keeper and not hasShownExternalHeader then
                 hasShownExternalHeader = true
-                table.insert(catalogColumnSpec, f:spacer { height = 6 })
+                table.insert(catalogColumnSpec, f:spacer { height = 8 })
                 table.insert(catalogColumnSpec, f:static_text {
                     title = "📁 CONNECTED EXTERNAL & TRAVEL CATALOGS:",
                     font = "<system/bold>",
                     text_color = LrColor(0.15, 0.55, 0.25),
                 })
-                table.insert(catalogColumnSpec, f:spacer { height = 2 })
+                table.insert(catalogColumnSpec, f:spacer { height = 3 })
             end
 
             table.insert(catalogColumnSpec, f:row {
@@ -687,10 +797,10 @@ LrFunctionContext.postAsyncTaskWithContext("MRKeepersTransferTask", function(con
         end
 
         local catalogContainer
-        if #availableCatalogs > 4 then
+        if #availableCatalogs > 3 then
             catalogContainer = f:scrolled_view {
-                width = 570,
-                height = 200,
+                width = 624,
+                height = 220,
                 horizontal_scroller = false,
                 vertical_scroller = true,
                 f:column(catalogColumnSpec),
@@ -701,7 +811,9 @@ LrFunctionContext.postAsyncTaskWithContext("MRKeepersTransferTask", function(con
 
         -- Manual Browse option (always visible below the list)
         local manualBrowseRow = f:column {
-            spacing = 2,
+            spacing = 3,
+            margin_left = 6,
+            margin_right = 6,
             f:row {
                 f:radio_button {
                     title = "Choose Another Catalog (.lrcat) or Folder Manually...",
@@ -746,8 +858,9 @@ LrFunctionContext.postAsyncTaskWithContext("MRKeepersTransferTask", function(con
 
         local dialogRows = {
             bind_to_object = props,
-            spacing = f:control_spacing(),
-            width = 580,
+            spacing = 8,
+            margin = 16,
+            width = 640,
 
             f:row {
                 f:static_text {
@@ -756,6 +869,7 @@ LrFunctionContext.postAsyncTaskWithContext("MRKeepersTransferTask", function(con
                     fill_horizontal = 1,
                 },
             },
+            f:spacer { height = 2 },
             f:row {
                 f:checkbox {
                     title = "Skip duplicate exports (automatically skip 5★ photos already in destination catalog)",
@@ -783,22 +897,26 @@ LrFunctionContext.postAsyncTaskWithContext("MRKeepersTransferTask", function(con
             })
         end
 
+        table.insert(dialogRows, f:spacer { height = 4 })
         table.insert(dialogRows, f:separator { fill_horizontal = 1 })
-        table.insert(dialogRows, f:spacer { height = 2 })
+        table.insert(dialogRows, f:spacer { height = 6 })
         table.insert(dialogRows, f:static_text {
             title = "Select Destination Catalog:",
             font = "<system/bold>",
         })
-        table.insert(dialogRows, catalogContainer)
         table.insert(dialogRows, f:spacer { height = 4 })
+        table.insert(dialogRows, catalogContainer)
+        table.insert(dialogRows, f:spacer { height = 8 })
         table.insert(dialogRows, manualBrowseRow)
+        table.insert(dialogRows, f:spacer { height = 6 })
         table.insert(dialogRows, f:separator { fill_horizontal = 1 })
-        table.insert(dialogRows, f:spacer { height = 2 })
+        table.insert(dialogRows, f:spacer { height = 6 })
         table.insert(dialogRows, f:checkbox {
             title = "Automatically close this catalog, open destination catalog, and import Keepers",
             value = LrView.bind 'autoSwitch',
             font = "<system/bold>",
         })
+        table.insert(dialogRows, f:spacer { height = 4 })
 
         local viewContents = f:column(dialogRows)
 
