@@ -233,29 +233,71 @@ local function discoverCatalogs(currentCatPath)
         end
     end
 
-    -- 2. Dynamic scan of top-level folders on all external volumes for any other .lrcat catalogs
+    -- 2. Dynamic multi-level scan (root, 1st level, and 2nd level) on all candidate drives
     for _, rootDir in ipairs(candidateRoots) do
         local rootName = LrPathUtils.leafName(rootDir) or "Drive"
-        if rootDir ~= LrPathUtils.child(homeDir, "Pictures") and rootDir ~= LrPathUtils.child(homeDir, "Desktop") then
+
+        -- A) Check root level of volume/directory (e.g. /Volumes/TravelDrive/*.lrcat)
+        local rootLrcat = scanDirectoryForBestLrcat(rootDir)
+        if rootLrcat and not seenLrcat[rootLrcat] and rootLrcat ~= currentCatPath then
+            seenLrcat[rootLrcat] = true
+            local catName = LrPathUtils.leafName(LrPathUtils.parent(rootLrcat)) or rootName
+            local imgFolder = resolveImagesFolderForCatalogDir(rootDir, nil)
+            table.insert(catalogs, {
+                key = "root_" .. string.gsub(string.lower(catName .. "_" .. rootName), "[^a-z0-9_]", "_"),
+                name = catName,
+                volume = rootName,
+                catalog_path = rootLrcat,
+                images_folder = imgFolder,
+                display_label = string.format("%s  [%s]", catName, rootName),
+            })
+        end
+
+        -- B) Check 1st & 2nd level subdirectories safely with pcall
+        pcall(function()
             for subDir in LrFileUtils.directoryEntries(rootDir) do
                 local subName = LrPathUtils.leafName(subDir) or ""
                 if LrFileUtils.exists(subDir) == "directory" and not isExcludedSubfolder(subName) then
-                    local lrcat = scanDirectoryForBestLrcat(subDir)
-                    if lrcat and not seenLrcat[lrcat] and lrcat ~= currentCatPath then
-                        seenLrcat[lrcat] = true
+                    -- 1st level check
+                    local lrcat1 = scanDirectoryForBestLrcat(subDir)
+                    if lrcat1 and not seenLrcat[lrcat1] and lrcat1 ~= currentCatPath then
+                        seenLrcat[lrcat1] = true
                         local imgFolder = resolveImagesFolderForCatalogDir(subDir, nil)
                         table.insert(catalogs, {
-                            key = "dyn_" .. string.gsub(string.lower(subName .. "_" .. rootName), "[^a-z0-9_]", "_"),
+                            key = "dyn1_" .. string.gsub(string.lower(subName .. "_" .. rootName), "[^a-z0-9_]", "_"),
                             name = subName,
                             volume = rootName,
-                            catalog_path = lrcat,
+                            catalog_path = lrcat1,
                             images_folder = imgFolder,
                             display_label = string.format("%s  [%s]", subName, rootName),
                         })
                     end
+
+                    -- 2nd level check
+                    pcall(function()
+                        for subSubDir in LrFileUtils.directoryEntries(subDir) do
+                            local subSubName = LrPathUtils.leafName(subSubDir) or ""
+                            if LrFileUtils.exists(subSubDir) == "directory" and not isExcludedSubfolder(subSubName) then
+                                local lrcat2 = scanDirectoryForBestLrcat(subSubDir)
+                                if lrcat2 and not seenLrcat[lrcat2] and lrcat2 ~= currentCatPath then
+                                    seenLrcat[lrcat2] = true
+                                    local imgFolder = resolveImagesFolderForCatalogDir(subSubDir, nil)
+                                    local displayLabel = string.format("%s / %s  [%s]", subName, subSubName, rootName)
+                                    table.insert(catalogs, {
+                                        key = "dyn2_" .. string.gsub(string.lower(subSubName .. "_" .. rootName), "[^a-z0-9_]", "_"),
+                                        name = subSubName,
+                                        volume = rootName,
+                                        catalog_path = lrcat2,
+                                        images_folder = imgFolder,
+                                        display_label = displayLabel,
+                                    })
+                                end
+                            end
+                        end
+                    end)
                 end
             end
-        end
+        end)
     end
 
     -- 3. Saved custom catalog (if previously browsed by user)
