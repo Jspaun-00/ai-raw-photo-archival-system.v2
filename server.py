@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import re
+import socket
 import sqlite3
 import subprocess
 import sys
@@ -107,7 +108,23 @@ from studio_jobs_undo import (
 )
 from xmp_sync import sync_record_metadata_additive
 
+from collections import deque
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+
+_RECENT_LOG_BUFFER: deque = deque(maxlen=400)
+
+class _RingBufferLogHandler(logging.Handler):
+    def emit(self, record):
+        try:
+            msg = self.format(record)
+            _RECENT_LOG_BUFFER.append(msg)
+        except Exception:
+            pass
+
+_ring_handler = _RingBufferLogHandler()
+_ring_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+logging.getLogger().addHandler(_ring_handler)
 
 app = FastAPI(
     title="MR Darkroom",
@@ -5165,11 +5182,54 @@ def generate_fine_art_mat(
     return canvas
 
 
+def _is_host_port_open(host: str, port: int, timeout: float = 2.0) -> bool:
+    try:
+        clean_host = (host or "").split(":")[0].strip()
+        if not clean_host:
+            return False
+        with socket.create_connection((clean_host, port), timeout=timeout):
+            return True
+    except Exception:
+        return False
+
+
+def _is_host_pingable(host: str) -> bool:
+    try:
+        clean_host = (host or "").split(":")[0].strip()
+        if not clean_host:
+            return False
+        res = subprocess.run(
+            ["ping", "-c", "1", "-W", "1200", clean_host],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        return res.returncode == 0
+    except Exception:
+        return False
+
+
+def _deduplicate_samsung_tvs(tvs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    seen_keys = set()
+    clean = []
+    for t in tvs:
+        raw_ip = (t.get("ip") or "").strip()
+        if not raw_ip:
+            continue
+        host = raw_ip.split(":")[0].strip()
+        mac = (t.get("mac") or "").strip().lower()
+        key = mac if mac else host
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        clean.append(t)
+    return clean
+
+
 def _get_samsung_tvs_registry_path() -> Path:
     return DATA_VAULT_DIR / "samsung_tvs.json"
 
 
-def _probe_samsung_tv_ip(ip: str, timeout: float = 2.0) -> Optional[Dict[str, Any]]:
+def _probe_samsung_tv_ip(ip: str, timeout: float = 3.5) -> Optional[Dict[str, Any]]:
     import urllib.request
     import ssl
     ip = (ip or "").strip()
@@ -5188,6 +5248,7 @@ def _probe_samsung_tv_ip(ip: str, timeout: float = 2.0) -> Optional[Dict[str, An
 
     ports_to_try = [(custom_port, "https" if custom_port == 8002 else "http")] if custom_port else [(8001, "http"), (8002, "https")]
 
+    # 1. First attempt full device metadata fetch via HTTP/HTTPS REST endpoint
     for port, proto in ports_to_try:
         try:
             ctx = ssl._create_unverified_context() if proto == "https" else None
@@ -5214,6 +5275,35 @@ def _probe_samsung_tv_ip(ip: str, timeout: float = 2.0) -> Optional[Dict[str, An
                 }
         except Exception:
             pass
+
+    # 2. Fast TCP socket connection fallback: if Samsung TV port 8001 or 8002 accepts TCP handshake, it is undeniably online!
+    target_ports = [custom_port] if custom_port else [8001, 8002]
+    for p in target_ports:
+        if _is_host_port_open(probe_host, p, timeout=2.5):
+            return {
+                "name": f"Samsung Frame TV ({probe_host})",
+                "ip": ip,
+                "model": "Samsung Frame TV",
+                "resolution": "3840x2160",
+                "frame_support": True,
+                "power_state": "on",
+                "online": True,
+                "mac": None,
+            }
+
+    # 3. ICMP ping fallback: handles deep art-mode or low-power standby states where network adapter is awake
+    if _is_host_pingable(probe_host):
+        return {
+            "name": f"Samsung Frame TV ({probe_host})",
+            "ip": ip,
+            "model": "Samsung Frame TV",
+            "resolution": "3840x2160",
+            "frame_support": True,
+            "power_state": "standby",
+            "online": True,
+            "mac": None,
+        }
+
     return None
 
 
@@ -5235,7 +5325,7 @@ def _load_samsung_tvs() -> List[Dict[str, Any]]:
     try:
         loaded = json.loads(reg_path.read_text(encoding="utf-8"))
         if isinstance(loaded, list) and loaded:
-            return loaded
+            return _deduplicate_samsung_tvs(loaded)
     except Exception:
         pass
     return default_tvs
@@ -5243,9 +5333,10 @@ def _load_samsung_tvs() -> List[Dict[str, Any]]:
 
 def _save_samsung_tvs(tvs: List[Dict[str, Any]]) -> None:
     try:
+        clean_tvs = _deduplicate_samsung_tvs(tvs)
         reg_path = _get_samsung_tvs_registry_path()
         reg_path.parent.mkdir(parents=True, exist_ok=True)
-        reg_path.write_text(json.dumps(tvs, indent=2), encoding="utf-8")
+        reg_path.write_text(json.dumps(clean_tvs, indent=2), encoding="utf-8")
     except Exception as exc:
         logging.warning(f"Could not save samsung_tvs.json: {exc}")
 
@@ -5253,7 +5344,11 @@ def _save_samsung_tvs(tvs: List[Dict[str, Any]]) -> None:
 def _discover_samsung_tvs_sync(rescan: bool = False, manual_ip: Optional[str] = None) -> List[Dict[str, Any]]:
     from concurrent.futures import ThreadPoolExecutor
     known_list = _load_samsung_tvs()
-    by_ip: Dict[str, Dict[str, Any]] = {t["ip"]: dict(t) for t in known_list if t.get("ip")}
+    by_ip: Dict[str, Dict[str, Any]] = {}
+    for t in known_list:
+        raw_ip = (t.get("ip") or "").strip()
+        if raw_ip:
+            by_ip[raw_ip] = dict(t)
 
     candidate_ips = set(by_ip.keys())
     candidate_ips.add("192.168.68.88")
@@ -5308,7 +5403,7 @@ def _discover_samsung_tvs_sync(rescan: bool = False, manual_ip: Optional[str] = 
         except Exception:
             pass
 
-    probe_timeout = 2.5 if rescan else 1.8
+    probe_timeout = 3.5 if rescan else 2.5
     with ThreadPoolExecutor(max_workers=24) as ex:
         results = list(ex.map(lambda ip: _probe_samsung_tv_ip(ip, timeout=probe_timeout), sorted(candidate_ips)))
 
@@ -5322,15 +5417,20 @@ def _discover_samsung_tvs_sync(rescan: bool = False, manual_ip: Optional[str] = 
         if ip in probed_ok:
             info["online"] = True
         else:
-            # Secondary check with 2.0s timeout before marking offline to handle Wi-Fi jitter
-            direct_check = _probe_samsung_tv_ip(ip, timeout=2.0)
+            # Secondary check with socket fallback before marking offline to handle Wi-Fi jitter
+            direct_check = _probe_samsung_tv_ip(ip, timeout=3.0)
             if direct_check:
                 info["online"] = True
                 by_ip[ip].update(direct_check)
             else:
-                info["online"] = False
+                clean_host = ip.split(":")[0].strip()
+                if _is_host_port_open(clean_host, 8001, 2.0) or _is_host_port_open(clean_host, 8002, 2.0) or _is_host_pingable(clean_host):
+                    info["online"] = True
+                    info["power_state"] = "standby"
+                else:
+                    info["online"] = False
 
-    final_list = sorted(by_ip.values(), key=lambda x: (not x.get("online", False), x.get("name", "")))
+    final_list = sorted(_deduplicate_samsung_tvs(list(by_ip.values())), key=lambda x: (not x.get("online", False), x.get("name", "")))
     _save_samsung_tvs(final_list)
     return final_list
 
@@ -5351,12 +5451,13 @@ async def discover_samsung_tvs(payload: SamsungTvDiscoverRequest):
 
 @app.post("/api/samsung-tvs/add-remote")
 async def add_remote_samsung_tv(payload: SamsungTvAddRemoteRequest):
-    host = (payload.host or "").strip()
-    if not host:
+    raw_host = (payload.host or "").strip()
+    if not raw_host:
         raise HTTPException(status_code=400, detail="TV host or IP cannot be empty")
 
+    host = raw_host
     loop = asyncio.get_running_loop()
-    probe = await loop.run_in_executor(None, _probe_samsung_tv_ip, host, 2.5)
+    probe = await loop.run_in_executor(None, _probe_samsung_tv_ip, host, 3.5)
 
     custom_name = payload.name.strip() if payload.name and payload.name.strip() else None
     if probe:
@@ -5365,23 +5466,27 @@ async def add_remote_samsung_tv(payload: SamsungTvAddRemoteRequest):
             tv_entry["name"] = custom_name
         tv_entry["is_remote"] = True
     else:
-        # Fallback registration for firewalled, VPN, or Tailscale TVs where port 8002 is routed
+        # Check socket or ping fallback
+        clean_host = host.split(":")[0].strip()
+        is_online = _is_host_port_open(clean_host, 8001, 2.0) or _is_host_port_open(clean_host, 8002, 2.0) or _is_host_pingable(clean_host)
         tv_entry = {
-            "name": custom_name or f"Remote TV ({host})",
+            "name": custom_name or f"Samsung Frame TV ({host})",
             "ip": host,
-            "model": "Samsung Frame TV (Remote)",
+            "model": "Samsung Frame TV",
             "resolution": "3840x2160",
             "frame_support": True,
-            "power_state": "unknown",
-            "online": True,
+            "power_state": "on" if is_online else "unknown",
+            "online": is_online,
             "is_remote": True,
         }
 
     current_tvs = _load_samsung_tvs()
-    updated = [t for t in current_tvs if t.get("ip") != host]
+    clean_host = host.split(":")[0].strip()
+    updated = [t for t in current_tvs if (t.get("ip") or "").split(":")[0].strip() != clean_host]
     updated.insert(0, tv_entry)
-    _save_samsung_tvs(updated)
-    return {"status": "ok", "tv": tv_entry, "tvs": updated}
+    clean_updated = _deduplicate_samsung_tvs(updated)
+    _save_samsung_tvs(clean_updated)
+    return {"status": "ok", "tv": tv_entry, "tvs": clean_updated}
 
 
 # =========================================================================
@@ -5542,14 +5647,14 @@ async def get_samsung_tv_displays():
     loop = asyncio.get_running_loop()
 
     def _fetch_displays_sync():
-        known_tvs = _load_samsung_tvs()
+        known_tvs = _deduplicate_samsung_tvs(_load_samsung_tvs())
         sync_data = _load_tv_sync_data()
         displays = []
 
         conn = get_db_connection(DEFAULT_DB_PATH)
 
         for tv_info in known_tvs:
-            ip = tv_info.get("ip")
+            ip = (tv_info.get("ip") or "").strip()
             display_entry = dict(tv_info)
             display_entry["online"] = False
             display_entry["art_mode"] = "unknown"
@@ -5557,19 +5662,33 @@ async def get_samsung_tv_displays():
             display_entry["slideshow"] = {"status": False, "duration": 15, "current": None}
             display_entry["photos"] = []
 
+            clean_host = ip.split(":")[0].strip() if ip else ""
+
             # Stored local sync records for this TV (preserves user's custom sequence order!)
-            local_tv_photos = sync_data.get(ip, {}).get("photos", [])
+            # Matches by full ip key or clean host to guarantee sync data is never lost across ports
+            local_tv_photos = []
+            for k, v in sync_data.items():
+                if k == ip or (clean_host and k and k.split(":")[0].strip() == clean_host):
+                    local_tv_photos = v.get("photos", [])
+                    if local_tv_photos:
+                        break
+
             local_by_cid = {p.get("content_id"): p for p in local_tv_photos if p.get("content_id")}
             local_order_map = {p.get("content_id"): idx for idx, p in enumerate(local_tv_photos) if p.get("content_id")}
 
-            if ip:
-                # Fast HTTP probe first (timeout=2.0s) to determine power and availability
-                probe_res = _probe_samsung_tv_ip(ip, timeout=2.0)
+            if ip and clean_host:
+                # Fast HTTP probe first with socket & ping fallbacks to determine availability
+                probe_res = _probe_samsung_tv_ip(ip, timeout=3.5)
                 if probe_res:
                     display_entry["online"] = True
                     display_entry["power_state"] = probe_res.get("power_state", "on")
-                    if probe_res.get("model"):
+                    if probe_res.get("model") and probe_res["model"] != "Samsung SmartTV":
                         display_entry["model"] = probe_res["model"]
+                    if probe_res.get("name") and (not display_entry.get("name") or display_entry.get("name", "").startswith("Remote")):
+                        display_entry["name"] = probe_res["name"]
+                elif _is_host_port_open(clean_host, 8001, timeout=2.0) or _is_host_port_open(clean_host, 8002, timeout=2.0) or _is_host_pingable(clean_host):
+                    display_entry["online"] = True
+                    display_entry["power_state"] = "standby"
 
                 tv_lock = _get_tv_ws_lock(ip)
                 with tv_lock:
@@ -5648,11 +5767,16 @@ async def get_samsung_tv_displays():
                             display_entry["photos"] = local_tv_photos
                     except Exception as e_conn:
                         logging.info(f"TV ({ip}) art connection warning: {e_conn}")
-                        if not display_entry.get("online"):
-                            display_entry["online"] = False
-                        else:
+                        # If TV accepts TCP socket on 8001/8002 or answers ping, it is unequivocally online!
+                        if _is_host_port_open(clean_host, 8001, timeout=2.0) or _is_host_port_open(clean_host, 8002, timeout=2.0) or _is_host_pingable(clean_host):
+                            display_entry["online"] = True
                             display_entry["art_mode"] = "standby"
+                        else:
+                            display_entry["online"] = False
                         display_entry["photos"] = local_tv_photos
+
+                if not display_entry.get("photos") and local_tv_photos:
+                    display_entry["photos"] = local_tv_photos
 
             displays.append(display_entry)
 
@@ -9732,11 +9856,138 @@ async def check_system_update():
     }
 
 
+def _sync_lr_plugin_to_adobe_modules() -> Tuple[bool, str]:
+    """
+    Deploys MRKeepersTransfer.lrplugin from the project root into Adobe Lightroom's
+    active Modules folder: ~/Library/Application Support/Adobe/Lightroom/Modules/
+    """
+    candidate_roots = [
+        PROJECT_ROOT,
+        Path.home() / "MRDarkroom",
+        Path.home() / "Library" / "Application Support" / "MRDarkroom" / "Engine",
+    ]
+    src_plugin = None
+    for cand in candidate_roots:
+        p = cand / "MRKeepersTransfer.lrplugin"
+        if p.exists() and p.is_dir():
+            src_plugin = p
+            break
+
+    if not src_plugin:
+        return False, "MRKeepersTransfer.lrplugin directory not found in project sources"
+
+    dest_dir = Path.home() / "Library" / "Application Support" / "Adobe" / "Lightroom" / "Modules"
+    try:
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest_plugin = dest_dir / "MRKeepersTransfer.lrplugin"
+        res = subprocess.run(
+            ["rsync", "-a", "--delete", f"{src_plugin}/", f"{dest_plugin}/"],
+            capture_output=True,
+            text=True,
+            timeout=15.0,
+        )
+        if res.returncode == 0:
+            return True, f"Successfully deployed Lightroom plugin to {dest_plugin}"
+        else:
+            return False, f"rsync error: {res.stderr}"
+    except Exception as exc:
+        return False, str(exc)
+
+
+@app.post("/api/system/install-lr-plugin")
+async def install_lr_plugin():
+    """
+    One-click installation or update of the MR Keepers Lightroom plugin directly
+    into ~/Library/Application Support/Adobe/Lightroom/Modules/
+    """
+    ok, msg = _sync_lr_plugin_to_adobe_modules()
+    if not ok:
+        raise HTTPException(status_code=500, detail=msg)
+    return {"status": "ok", "message": msg}
+
+
+@app.get("/api/system/diagnostics")
+async def get_system_diagnostics():
+    """
+    Returns full diagnostic telemetry for debugging network, TV connectivity,
+    Lightroom plugin status, and recent server logs.
+    """
+    import platform
+    import time
+
+    sys_info = {
+        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S %Z"),
+        "hostname": socket.gethostname(),
+        "platform": platform.platform(),
+        "python_version": sys.version.split()[0],
+        "app_version": APP_VERSION,
+        "project_root": str(PROJECT_ROOT),
+        "data_vault_dir": str(DATA_VAULT_DIR),
+    }
+
+    local_ips = []
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.settimeout(0.5)
+        s.connect(("8.8.8.8", 80))
+        local_ips.append(s.getsockname()[0])
+        s.close()
+    except Exception:
+        pass
+    sys_info["local_ips"] = local_ips
+
+    tv_diagnostics = []
+    registered_tvs = _load_samsung_tvs()
+    for tv in registered_tvs:
+        raw_ip = (tv.get("ip") or "").strip()
+        host = raw_ip.split(":")[0].strip()
+        p8001 = _is_host_port_open(host, 8001, timeout=1.5)
+        p8002 = _is_host_port_open(host, 8002, timeout=1.5)
+        ping_ok = _is_host_pingable(host)
+        probe_res = _probe_samsung_tv_ip(raw_ip, timeout=2.0)
+
+        token_clean = re.sub(r'[^a-zA-Z0-9_\-]', '_', raw_ip)
+        token_file = DATA_VAULT_DIR / f"samsung_tv_{token_clean}_token.txt"
+
+        tv_diagnostics.append({
+            "name": tv.get("name"),
+            "ip": raw_ip,
+            "host": host,
+            "port_8001_open": p8001,
+            "port_8002_open": p8002,
+            "pingable": ping_ok,
+            "http_probe": probe_res,
+            "token_file_exists": token_file.exists(),
+            "status_verdict": "ONLINE" if (p8001 or p8002 or ping_ok) else "OFFLINE",
+        })
+
+    adobe_modules = Path.home() / "Library" / "Application Support" / "Adobe" / "Lightroom" / "Modules"
+    installed_plugin = adobe_modules / "MRKeepersTransfer.lrplugin"
+    src_plugin = PROJECT_ROOT / "MRKeepersTransfer.lrplugin"
+    lr_status = {
+        "installed_at_adobe": installed_plugin.exists() and installed_plugin.is_dir(),
+        "adobe_plugin_path": str(installed_plugin),
+        "source_plugin_path": str(src_plugin),
+        "source_exists": src_plugin.exists(),
+    }
+
+    recent_logs = list(_RECENT_LOG_BUFFER)[-250:]
+
+    return {
+        "status": "ok",
+        "system": sys_info,
+        "tvs": tv_diagnostics,
+        "lightroom": lr_status,
+        "recent_logs": recent_logs,
+    }
+
+
 @app.post("/api/system/update-apply")
 async def apply_system_update():
     """
     Safely stashes any local working-tree clutter, pulls the latest code & pre-built UI
-    from origin, installs any updated Python dependencies, and restarts the server cleanly.
+    from origin, installs any updated Python dependencies, updates the Lightroom plugin,
+    and restarts the server cleanly.
     User databases and thumbnails in ~/Library/Application Support/MRDarkroom are untouched.
     """
     ensure_data_vault_migrated()
@@ -9796,6 +10047,16 @@ async def apply_system_update():
                 )
     except Exception as exc:
         logging.warning(f"Mirror sync during update warning: {exc}")
+
+    # Automatically deploy latest Lightroom plugin to Adobe Modules directory
+    try:
+        ok_plug, plug_msg = _sync_lr_plugin_to_adobe_modules()
+        if ok_plug:
+            logging.info(f"System update: {plug_msg}")
+        else:
+            logging.warning(f"System update Lightroom plugin deploy warning: {plug_msg}")
+    except Exception as exc:
+        logging.warning(f"Lightroom plugin auto-deploy error: {exc}")
 
     def _delayed_restart():
         time.sleep(0.9)

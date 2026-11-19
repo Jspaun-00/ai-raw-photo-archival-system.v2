@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useId } from 'react';
+import React, { useState, useEffect, useCallback, useId, useRef } from 'react';
 import {
   Tv,
   Plus,
@@ -22,6 +22,11 @@ import {
   ArrowRight,
   Layers,
   GripVertical,
+  X,
+  Activity,
+  Copy,
+  Download,
+  Terminal,
 } from 'lucide-react';
 import MatColorPicker, { ARCHIVAL_MAT_TONES as MAT_COLOR_PRESETS, findMatTone } from './MatColorPicker';
 
@@ -454,6 +459,59 @@ export default function TvDisplaysView({
   const [isScanningNetwork, setIsScanningNetwork] = useState(false);
   const [discoveredTvs, setDiscoveredTvs] = useState([]);
 
+  // Diagnostics & Logs Modal State
+  const [isDiagnosticsModalOpen, setIsDiagnosticsModalOpen] = useState(false);
+  const [diagnosticsData, setDiagnosticsData] = useState(null);
+  const [isLoadingDiagnostics, setIsLoadingDiagnostics] = useState(false);
+
+  const fetchDiagnostics = useCallback(async () => {
+    setIsLoadingDiagnostics(true);
+    try {
+      const res = await fetch('/api/system/diagnostics');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      setDiagnosticsData(data);
+    } catch (err) {
+      showGlobalToast(`Diagnostics error: ${err.message}`);
+    } finally {
+      setIsLoadingDiagnostics(false);
+    }
+  }, [showGlobalToast]);
+
+  const copyDiagnosticsToClipboard = () => {
+    if (!diagnosticsData) return;
+    const text = JSON.stringify(diagnosticsData, null, 2);
+    navigator.clipboard.writeText(text);
+    showGlobalToast('Copied diagnostics telemetry to clipboard!');
+  };
+
+  const downloadDiagnosticsJson = () => {
+    if (!diagnosticsData) return;
+    const blob = new Blob([JSON.stringify(diagnosticsData, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `MR_Darkroom_Diagnostics_${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    showGlobalToast('Downloaded diagnostics report.');
+  };
+
+  const handleReinstallLrPlugin = async () => {
+    try {
+      const res = await fetch('/api/system/install-lr-plugin', { method: 'POST' });
+      const data = await res.json();
+      if (data.status === 'ok') {
+        showGlobalToast('Lightroom plugin deployed to Adobe Modules!');
+        fetchDiagnostics();
+      } else {
+        showGlobalToast(`Plugin install: ${data.message || 'error'}`);
+      }
+    } catch (e) {
+      showGlobalToast(`Error deploying LR plugin: ${e.message}`);
+    }
+  };
+
   // Fetch sample photos for live mat preview whenever selected collection changes
   useEffect(() => {
     if (!selectedColId) {
@@ -527,6 +585,39 @@ export default function TvDisplaysView({
     setEditCropX(typeof target.crop_x === 'number' ? target.crop_x : 0.5);
     setEditCropY(typeof target.crop_y === 'number' ? target.crop_y : 0.5);
   };
+
+  const activeFilmstripRef = useRef(null);
+
+  // Auto-scroll active filmstrip thumbnail into view when switching photos
+  useEffect(() => {
+    if (studioPhotoIdx !== null && activeFilmstripRef.current) {
+      activeFilmstripRef.current.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+    }
+  }, [studioPhotoIdx]);
+
+  // Keyboard navigation & quick-exit for Mat Studio on 13" laptop screens (Esc, ◀, ▶)
+  useEffect(() => {
+    if (studioPhotoIdx === null) return;
+    const handleKeyDown = (e) => {
+      if (['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target?.tagName)) return;
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setStudioPhotoIdx(null);
+      } else if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        if (activePhotos.length > 0) {
+          openPhotoInMatStudio((studioPhotoIdx - 1 + activePhotos.length) % activePhotos.length);
+        }
+      } else if (e.key === 'ArrowRight') {
+        e.preventDefault();
+        if (activePhotos.length > 0) {
+          openPhotoInMatStudio((studioPhotoIdx + 1) % activePhotos.length);
+        }
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [studioPhotoIdx, activePhotos.length]);
 
   // Apply updated Mat, Border, Double/Single Style, Aspect Ratio & Crop to the Samsung Frame TV
   const handleApplyMatUpdate = async (applyToAll = false) => {
@@ -861,8 +952,10 @@ export default function TvDisplaysView({
     <div className="flex-1 flex min-h-0 bg-studio-bg text-studio-text select-none overflow-hidden">
       {/* ===================================================================== */}
       {/* LEFT SIDEBAR: Configured & Discovered Samsung Frame TVs                */}
+      {/* (Minimized / hidden when inside full-viewport Mat Studio)              */}
       {/* ===================================================================== */}
-      <div className="w-72 flex-shrink-0 border-r border-studio-border bg-studio-panel flex flex-col min-h-0">
+      {studioPhotoIdx === null && (
+        <div className="w-72 flex-shrink-0 border-r border-studio-border bg-studio-panel flex flex-col min-h-0">
         <div className="p-3.5 border-b border-studio-border space-y-2.5">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
@@ -981,6 +1074,20 @@ export default function TvDisplaysView({
           )}
         </div>
 
+        <div className="p-3 border-t border-studio-border bg-studio-panel/80">
+          <button
+            type="button"
+            onClick={() => {
+              fetchDiagnostics();
+              setIsDiagnosticsModalOpen(true);
+            }}
+            className="w-full py-1.5 px-3 rounded-lg bg-studio-bg hover:bg-studio-border border border-studio-border text-studio-textMuted hover:text-white text-xs font-mono flex items-center justify-center gap-1.5 transition-colors"
+          >
+            <Activity className="w-3.5 h-3.5 text-amber-400" />
+            <span>Diagnostics &amp; TV Logs</span>
+          </button>
+        </div>
+
         <div className="p-3.5 border-t border-studio-border bg-studio-bg/50 text-[11px] text-studio-textMuted leading-relaxed">
           <div className="font-bold text-amber-400 mb-1 flex items-center gap-1.5">
             <Sparkles className="w-3.5 h-3.5" />
@@ -989,6 +1096,7 @@ export default function TvDisplaysView({
           Click any photo card to open the <strong>TV Mat &amp; Aspect Studio</strong> — choose Single or Double Mat, Slim Optical or Exhibition borders, and Original or 16:9+Mat aspect ratios.
         </div>
       </div>
+      )}
 
       {/* ===================================================================== */}
       {/* CENTER / RIGHT WORKSPACE: Active TV Gallery & Live Mat Studio          */}
@@ -1002,6 +1110,332 @@ export default function TvDisplaysView({
               <p className="text-xs text-studio-textMuted leading-relaxed">
                 Scan your Wi-Fi network or connect via IP to curate artwork, customize Single &amp; Double 45° beveled mats, reorder sequences, and control slideshows.
               </p>
+            </div>
+          </div>
+        ) : studioPhotoIdx !== null && studioPhoto ? (
+          /* ================================================================= */
+          /* FULL-VIEWPORT MAT & ASPECT STUDIO (Optimized for 13" Laptops)     */
+          /* TV sidebar and normal controls hide; bottom filmstrip active      */
+          /* ================================================================= */
+          <div className="flex-1 flex flex-col min-h-0 bg-[#0d1017] overflow-hidden">
+            {/* Top Mat Studio Navigation Bar */}
+            <div className="px-5 py-2.5 border-b border-studio-border bg-studio-panel/90 flex flex-wrap items-center justify-between gap-3 flex-shrink-0">
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => setStudioPhotoIdx(null)}
+                  className="px-3 py-1.5 bg-studio-bg hover:bg-studio-border border border-studio-border text-studio-textMuted hover:text-white rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all shadow-sm"
+                  title="Back to TV Displays (Esc)"
+                >
+                  <ArrowLeft className="w-3.5 h-3.5 text-amber-400" />
+                  <span>Back to Displays (Esc)</span>
+                </button>
+
+                <div className="h-4 w-px bg-studio-border" />
+
+                <div className="flex items-center gap-2">
+                  <span className="font-bold text-sm text-white truncate max-w-[260px]">
+                    {studioPhoto.title || studioPhoto.filename}
+                  </span>
+                  <span className="px-2 py-0.5 bg-amber-500/20 border border-amber-500/40 text-amber-300 font-mono text-[10.5px] font-bold rounded">
+                    #{studioPhotoIdx + 1} of {activePhotos.length}
+                  </span>
+                </div>
+
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() => openPhotoInMatStudio((studioPhotoIdx - 1 + activePhotos.length) % activePhotos.length)}
+                    className="p-1.5 rounded bg-studio-bg border border-studio-border text-studio-textMuted hover:text-white"
+                    title="Previous Photo (◀)"
+                  >
+                    <ChevronLeft className="w-3.5 h-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => openPhotoInMatStudio((studioPhotoIdx + 1) % activePhotos.length)}
+                    className="p-1.5 rounded bg-studio-bg border border-studio-border text-studio-textMuted hover:text-white"
+                    title="Next Photo (▶)"
+                  >
+                    <ChevronRight className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => handleApplyMatUpdate(true)}
+                  disabled={isUpdatingMat || !activeDisplay.online}
+                  className="px-3 py-1.5 bg-purple-500/20 border border-purple-500/50 text-purple-200 rounded-lg text-xs font-bold hover:bg-purple-500/30 transition-all flex items-center gap-1.5"
+                >
+                  <span>
+                    {isUpdatingMat ? 'Updating...' : `✨ Apply to All (${curatedPhotos.length})`}
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => handleApplyMatUpdate(false)}
+                  disabled={isUpdatingMat || !activeDisplay.online}
+                  className="px-3.5 py-1.5 bg-studio-accent text-studio-bg rounded-lg text-xs font-bold hover:bg-amber-400 transition-all shadow-md flex items-center gap-1.5"
+                >
+                  <Check className="w-3.5 h-3.5" />
+                  <span>{isUpdatingMat ? 'Rendering...' : 'Update This Photo on TV'}</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setStudioPhotoIdx(null)}
+                  className="p-1.5 rounded-lg border border-studio-border text-studio-textMuted hover:text-white hover:border-red-400 transition-colors"
+                  title="Close Mat Studio (Esc)"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+
+            {/* Scrollable Center Workbench: Canvas & Controls */}
+            <div className="flex-1 min-h-0 overflow-y-auto px-6 py-4">
+              <div className="max-w-[1600px] w-full mx-auto flex flex-col xl:flex-row gap-6 items-stretch">
+                {/* LEFT: Live 16:9 Samsung Frame TV Canvas with Soft 3/4 45° Angled Bevel */}
+                <div className="xl:w-[48%] flex flex-col justify-between bg-black/80 p-3.5 rounded-xl border border-neutral-700 shadow-2xl">
+                  <div className="flex items-center justify-between mb-2 px-1">
+                    <div className="flex items-center gap-2">
+                      <span className="px-2 py-0.5 bg-amber-500/20 border border-amber-500/40 text-amber-300 font-mono text-[10px] font-bold rounded uppercase">
+                        Live 4K Frame TV View
+                      </span>
+                      <span className="text-xs font-bold text-white truncate max-w-[260px]">
+                        {studioPhoto.title || studioPhoto.filename}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Simulated Physical Frame TV Bezel */}
+                  <div className="p-2 bg-[#14161d] rounded-lg border-2 border-neutral-800 shadow-inner">
+                    <FrameTvMatPreview
+                      thumbSrc={studioPhoto.thumb_url || (studioPhoto.file_hash ? `/previews_1600/${studioPhoto.file_hash}.webp` : null)}
+                      title={studioPhoto.title || studioPhoto.filename}
+                      matMode={editMatMode}
+                      matColor={editMatColor}
+                      matPlacement={editMatPlacement}
+                      matAspect={editMatAspect}
+                      matStyle={editMatStyle}
+                      innerMatColor={editInnerMatColor}
+                      cropX={editCropX}
+                      cropY={editCropY}
+                      interactivePan={true}
+                      onCropChange={(nx, ny) => {
+                        setEditCropX(nx);
+                        setEditCropY(ny);
+                      }}
+                      bevelThickness={10}
+                    />
+                  </div>
+
+                  <div className="mt-2 flex items-center justify-between text-[11px] text-studio-textMuted px-1">
+                    <span className="flex items-center gap-1.5">
+                      <Move className="w-3.5 h-3.5 text-amber-400" />
+                      <span>
+                        {editMatMode === 'none' || editMatAspect !== 'original'
+                          ? 'Drag directly on the photo above to pan & position your crop underneath the mat'
+                          : 'Presenting 100% uncropped Lightroom/native aspect ratio inside soft 45° beveled mat'}
+                      </span>
+                    </span>
+                    {(editCropX !== 0.5 || editCropY !== 0.5) && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditCropX(0.5);
+                          setEditCropY(0.5);
+                        }}
+                        className="text-amber-400 hover:underline font-mono text-[10px]"
+                      >
+                        Reset Center
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* RIGHT: Expanded Full-Width Aspect Ratio, Single/Double Mat, Border & Color Controls */}
+                <div className="xl:w-[52%] flex flex-col justify-between space-y-3.5 bg-studio-panel/90 p-4 rounded-xl border border-studio-border">
+                  <div className="space-y-3.5">
+                    {/* 1. Window Aspect Ratio Selector */}
+                    <div>
+                      <div className="flex items-center justify-between mb-1.5">
+                        <label className="text-[11px] font-bold uppercase tracking-wider text-amber-300">
+                          1. Photo Window Aspect Ratio
+                        </label>
+                        <span className="text-[10.5px] font-mono text-studio-textMuted">
+                          {ASPECT_RATIO_OPTIONS.find((a) => a.id === editMatAspect)?.desc}
+                        </span>
+                      </div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {ASPECT_RATIO_OPTIONS.map((opt) => {
+                          const active = editMatMode !== 'none' && editMatAspect === opt.id;
+                          return (
+                            <button
+                              key={opt.id}
+                              type="button"
+                              onClick={() => {
+                                setEditMatMode('studio');
+                                setEditMatAspect(opt.id);
+                              }}
+                              title={opt.desc}
+                              className={`px-3 py-1.5 rounded-lg border text-[11px] font-mono font-bold whitespace-nowrap transition-all ${
+                                active
+                                  ? 'bg-amber-500 text-studio-bg border-amber-400 shadow-sm'
+                                  : 'bg-studio-bg border-studio-border text-studio-textMuted hover:text-white'
+                              }`}
+                            >
+                              {opt.shortLabel || opt.label}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    {/* 2. Mat Border Size, Optical Placement & Single vs Double Mat */}
+                    <div>
+                      <div className="flex flex-wrap items-center justify-between gap-2 mb-1.5">
+                        <label className="text-[11px] font-bold uppercase tracking-wider text-amber-300">
+                          2. Mat Border Width &amp; Bevel Style
+                        </label>
+                        {editMatMode !== 'none' && (
+                          <div className="flex items-center gap-1 bg-studio-bg p-0.5 rounded-lg border border-studio-border">
+                            <button
+                              type="button"
+                              onClick={() => setEditMatStyle('single')}
+                              className={`px-2.5 py-1 rounded-md text-[10.5px] font-bold flex items-center gap-1 transition-all ${
+                                editMatStyle === 'single'
+                                  ? 'bg-amber-500 text-studio-bg shadow-sm'
+                                  : 'text-studio-textMuted hover:text-white'
+                              }`}
+                            >
+                              <span>Single Mat (1 Bevel)</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setEditMatStyle('double')}
+                              className={`px-2.5 py-1 rounded-md text-[10.5px] font-bold flex items-center gap-1 transition-all ${
+                                editMatStyle === 'double'
+                                  ? 'bg-amber-500 text-studio-bg shadow-sm'
+                                  : 'text-studio-textMuted hover:text-white'
+                              }`}
+                            >
+                              <Layers className="w-3 h-3" />
+                              <span>Double Mat (Layered 2-Bevel)</span>
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-1.5">
+                        {BORDER_STYLE_OPTIONS.map((bOpt) => {
+                          const isSelected =
+                            (bOpt.id === 'none' && editMatMode === 'none') ||
+                            (bOpt.id !== 'none' && editMatMode === 'studio' && editMatPlacement === bOpt.id);
+                          return (
+                            <button
+                              key={bOpt.id}
+                              type="button"
+                              onClick={() => {
+                                if (bOpt.id === 'none') {
+                                  setEditMatMode('none');
+                                } else {
+                                  setEditMatMode('studio');
+                                  setEditMatPlacement(bOpt.id);
+                                }
+                              }}
+                              title={bOpt.desc}
+                              className={`p-2 rounded-lg border text-left transition-all ${
+                                isSelected
+                                  ? 'bg-amber-500/20 border-amber-400 text-white font-bold ring-1 ring-amber-400'
+                                  : 'bg-studio-bg border-studio-border text-studio-textMuted hover:text-white'
+                              }`}
+                            >
+                              <div className="text-[11px] leading-tight whitespace-nowrap">{bOpt.label}</div>
+                              <div className="text-[9.5px] text-studio-textDim truncate mt-0.5">{bOpt.desc}</div>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    {/* 3. Outer & Inner Museum Mat Board Color Studio */}
+                    {editMatMode === 'studio' && (
+                      <div className="pt-1">
+                        <MatColorPicker
+                          color={editMatColor}
+                          onChange={setEditMatColor}
+                          isDoubleMat={editMatStyle === 'double'}
+                          innerColor={editInnerMatColor}
+                          onInnerChange={setEditInnerMatColor}
+                          compact={false}
+                        />
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Bottom Horizontal Filmstrip */}
+            <div className="flex-shrink-0 border-t border-studio-border bg-studio-panel/95 backdrop-blur-md px-4 py-2.5">
+              <div className="flex items-center justify-between mb-1.5 px-1">
+                <div className="flex items-center gap-2">
+                  <span className="text-[11px] font-mono font-bold uppercase tracking-wider text-amber-300 flex items-center gap-1.5">
+                    <Layers className="w-3.5 h-3.5" />
+                    <span>TV Displays Filmstrip</span>
+                  </span>
+                  <span className="text-[10.5px] text-studio-textMuted hidden sm:inline">
+                    Click any photo to customize mat · ◀ / ▶ arrow keys to cycle
+                  </span>
+                </div>
+                <span className="text-[10px] font-mono text-studio-textMuted">
+                  {activePhotos.length} photos on display
+                </span>
+              </div>
+
+              <div className="flex items-center gap-2.5 overflow-x-auto pb-1.5 scrollbar-thin">
+                {activePhotos.map((p, idx) => {
+                  const isSelected = idx === studioPhotoIdx;
+                  const isOnTv = activeDisplay.current_content_id === p.content_id;
+                  const thumb = p.thumb_url || (p.file_hash ? `/previews_1600/${p.file_hash}.webp` : null);
+                  return (
+                    <div
+                      key={p.content_id || idx}
+                      ref={isSelected ? activeFilmstripRef : null}
+                      onClick={() => openPhotoInMatStudio(idx)}
+                      className={`flex-shrink-0 group relative w-28 sm:w-32 rounded-lg border transition-all cursor-pointer overflow-hidden ${
+                        isSelected
+                          ? 'border-amber-400 ring-2 ring-amber-400 shadow-[0_0_16px_rgba(245,158,11,0.35)] scale-[1.02]'
+                          : 'border-studio-border hover:border-amber-500/50 bg-studio-bg opacity-75 hover:opacity-100'
+                      }`}
+                    >
+                      <div className="aspect-video w-full bg-black relative overflow-hidden">
+                        {thumb ? (
+                          <img src={thumb} alt={p.title || p.filename} className="w-full h-full object-cover" />
+                        ) : (
+                          <div className="w-full h-full flex items-center justify-center text-[10px] text-studio-textMuted">
+                            Frame Art
+                          </div>
+                        )}
+                        <span className="absolute top-1 left-1 bg-black/80 font-mono text-[9px] font-bold text-white px-1 py-0.2 rounded">
+                          #{idx + 1}
+                        </span>
+                        {isOnTv && (
+                          <span className="absolute top-1 right-1 bg-emerald-500 font-mono text-[8px] font-bold text-black px-1 rounded shadow-sm">
+                            ON TV
+                          </span>
+                        )}
+                      </div>
+                      <div className="p-1 bg-studio-panel truncate text-[10px] font-mono text-center text-studio-textMuted group-hover:text-white">
+                        {p.title || p.filename || `Photo #${idx + 1}`}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
           </div>
         ) : (
@@ -1134,248 +1568,6 @@ export default function TvDisplaysView({
                 )}
               </div>
             </div>
-
-            {/* ================================================================= */}
-            {/* INTERACTIVE TV MAT, BORDER & ASPECT RATIO STUDIO WORKBENCH         */}
-            {/* ================================================================= */}
-            {studioPhoto && (
-              <div className="border-b border-amber-500/40 bg-[#0d1017] px-6 py-4 shadow-2xl">
-                <div className="max-w-[1600px] w-full mx-auto flex flex-col xl:flex-row gap-6 items-stretch">
-                  {/* LEFT: Live 16:9 Samsung Frame TV Canvas with Soft 3/4 45° Angled Bevel */}
-                  <div className="xl:w-[48%] flex flex-col justify-between bg-black/80 p-3.5 rounded-xl border border-neutral-700 shadow-2xl">
-                    <div className="flex items-center justify-between mb-2 px-1">
-                      <div className="flex items-center gap-2">
-                        <span className="px-2 py-0.5 bg-amber-500/20 border border-amber-500/40 text-amber-300 font-mono text-[10px] font-bold rounded uppercase">
-                          Live 4K Frame TV View
-                        </span>
-                        <span className="text-xs font-bold text-white truncate max-w-[260px]">
-                          {studioPhoto.title || studioPhoto.filename}
-                        </span>
-                      </div>
-                      <div className="flex items-center gap-1">
-                        <button
-                          type="button"
-                          onClick={() => openPhotoInMatStudio((studioPhotoIdx - 1 + activePhotos.length) % activePhotos.length)}
-                          className="p-1 rounded bg-studio-panel border border-studio-border text-studio-textMuted hover:text-white"
-                          title="Previous TV Photo"
-                        >
-                          <ChevronLeft className="w-4 h-4" />
-                        </button>
-                        <span className="text-[11px] font-mono text-studio-textMuted px-1.5">
-                          #{studioPhotoIdx + 1} of {activePhotos.length}
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() => openPhotoInMatStudio((studioPhotoIdx + 1) % activePhotos.length)}
-                          className="p-1 rounded bg-studio-panel border border-studio-border text-studio-textMuted hover:text-white"
-                          title="Next TV Photo"
-                        >
-                          <ChevronRight className="w-4 h-4" />
-                        </button>
-                      </div>
-                    </div>
-
-                    {/* Simulated Physical Frame TV Bezel */}
-                    <div className="p-2 bg-[#14161d] rounded-lg border-2 border-neutral-800 shadow-inner">
-                      <FrameTvMatPreview
-                        thumbSrc={studioPhoto.thumb_url || (studioPhoto.file_hash ? `/previews_1600/${studioPhoto.file_hash}.webp` : null)}
-                        title={studioPhoto.title || studioPhoto.filename}
-                        matMode={editMatMode}
-                        matColor={editMatColor}
-                        matPlacement={editMatPlacement}
-                        matAspect={editMatAspect}
-                        matStyle={editMatStyle}
-                        innerMatColor={editInnerMatColor}
-                        cropX={editCropX}
-                        cropY={editCropY}
-                        interactivePan={true}
-                        onCropChange={(nx, ny) => {
-                          setEditCropX(nx);
-                          setEditCropY(ny);
-                        }}
-                        bevelThickness={10}
-                      />
-                    </div>
-
-                    <div className="mt-2 flex items-center justify-between text-[11px] text-studio-textMuted px-1">
-                      <span className="flex items-center gap-1.5">
-                        <Move className="w-3.5 h-3.5 text-amber-400" />
-                        <span>
-                          {editMatMode === 'none' || editMatAspect !== 'original'
-                            ? 'Drag directly on the photo above to pan & position your crop underneath the mat'
-                            : 'Presenting 100% uncropped Lightroom/native aspect ratio inside soft 45° beveled mat'}
-                        </span>
-                      </span>
-                      {(editCropX !== 0.5 || editCropY !== 0.5) && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setEditCropX(0.5);
-                            setEditCropY(0.5);
-                          }}
-                          className="text-amber-400 hover:underline font-mono text-[10px]"
-                        >
-                          Reset Center
-                        </button>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* RIGHT: Expanded Full-Width Aspect Ratio, Single/Double Mat, Border & Color Controls */}
-                  <div className="xl:w-[52%] flex flex-col justify-between space-y-3.5 bg-studio-panel/90 p-4 rounded-xl border border-studio-border">
-                    <div className="space-y-3.5">
-                      {/* 1. Window Aspect Ratio Selector (Original Ratio + Mat vs 16:9 Crop + Mat vs Panos) */}
-                      <div>
-                        <div className="flex items-center justify-between mb-1.5">
-                          <label className="text-[11px] font-bold uppercase tracking-wider text-amber-300">
-                            1. Photo Window Aspect Ratio (Keep Original Ratio or Crop Underneath Mat)
-                          </label>
-                          <span className="text-[10.5px] font-mono text-studio-textMuted">
-                            {ASPECT_RATIO_OPTIONS.find((a) => a.id === editMatAspect)?.desc}
-                          </span>
-                        </div>
-                        <div className="flex flex-wrap gap-1.5">
-                          {ASPECT_RATIO_OPTIONS.map((opt) => {
-                            const active = editMatMode !== 'none' && editMatAspect === opt.id;
-                            return (
-                              <button
-                                key={opt.id}
-                                type="button"
-                                onClick={() => {
-                                  setEditMatMode('studio');
-                                  setEditMatAspect(opt.id);
-                                }}
-                                title={opt.desc}
-                                className={`px-3 py-1.5 rounded-lg border text-[11px] font-mono font-bold whitespace-nowrap transition-all ${
-                                  active
-                                    ? 'bg-amber-500 text-studio-bg border-amber-400 shadow-sm'
-                                    : 'bg-studio-bg border-studio-border text-studio-textMuted hover:text-white'
-                                }`}
-                              >
-                                {opt.shortLabel || opt.label}
-                              </button>
-                            );
-                          })}
-                        </div>
-                      </div>
-
-                      {/* 2. Mat Border Size, Optical Placement & Single vs Double Mat */}
-                      <div>
-                        <div className="flex flex-wrap items-center justify-between gap-2 mb-1.5">
-                          <label className="text-[11px] font-bold uppercase tracking-wider text-amber-300">
-                            2. Mat Border Width &amp; Bevel Style
-                          </label>
-                          {/* Single Mat vs Double Mat Toggle */}
-                          {editMatMode !== 'none' && (
-                            <div className="flex items-center gap-1 bg-studio-bg p-0.5 rounded-lg border border-studio-border">
-                              <button
-                                type="button"
-                                onClick={() => setEditMatStyle('single')}
-                                className={`px-2.5 py-1 rounded-md text-[10.5px] font-bold flex items-center gap-1 transition-all ${
-                                  editMatStyle === 'single'
-                                    ? 'bg-amber-500 text-studio-bg shadow-sm'
-                                    : 'text-studio-textMuted hover:text-white'
-                                }`}
-                              >
-                                <span>Single Mat (1 Bevel)</span>
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => setEditMatStyle('double')}
-                                className={`px-2.5 py-1 rounded-md text-[10.5px] font-bold flex items-center gap-1 transition-all ${
-                                  editMatStyle === 'double'
-                                    ? 'bg-amber-500 text-studio-bg shadow-sm'
-                                    : 'text-studio-textMuted hover:text-white'
-                                }`}
-                              >
-                                <Layers className="w-3 h-3" />
-                                <span>Double Mat (Layered 2-Bevel)</span>
-                              </button>
-                            </div>
-                          )}
-                        </div>
-                        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-1.5">
-                          {BORDER_STYLE_OPTIONS.map((bOpt) => {
-                            const isSelected =
-                              (bOpt.id === 'none' && editMatMode === 'none') ||
-                              (bOpt.id !== 'none' && editMatMode === 'studio' && editMatPlacement === bOpt.id);
-                            return (
-                              <button
-                                key={bOpt.id}
-                                type="button"
-                                onClick={() => {
-                                  if (bOpt.id === 'none') {
-                                    setEditMatMode('none');
-                                  } else {
-                                    setEditMatMode('studio');
-                                    setEditMatPlacement(bOpt.id);
-                                  }
-                                }}
-                                title={bOpt.desc}
-                                className={`p-2 rounded-lg border text-left transition-all ${
-                                  isSelected
-                                    ? 'bg-amber-500/20 border-amber-400 text-white font-bold ring-1 ring-amber-400'
-                                    : 'bg-studio-bg border-studio-border text-studio-textMuted hover:text-white'
-                                }`}
-                              >
-                                <div className="text-[11px] leading-tight whitespace-nowrap">{bOpt.label}</div>
-                                <div className="text-[9.5px] text-studio-textDim truncate mt-0.5">{bOpt.desc}</div>
-                              </button>
-                            );
-                          })}
-                        </div>
-                      </div>
-
-                      {/* 3. Outer & Inner Museum Mat Board Color Studio (Checkerboard + Tone Variations) */}
-                      {editMatMode === 'studio' && (
-                        <div className="pt-1">
-                          <MatColorPicker
-                            color={editMatColor}
-                            onChange={setEditMatColor}
-                            isDoubleMat={editMatStyle === 'double'}
-                            innerColor={editInnerMatColor}
-                            onInnerChange={setEditInnerMatColor}
-                            compact={false}
-                          />
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Balanced, Stretched-Out 3-Column Studio Action Footer */}
-                    <div className="pt-3.5 border-t border-studio-border grid grid-cols-1 sm:grid-cols-3 gap-3">
-                      <button
-                        type="button"
-                        onClick={() => setStudioPhotoIdx(null)}
-                        className="w-full py-2.5 px-4 bg-studio-bg border border-studio-border text-studio-textMuted rounded-xl text-xs font-bold hover:text-white hover:border-studio-textMuted transition-all flex items-center justify-center gap-1.5"
-                      >
-                        <span>Close Studio</span>
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => handleApplyMatUpdate(true)}
-                        disabled={isUpdatingMat || !activeDisplay.online}
-                        className="w-full py-2.5 px-4 bg-purple-500/20 border border-purple-500/50 text-purple-200 rounded-xl text-xs font-bold hover:bg-purple-500/30 transition-all flex items-center justify-center gap-1.5"
-                      >
-                        <span>
-                          {isUpdatingMat ? 'Updating All TV Art...' : `✨ Apply Style to All ${curatedPhotos.length} Photos`}
-                        </span>
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => handleApplyMatUpdate(false)}
-                        disabled={isUpdatingMat || !activeDisplay.online}
-                        className="w-full py-2.5 px-4 bg-studio-accent text-studio-bg rounded-xl text-xs font-bold hover:bg-amber-400 transition-all shadow-lg flex items-center justify-center gap-1.5"
-                      >
-                        <Check className="w-4 h-4" />
-                        <span>{isUpdatingMat ? 'Rendering 4K Bevel...' : 'Update This Photo on TV'}</span>
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
 
             {/* ================================================================= */}
             {/* PHOTOS GRID AREA (With Drag-and-Drop & Button Reordering)         */}
@@ -2017,6 +2209,242 @@ export default function TvDisplaysView({
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* System Diagnostics & TV Logs Modal */}
+      {isDiagnosticsModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="bg-studio-panel border border-studio-border rounded-xl max-w-4xl w-full max-h-[90vh] flex flex-col shadow-2xl overflow-hidden">
+            {/* Modal Header */}
+            <div className="px-5 py-4 border-b border-studio-border flex items-center justify-between bg-studio-bg/60">
+              <div className="flex items-center gap-2.5">
+                <Activity className="w-5 h-5 text-amber-400" />
+                <div>
+                  <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                    MR Darkroom Diagnostics & Telemetry
+                  </h3>
+                  <p className="text-[11px] text-studio-textMuted">
+                    Network connectivity, Frame TV probes, Lightroom plugin status, and recent logs
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={fetchDiagnostics}
+                  disabled={isLoadingDiagnostics}
+                  className="px-2.5 py-1.5 bg-studio-bg border border-studio-border rounded-lg text-xs font-mono text-studio-text hover:text-white flex items-center gap-1.5"
+                  title="Refresh Diagnostics"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${isLoadingDiagnostics ? 'animate-spin text-amber-400' : ''}`} />
+                  <span>Refresh</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={copyDiagnosticsToClipboard}
+                  disabled={!diagnosticsData}
+                  className="px-2.5 py-1.5 bg-studio-bg border border-studio-border rounded-lg text-xs font-mono text-studio-text hover:text-white flex items-center gap-1.5"
+                  title="Copy full telemetry JSON to clipboard"
+                >
+                  <Copy className="w-3.5 h-3.5" />
+                  <span>Copy JSON</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={downloadDiagnosticsJson}
+                  disabled={!diagnosticsData}
+                  className="px-2.5 py-1.5 bg-studio-bg border border-studio-border rounded-lg text-xs font-mono text-studio-text hover:text-white flex items-center gap-1.5"
+                  title="Download diagnostics JSON report"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>Download</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIsDiagnosticsModalOpen(false)}
+                  className="p-1.5 text-studio-textMuted hover:text-white rounded-lg hover:bg-studio-bg transition-colors ml-2"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+            </div>
+
+            {/* Modal Body */}
+            <div className="flex-1 overflow-y-auto p-5 space-y-5 scrollbar-thin">
+              {isLoadingDiagnostics && !diagnosticsData ? (
+                <div className="py-16 text-center text-xs text-studio-textMuted font-mono flex flex-col items-center justify-center gap-2">
+                  <RefreshCw className="w-6 h-6 animate-spin text-amber-400" />
+                  <span>Probing local network and gathering diagnostic telemetry...</span>
+                </div>
+              ) : diagnosticsData ? (
+                <>
+                  {/* System & Host Info */}
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs font-mono">
+                    <div className="bg-studio-bg/70 p-3 rounded-lg border border-studio-border/70">
+                      <div className="text-[10px] uppercase text-studio-textMuted">Hostname</div>
+                      <div className="text-white font-bold truncate mt-0.5">{diagnosticsData.system?.hostname || 'N/A'}</div>
+                    </div>
+                    <div className="bg-studio-bg/70 p-3 rounded-lg border border-studio-border/70">
+                      <div className="text-[10px] uppercase text-studio-textMuted">Local IP(s)</div>
+                      <div className="text-emerald-400 font-bold truncate mt-0.5">
+                        {diagnosticsData.system?.local_ips?.join(', ') || 'N/A'}
+                      </div>
+                    </div>
+                    <div className="bg-studio-bg/70 p-3 rounded-lg border border-studio-border/70">
+                      <div className="text-[10px] uppercase text-studio-textMuted">App Version</div>
+                      <div className="text-amber-400 font-bold truncate mt-0.5">v{diagnosticsData.system?.app_version || '4.5.0'}</div>
+                    </div>
+                    <div className="bg-studio-bg/70 p-3 rounded-lg border border-studio-border/70">
+                      <div className="text-[10px] uppercase text-studio-textMuted">Platform</div>
+                      <div className="text-white truncate mt-0.5">{diagnosticsData.system?.platform || 'macOS'}</div>
+                    </div>
+                  </div>
+
+                  {/* Samsung Frame TV Reachability Table */}
+                  <div className="border border-studio-border rounded-lg overflow-hidden bg-studio-bg/40">
+                    <div className="px-4 py-2.5 bg-studio-bg/90 border-b border-studio-border flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <Tv className="w-4 h-4 text-amber-400" />
+                        <span className="text-xs font-bold text-white font-mono uppercase tracking-wider">
+                          Samsung Frame TV Connectivity Probes
+                        </span>
+                      </div>
+                      <span className="text-[11px] font-mono text-studio-textMuted">
+                        Direct TCP socket (8001 / 8002) & ICMP ping
+                      </span>
+                    </div>
+
+                    <div className="divide-y divide-studio-border/60">
+                      {(diagnosticsData.tvs || []).length === 0 ? (
+                        <div className="p-4 text-center text-xs text-studio-textMuted font-mono">
+                          No Samsung Frame TVs configured yet. Click "+ Add TV" to discover or add one.
+                        </div>
+                      ) : (
+                        diagnosticsData.tvs.map((tv, idx) => (
+                          <div key={idx} className="p-3.5 flex flex-wrap items-center justify-between gap-3 text-xs font-mono">
+                            <div>
+                              <div className="flex items-center gap-2">
+                                <span className="font-bold text-white">{tv.name || `TV #${idx + 1}`}</span>
+                                <span className="text-studio-textMuted">({tv.ip})</span>
+                                <span
+                                  className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                                    tv.status_verdict === 'ONLINE'
+                                      ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                                      : 'bg-red-500/20 text-red-300 border border-red-500/40'
+                                  }`}
+                                >
+                                  {tv.status_verdict}
+                                </span>
+                              </div>
+                              <div className="text-[11px] text-studio-textMuted mt-1">
+                                Port 8001 (WS Art):{' '}
+                                <span className={tv.port_8001_open ? 'text-emerald-400 font-bold' : 'text-red-400'}>
+                                  {tv.port_8001_open ? 'OPEN' : 'CLOSED'}
+                                </span>
+                                {' · '}
+                                Port 8002 (SSL WS):{' '}
+                                <span className={tv.port_8002_open ? 'text-emerald-400 font-bold' : 'text-red-400'}>
+                                  {tv.port_8002_open ? 'OPEN' : 'CLOSED'}
+                                </span>
+                                {' · '}
+                                ICMP Ping:{' '}
+                                <span className={tv.pingable ? 'text-emerald-400 font-bold' : 'text-zinc-500'}>
+                                  {tv.pingable ? 'REACHABLE' : 'UNREACHABLE'}
+                                </span>
+                                {' · '}
+                                Token File:{' '}
+                                <span className={tv.token_file_exists ? 'text-emerald-400 font-bold' : 'text-amber-400'}>
+                                  {tv.token_file_exists ? 'SAVED' : 'NOT PAIRED YET'}
+                                </span>
+                              </div>
+                            </div>
+                            <div className="text-[10.5px] text-studio-textMuted bg-studio-bg px-2.5 py-1.5 rounded border border-studio-border">
+                              {tv.http_probe?.ok ? (
+                                <span className="text-emerald-300">
+                                  ✓ Device: {tv.http_probe.name || 'Samsung TV'} ({tv.http_probe.model || 'Frame'})
+                                </span>
+                              ) : (
+                                <span>No UPnP/HTTP banner · WebSocket will prompt on TV screen</span>
+                              )}
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Lightroom Plugin Status */}
+                  <div className="border border-studio-border rounded-lg p-4 bg-studio-bg/40 flex flex-wrap items-center justify-between gap-3 text-xs font-mono">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="font-bold text-white">Adobe Lightroom Classic Export Plugin</span>
+                        <span
+                          className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                            diagnosticsData.lightroom?.installed_at_adobe
+                              ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                              : 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
+                          }`}
+                        >
+                          {diagnosticsData.lightroom?.installed_at_adobe ? 'INSTALLED AT ADOBE MODULES' : 'NOT INSTALLED'}
+                        </span>
+                      </div>
+                      <div className="text-[11px] text-studio-textMuted mt-1">
+                        Path: {diagnosticsData.lightroom?.adobe_plugin_path || '~/Library/Application Support/Adobe/Lightroom/Modules/MRKeepersTransfer.lrplugin'}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleReinstallLrPlugin}
+                      className="px-3 py-1.5 bg-studio-panel hover:bg-studio-bg border border-studio-border text-white text-xs font-mono rounded-lg transition-colors"
+                    >
+                      Re-deploy Lightroom Plugin
+                    </button>
+                  </div>
+
+                  {/* Recent Server Logs */}
+                  <div className="border border-studio-border rounded-lg overflow-hidden bg-studio-bg/90">
+                    <div className="px-4 py-2 bg-studio-bg border-b border-studio-border flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <Terminal className="w-4 h-4 text-amber-400" />
+                        <span className="text-xs font-bold text-white font-mono uppercase tracking-wider">
+                          Recent Server Logs (Ring Buffer)
+                        </span>
+                      </div>
+                      <span className="text-[10px] font-mono text-studio-textMuted">
+                        {(diagnosticsData.recent_logs || []).length} lines
+                      </span>
+                    </div>
+                    <div className="p-3 max-h-60 overflow-y-auto font-mono text-[11px] text-zinc-300 space-y-0.5 bg-black/60 select-text">
+                      {(diagnosticsData.recent_logs || []).length === 0 ? (
+                        <div className="text-studio-textMuted italic">No recent log entries in buffer.</div>
+                      ) : (
+                        diagnosticsData.recent_logs.map((logLine, i) => (
+                          <div key={i} className="leading-relaxed hover:bg-white/5 px-1 rounded whitespace-pre-wrap">
+                            {logLine}
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                </>
+              ) : null}
+            </div>
+
+            {/* Modal Footer */}
+            <div className="px-5 py-3 border-t border-studio-border bg-studio-bg/60 flex items-center justify-between">
+              <span className="text-[11px] text-studio-textMuted">
+                Need help debugging? Click "Copy JSON" and paste into the chat.
+              </span>
+              <button
+                type="button"
+                onClick={() => setIsDiagnosticsModalOpen(false)}
+                className="px-4 py-1.5 bg-studio-panel border border-studio-border text-white rounded-lg text-xs font-semibold hover:bg-studio-bg transition-colors"
+              >
+                Close
+              </button>
+            </div>
           </div>
         </div>
       )}

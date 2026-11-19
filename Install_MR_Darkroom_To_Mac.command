@@ -111,6 +111,17 @@ PLIST_PATH="$HOME/Library/LaunchAgents/com.mrdarkroom.studio.plist"
 launchctl unload "$PLIST_PATH" 2>/dev/null || true
 launchctl load "$PLIST_PATH" 2>/dev/null || true
 
+echo "[6/6] Installing MR Keepers Lightroom Export Plugin..."
+ADOBE_MODULES="$HOME/Library/Application Support/Adobe/Lightroom/Modules"
+mkdir -p "$ADOBE_MODULES"
+if [ -d "$TARGET_ENGINE/MRKeepersTransfer.lrplugin" ]; then
+    rsync -a --delete "$TARGET_ENGINE/MRKeepersTransfer.lrplugin/" "$ADOBE_MODULES/MRKeepersTransfer.lrplugin/"
+    echo "      ✓ Lightroom Plugin installed at $ADOBE_MODULES/MRKeepersTransfer.lrplugin"
+elif [ -d "$SRC_ENGINE/MRKeepersTransfer.lrplugin" ]; then
+    rsync -a --delete "$SRC_ENGINE/MRKeepersTransfer.lrplugin/" "$ADOBE_MODULES/MRKeepersTransfer.lrplugin/"
+    echo "      ✓ Lightroom Plugin installed at $ADOBE_MODULES/MRKeepersTransfer.lrplugin"
+fi
+
 echo ""
 echo "=================================================================="
 echo "  ✅ INSTALLATION COMPLETE!"
@@ -119,6 +130,7 @@ echo "  • App Installed : /Applications/MR Darkroom.app"
 echo "  • Desktop App   : ~/Desktop/MR Darkroom.app"
 echo "  • Local Engine  : ~/Library/Application Support/MRDarkroom/Engine"
 echo "  • Local Vault   : ~/Library/Application Support/MRDarkroom"
+echo "  • LR Plugin     : ~/Library/Application Support/Adobe/Lightroom/Modules"
 echo "  • LaunchAgent   : ~/Library/LaunchAgents/com.mrdarkroom.studio.plist"
 echo "=================================================================="
 echo ""
