@@ -460,14 +460,8 @@ open_studio_window() {{
         fi
     fi
 
-    # 4. Otherwise open a single window (without -n so we never spawn duplicate browser instances)
-    if [ -d "/Applications/Google Chrome.app" ]; then
-        open -a "Google Chrome" --args --app="$APP_URL"
-    elif [ -d "/Applications/Brave Browser.app" ]; then
-        open -a "Brave Browser" --args --app="$APP_URL"
-    else
-        open "$APP_URL"
-    fi
+    # 4. Otherwise open the Studio web app directly to the IP address in the user's default browser
+    /usr/bin/open "$APP_URL"
 }}
 
 # 1. Ensure Ollama is running silently with offline models

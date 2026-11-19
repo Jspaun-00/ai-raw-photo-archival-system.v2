@@ -129,13 +129,8 @@ open_studio_window() {
             return 0
         fi
     fi
-    if [ -d "/Applications/Google Chrome.app" ]; then
-        open -a "Google Chrome" --args --app="$URL"
-    elif [ -d "/Applications/Brave Browser.app" ]; then
-        open -a "Brave Browser" --args --app="$URL"
-    else
-        open "$URL"
-    fi
+    # 4. Otherwise open the Studio web app directly to the IP address in the user's default browser
+    /usr/bin/open "$URL"
 }
 
 # 5. Check if server is already listening on port 8501
