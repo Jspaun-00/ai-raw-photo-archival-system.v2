@@ -64,6 +64,7 @@ export default function TvShowcaseCropModal({
     { name: 'TV1', ip: '192.168.68.88', model: 'QN55LS03HEFXZA', online: true },
   ]);
   const [selectedTvIp, setSelectedTvIp] = useState('192.168.68.88');
+  const [selectedBrightness, setSelectedBrightness] = useState(3);
   const [slideshowMinutes, setSlideshowMinutes] = useState(15);
   const [isDiscoveringTvs, setIsDiscoveringTvs] = useState(false);
 
@@ -398,6 +399,20 @@ export default function TvShowcaseCropModal({
     }
   };
 
+  const handleSetTvBrightnessDirect = async (lvl) => {
+    setSelectedBrightness(lvl);
+    if (!selectedTvIp) return;
+    try {
+      await fetch('/api/samsung-tvs/brightness', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ip: selectedTvIp, brightness: lvl, disarm_auto_brightness: true }),
+      });
+    } catch (e) {
+      console.error('Error setting brightness:', e);
+    }
+  };
+
   const triggerExportWithDestination = (dest, folderPath = null, extraOptions = {}) => {
     try {
       localStorage.setItem('mrdarkroom_export_destination', dest);
@@ -412,6 +427,7 @@ export default function TvShowcaseCropModal({
       onConfirmExport(crops, dest, folderPath, {
         samsung_tv_ip: selectedTvIp,
         slideshow_minutes: slideshowMinutes,
+        brightness: selectedBrightness,
         mat_mode: matMode,
         mat_color: matColor,
         mat_placement: matPlacement,
@@ -1554,12 +1570,57 @@ export default function TvShowcaseCropModal({
               <span>+ Remote IP</span>
             </button>
 
+            {/* Direct TV Brightness Controls */}
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '3px',
+                padding: '2px 5px',
+                borderRadius: '6px',
+                background: 'rgba(255, 255, 255, 0.05)',
+                border: '1px solid rgba(255, 255, 255, 0.12)',
+              }}
+              title="Choose display brightness level for Samsung Frame TV"
+            >
+              <span style={{ fontSize: '11px', color: '#94a3b8', fontWeight: 600, paddingRight: '2px' }}>
+                ☀️
+              </span>
+              {[
+                { lvl: 1, label: '🌙 5%' },
+                { lvl: 3, label: '📷 30%' },
+                { lvl: 5, label: '☀️ 50%' },
+                { lvl: 8, label: '⚡ 80%' },
+              ].map((p) => (
+                <button
+                  key={p.lvl}
+                  type="button"
+                  onClick={() => handleSetTvBrightnessDirect(p.lvl)}
+                  style={{
+                    padding: '2px 6px',
+                    borderRadius: '4px',
+                    fontSize: '11px',
+                    fontWeight: selectedBrightness === p.lvl ? 800 : 600,
+                    background: selectedBrightness === p.lvl ? '#f59e0b' : 'transparent',
+                    color: selectedBrightness === p.lvl ? '#000000' : '#cbd5e1',
+                    border: 'none',
+                    cursor: 'pointer',
+                    transition: 'all 0.12s ease',
+                  }}
+                  title={`Set brightness to level ${p.lvl}`}
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
+
             <button
               type="button"
               onClick={() =>
                 triggerExportWithDestination('samsung_tv', null, {
                   samsung_tv_ip: selectedTvIp,
                   slideshow_minutes: slideshowMinutes,
+                  brightness: selectedBrightness,
                 })
               }
               disabled={isBusy}

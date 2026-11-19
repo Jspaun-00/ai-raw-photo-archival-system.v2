@@ -527,21 +527,21 @@ export default function PipelineModal({
                 disabled={applyingUpdate}
                 title={
                   updateInfo.update_available
-                    ? `${updateInfo.commits_behind} new update(s) available on GitHub`
-                    : `Current commit: ${updateInfo.current_commit || 'latest'} — Click to force pull latest GitHub main & sync Lightroom plugin`
+                    ? `${updateInfo.commits_behind} new update(s) available on GitHub — click to update`
+                    : `Current commit: ${updateInfo.current_commit || 'latest'} — System is up to date with GitHub origin. Click to force re-sync if needed.`
                 }
                 className={`flex items-center gap-1.5 px-2.5 py-1 text-xs font-mono font-semibold rounded-sm transition-colors ${
                   updateInfo.update_available
-                    ? 'bg-emerald-600 hover:bg-emerald-500 text-white'
-                    : 'bg-studio-bg hover:bg-studio-hover border border-emerald-500/40 text-emerald-300'
+                    ? 'bg-emerald-600 hover:bg-emerald-500 text-white animate-pulse'
+                    : 'bg-studio-bg hover:bg-studio-hover border border-emerald-500/30 text-emerald-400/90'
                 }`}
               >
                 <span>
                   {applyingUpdate
                     ? 'Updating... Reloading in 3s'
                     : updateInfo.update_available
-                    ? `✨ Update Now (${updateInfo.commits_behind})`
-                    : `⬇️ Pull Latest (${updateInfo.remote_commit || updateInfo.version || 'Sync'})`}
+                    ? `✨ ${updateInfo.commits_behind} Update${updateInfo.commits_behind > 1 ? 's' : ''} Available`
+                    : `✓ Up to Date (${updateInfo.current_commit ? updateInfo.current_commit.substring(0, 7) : 'v4.5.3'})`}
                 </span>
               </button>
             )}

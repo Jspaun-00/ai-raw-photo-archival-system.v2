@@ -4856,6 +4856,7 @@ class BatchExportRequest(BaseModel):
     mat_aspect: Optional[str] = "original"
     mat_style: Optional[str] = "single"  # "single" | "double"
     inner_mat_color: Optional[str] = "#F4EFE6"
+    brightness: Optional[int] = None
 
 
 class SamsungTvDiscoverRequest(BaseModel):
@@ -7219,6 +7220,7 @@ def _run_batch_export_worker(
     mat_aspect: Optional[str] = "original",
     mat_style: Optional[str] = "single",
     inner_mat_color: Optional[str] = "#F4EFE6",
+    brightness: Optional[int] = None,
 ) -> Dict[str, Any]:
     import io
     import shutil
@@ -7586,8 +7588,10 @@ def _run_batch_export_worker(
                         norm_y = max(0.0, min(1.0, norm_y))
                         norm_x = max(0.0, min(1.0, norm_x))
 
-                        target_long_edge = int(custom_long_edge) if (custom_long_edge and int(custom_long_edge) > 0) else 12000
-                        target_dpi = int(custom_dpi) if (custom_dpi and int(custom_dpi) > 0) else 180
+                        # Fast-path for Samsung Frame TV: render directly to native 4K UHD (3840x2160)
+                        # Avoids rendering an 81-megapixel (12K) intermediate canvas which freezes CPU and GIL
+                        target_long_edge = int(custom_long_edge) if (custom_long_edge and int(custom_long_edge) > 0) else (3840 if is_samsung_tv else 12000)
+                        target_dpi = int(custom_dpi) if (custom_dpi and int(custom_dpi) > 0) else (72 if is_samsung_tv else 180)
 
                         # Always render 16:9 canvas for TV Showcase (e.g. 12000 x 6750 or 3840 x 2160)
                         target_w = target_long_edge
@@ -7711,7 +7715,7 @@ def _run_batch_export_worker(
                     tv_client = None
                     art = None
                     try:
-                        tv_client, art, _ = _connect_samsung_tv_art(resolved_tv_ip, timeout=35.0)
+                        tv_client, art, _ = _connect_samsung_tv_art(resolved_tv_ip, timeout=10.0)
                         _ensure_samsung_art_display_awake(art)
                         sync_data = _load_tv_sync_data()
                         tv_sync_entry = _resolve_tv_sync_entry(sync_data, resolved_tv_ip)
@@ -7732,7 +7736,10 @@ def _run_batch_export_worker(
                             with Image.open(exp_f["path"]) as tv_im:
                                 tv_im_rgb = tv_im.convert("RGB")
                                 if mode == "tv_showcase":
-                                    tv_4k = tv_im_rgb.resize((3840, 2160), resample=Image.Resampling.LANCZOS)
+                                    if tv_im_rgb.size == (3840, 2160):
+                                        tv_4k = tv_im_rgb
+                                    else:
+                                        tv_4k = tv_im_rgb.resize((3840, 2160), resample=Image.Resampling.LANCZOS)
                                 else:
                                     tv_4k = generate_fine_art_mat(
                                         tv_im_rgb,
@@ -7787,6 +7794,16 @@ def _run_batch_export_worker(
                                             art.select_image(cid, show=True)
                                         except Exception:
                                             pass
+
+                                        # Apply chosen target brightness immediately to TV & disable eco brightness loops
+                                        target_br = brightness if brightness is not None else tv_sync_entry.get("brightness")
+                                        if target_br is not None:
+                                            try:
+                                                art.set_brightness_sensor_setting(False)
+                                                art.set_brightness(int(target_br))
+                                                tv_sync_entry["brightness"] = int(target_br)
+                                            except Exception as e_br:
+                                                logging.warning(f"Failed setting brightness on TV ({resolved_tv_ip}): {e_br}")
 
                         if old_cids_to_delete:
                             prev_deleted = set(tv_sync_entry.get("deleted_cids", []))
@@ -7896,6 +7913,7 @@ async def export_photos_batch(payload: BatchExportRequest):
                 payload.mat_aspect,
                 payload.mat_style,
                 payload.inner_mat_color,
+                payload.brightness,
             ),
             daemon=True,
         ).start()

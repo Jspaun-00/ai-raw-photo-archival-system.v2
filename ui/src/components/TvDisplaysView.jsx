@@ -1768,7 +1768,7 @@ export default function TvDisplaysView({
                     step="1"
                     value={activeDisplay.brightness ?? 4}
                     onChange={(e) => handleSetBrightness(activeDisplay.ip, Number(e.target.value))}
-                    disabled={actionBusy || !activeDisplay.online}
+                    disabled={!activeDisplay.online}
                     className="w-28 sm:w-36 accent-amber-400 cursor-pointer"
                   />
                 </div>
@@ -1778,7 +1778,7 @@ export default function TvDisplaysView({
                   <button
                     type="button"
                     onClick={() => handleSetBrightness(activeDisplay.ip, 1)}
-                    disabled={actionBusy || !activeDisplay.online}
+                    disabled={!activeDisplay.online}
                     title="Set 5% Brightness (Level 1 - Darkroom / Night)"
                     className={`px-2 py-1 rounded border text-[11px] font-mono font-semibold transition-all ${
                       activeDisplay.brightness === 1
@@ -1791,7 +1791,7 @@ export default function TvDisplaysView({
                   <button
                     type="button"
                     onClick={() => handleSetBrightness(activeDisplay.ip, 3)}
-                    disabled={actionBusy || !activeDisplay.online}
+                    disabled={!activeDisplay.online}
                     title="Set 30% Brightness (Level 3 - Studio Standard)"
                     className={`px-2 py-1 rounded border text-[11px] font-mono font-semibold transition-all ${
                       activeDisplay.brightness === 3
@@ -1804,7 +1804,7 @@ export default function TvDisplaysView({
                   <button
                     type="button"
                     onClick={() => handleSetBrightness(activeDisplay.ip, 5)}
-                    disabled={actionBusy || !activeDisplay.online}
+                    disabled={!activeDisplay.online}
                     title="Set 50% Brightness (Level 5 - Daylight)"
                     className={`px-2 py-1 rounded border text-[11px] font-mono font-semibold transition-all ${
                       activeDisplay.brightness === 5
@@ -1817,7 +1817,7 @@ export default function TvDisplaysView({
                   <button
                     type="button"
                     onClick={() => handleSetBrightness(activeDisplay.ip, 8)}
-                    disabled={actionBusy || !activeDisplay.online}
+                    disabled={!activeDisplay.online}
                     title="Set 80% Brightness (Level 8 - High Daylight)"
                     className={`px-2 py-1 rounded border text-[11px] font-mono font-semibold transition-all ${
                       activeDisplay.brightness === 8
@@ -1833,7 +1833,7 @@ export default function TvDisplaysView({
                   <button
                     type="button"
                     onClick={() => handleSetBrightness(null, activeDisplay.brightness ?? 4, true)}
-                    disabled={actionBusy || !activeDisplay.online}
+                    disabled={!activeDisplay.online}
                     title="Broadcast this display's brightness to ALL other Frame TVs"
                     className="px-2.5 py-1 bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-300 rounded-lg text-[11px] font-bold flex items-center gap-1 transition-all ml-1"
                   >
