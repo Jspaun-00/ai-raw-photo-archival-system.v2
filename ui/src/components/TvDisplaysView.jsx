@@ -27,6 +27,8 @@ import {
   Copy,
   Download,
   Terminal,
+  Sun,
+  ShieldCheck,
 } from 'lucide-react';
 import MatColorPicker, { ARCHIVAL_MAT_TONES as MAT_COLOR_PRESETS, findMatTone } from './MatColorPicker';
 
@@ -808,6 +810,57 @@ export default function TvDisplaysView({
     }
   };
 
+  // Set Brightness Level (single TV or all TVs)
+  const handleSetBrightness = async (targetIp, level, applyToAll = false) => {
+    if (actionBusy) return;
+    setActionBusy(true);
+    try {
+      const res = await fetch('/api/samsung-tvs/brightness', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ip: targetIp,
+          brightness: level,
+          apply_to_all: applyToAll,
+          disarm_auto_brightness: true,
+        }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const pct = Math.round((level / 10) * 100);
+      const targetLabel = applyToAll ? 'ALL registered Frame TVs' : `TV (${targetIp})`;
+      showGlobalToast(`Brightness set to Level ${level} (${pct}%) on ${targetLabel}`);
+      await fetchDisplays();
+    } catch (err) {
+      showGlobalToast(`Brightness update failed: ${err.message}`);
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
+  // Set Sensor Settings / Safeguards (single TV or all TVs)
+  const handleSetSensorSettings = async (targetIp, settingsObj, applyToAll = false) => {
+    if (actionBusy) return;
+    setActionBusy(true);
+    try {
+      const res = await fetch('/api/samsung-tvs/sensor-settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ip: targetIp,
+          ...settingsObj,
+          apply_to_all: applyToAll,
+        }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      showGlobalToast(`Updated TV sensor safeguards & eco settings`);
+      await fetchDisplays();
+    } catch (err) {
+      showGlobalToast(`Sensor settings update failed: ${err.message}`);
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
   // Select Art (Display photo immediately on TV)
   const handleSelectArt = async (contentId) => {
     if (!activeDisplay || !contentId || actionBusy) return;
@@ -1047,6 +1100,58 @@ export default function TvDisplaysView({
             <Wifi className={`w-3.5 h-3.5 ${isScanningNetwork ? 'animate-ping text-amber-400' : ''}`} />
             <span>{isScanningNetwork ? 'Scanning Wi-Fi for TVs...' : 'Scan Wi-Fi Network for TVs'}</span>
           </button>
+
+          {displays.length > 0 && (
+            <div className="mt-2.5 p-2 bg-studio-bg/90 border border-studio-border rounded-lg space-y-1.5">
+              <div className="flex items-center justify-between text-[11px]">
+                <span className="font-semibold text-amber-300 flex items-center gap-1">
+                  <Sun className="w-3.5 h-3.5 text-amber-400" />
+                  <span>Broadcast Brightness (All TVs)</span>
+                </span>
+                <span className="text-[10px] font-mono text-studio-textMuted">
+                  {displays.length} {displays.length === 1 ? 'TV' : 'TVs'}
+                </span>
+              </div>
+              <div className="grid grid-cols-4 gap-1">
+                <button
+                  type="button"
+                  onClick={() => handleSetBrightness(null, 1, true)}
+                  disabled={actionBusy}
+                  title="Broadcast 5% Brightness (Level 1 - Darkroom/Night) to ALL TVs"
+                  className="py-1 px-1 bg-studio-panel hover:bg-amber-500/20 border border-studio-border hover:border-amber-400 text-slate-200 rounded text-[10px] font-mono font-bold text-center transition-colors"
+                >
+                  🌙 5%
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleSetBrightness(null, 3, true)}
+                  disabled={actionBusy}
+                  title="Broadcast 30% Brightness (Level 3 - Studio Standard) to ALL TVs"
+                  className="py-1 px-1 bg-studio-panel hover:bg-amber-500/20 border border-studio-border hover:border-amber-400 text-amber-300 rounded text-[10px] font-mono font-bold text-center transition-colors"
+                >
+                  📷 30%
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleSetBrightness(null, 5, true)}
+                  disabled={actionBusy}
+                  title="Broadcast 50% Brightness (Level 5 - Daylight) to ALL TVs"
+                  className="py-1 px-1 bg-studio-panel hover:bg-amber-500/20 border border-studio-border hover:border-amber-400 text-emerald-300 rounded text-[10px] font-mono font-bold text-center transition-colors"
+                >
+                  ☀️ 50%
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleSetBrightness(null, 8, true)}
+                  disabled={actionBusy}
+                  title="Broadcast 80% Brightness (Level 8 - Max Daylight) to ALL TVs"
+                  className="py-1 px-1 bg-studio-panel hover:bg-amber-500/20 border border-studio-border hover:border-amber-400 text-blue-300 rounded text-[10px] font-mono font-bold text-center transition-colors"
+                >
+                  ⚡ 80%
+                </button>
+              </div>
+            </div>
+          )}
         </div>
 
         <div className="flex-1 overflow-y-auto p-3 space-y-2">
@@ -1626,6 +1731,149 @@ export default function TvDisplaysView({
                   >
                     <Trash2 className="w-3.5 h-3.5" />
                     <span>Clean Unsynced ({externalPhotos.length})</span>
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Brightness & Sensor Safeguards Controller Bar */}
+            <div className="px-6 py-2.5 bg-studio-panel/60 border-b border-studio-border flex flex-wrap items-center justify-between gap-3 text-xs shadow-inner">
+              {/* Brightness Controls */}
+              <div className="flex items-center flex-wrap gap-3">
+                <div className="flex items-center gap-2">
+                  <Sun className="w-4 h-4 text-amber-400" />
+                  <span className="font-bold text-white">Brightness:</span>
+                  <span className="font-mono text-amber-300 font-bold bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/30">
+                    Lvl {activeDisplay.brightness ?? 4} ({Math.round(((activeDisplay.brightness ?? 4) / 10) * 100)}%)
+                  </span>
+                </div>
+
+                <div className="flex items-center gap-2 bg-studio-bg border border-studio-border px-3 py-1 rounded-lg">
+                  <input
+                    type="range"
+                    min="0"
+                    max="10"
+                    step="1"
+                    value={activeDisplay.brightness ?? 4}
+                    onChange={(e) => handleSetBrightness(activeDisplay.ip, Number(e.target.value))}
+                    disabled={actionBusy || !activeDisplay.online}
+                    className="w-28 sm:w-36 accent-amber-400 cursor-pointer"
+                  />
+                </div>
+
+                {/* Brightness Presets */}
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() => handleSetBrightness(activeDisplay.ip, 1)}
+                    disabled={actionBusy || !activeDisplay.online}
+                    title="Set 5% Brightness (Level 1 - Darkroom / Night)"
+                    className={`px-2 py-1 rounded border text-[11px] font-mono font-semibold transition-all ${
+                      activeDisplay.brightness === 1
+                        ? 'bg-amber-500 text-studio-bg border-amber-400 font-bold ring-1 ring-amber-400 shadow-sm'
+                        : 'bg-studio-bg border-studio-border text-studio-textMuted hover:text-white'
+                    }`}
+                  >
+                    🌙 5% (Night)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleSetBrightness(activeDisplay.ip, 3)}
+                    disabled={actionBusy || !activeDisplay.online}
+                    title="Set 30% Brightness (Level 3 - Studio Standard)"
+                    className={`px-2 py-1 rounded border text-[11px] font-mono font-semibold transition-all ${
+                      activeDisplay.brightness === 3
+                        ? 'bg-amber-500 text-studio-bg border-amber-400 font-bold ring-1 ring-amber-400 shadow-sm'
+                        : 'bg-studio-bg border-studio-border text-studio-textMuted hover:text-white'
+                    }`}
+                  >
+                    📷 30% (Studio)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleSetBrightness(activeDisplay.ip, 5)}
+                    disabled={actionBusy || !activeDisplay.online}
+                    title="Set 50% Brightness (Level 5 - Daylight)"
+                    className={`px-2 py-1 rounded border text-[11px] font-mono font-semibold transition-all ${
+                      activeDisplay.brightness === 5
+                        ? 'bg-amber-500 text-studio-bg border-amber-400 font-bold ring-1 ring-amber-400 shadow-sm'
+                        : 'bg-studio-bg border-studio-border text-studio-textMuted hover:text-white'
+                    }`}
+                  >
+                    ☀️ 50% (Day)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleSetBrightness(activeDisplay.ip, 8)}
+                    disabled={actionBusy || !activeDisplay.online}
+                    title="Set 80% Brightness (Level 8 - High Daylight)"
+                    className={`px-2 py-1 rounded border text-[11px] font-mono font-semibold transition-all ${
+                      activeDisplay.brightness === 8
+                        ? 'bg-amber-500 text-studio-bg border-amber-400 font-bold ring-1 ring-amber-400 shadow-sm'
+                        : 'bg-studio-bg border-studio-border text-studio-textMuted hover:text-white'
+                    }`}
+                  >
+                    ⚡ 80%
+                  </button>
+                </div>
+              </div>
+
+              {/* Sensor Safeguards & Eco Controls */}
+              <div className="flex items-center gap-2">
+                {/* Motion Sensor Safeguard Toggle */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    const nextTimer = activeDisplay.motion_timer === 'off' ? '15' : 'off';
+                    handleSetSensorSettings(activeDisplay.ip, { motion_timer: nextTimer });
+                  }}
+                  disabled={actionBusy || !activeDisplay.online}
+                  title={
+                    activeDisplay.motion_timer === 'off'
+                      ? 'Motion sensor timer is OFF. Display stays on continuously.'
+                      : `Motion sensor will turn display off after ${activeDisplay.motion_timer}m inactivity. Click to disable.`
+                  }
+                  className={`px-2.5 py-1 rounded-lg border text-[11px] font-semibold flex items-center gap-1.5 transition-all ${
+                    activeDisplay.motion_timer === 'off'
+                      ? 'bg-emerald-950/60 border-emerald-500/50 text-emerald-300 hover:bg-emerald-900/60'
+                      : 'bg-amber-950/60 border-amber-500/50 text-amber-300 hover:bg-amber-900/60'
+                  }`}
+                >
+                  <ShieldCheck className="w-3.5 h-3.5" />
+                  <span>Motion Sensor: {activeDisplay.motion_timer === 'off' ? 'OFF (Safe)' : `${activeDisplay.motion_timer}m`}</span>
+                </button>
+
+                {/* Auto Brightness Eco Sensor Toggle */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    const nextVal = activeDisplay.brightness_sensor_setting === 'off' ? 'on' : 'off';
+                    handleSetSensorSettings(activeDisplay.ip, { brightness_sensor_setting: nextVal });
+                  }}
+                  disabled={actionBusy || !activeDisplay.online}
+                  title={
+                    activeDisplay.brightness_sensor_setting === 'off'
+                      ? 'Internal Eco Auto-Brightness is OFF. Brightness is locked static.'
+                      : 'Internal Eco Auto-Brightness is ON. TV will auto-adjust levels.'
+                  }
+                  className={`px-2.5 py-1 rounded-lg border text-[11px] font-semibold flex items-center gap-1.5 transition-all ${
+                    activeDisplay.brightness_sensor_setting === 'off'
+                      ? 'bg-emerald-950/60 border-emerald-500/50 text-emerald-300 hover:bg-emerald-900/60'
+                      : 'bg-blue-950/60 border-blue-500/50 text-blue-300 hover:bg-blue-900/60'
+                  }`}
+                >
+                  <span>Auto-Eco Sensor: {activeDisplay.brightness_sensor_setting === 'off' ? 'OFF (Static)' : 'ON (Auto)'}</span>
+                </button>
+
+                {displays.length > 1 && (
+                  <button
+                    type="button"
+                    onClick={() => handleSetBrightness(null, activeDisplay.brightness ?? 4, true)}
+                    disabled={actionBusy || !activeDisplay.online}
+                    title="Broadcast this display's brightness to ALL other Frame TVs"
+                    className="px-2.5 py-1 bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-300 rounded-lg text-[11px] font-bold flex items-center gap-1 transition-all"
+                  >
+                    <span>⚡ Sync All TVs</span>
                   </button>
                 )}
               </div>

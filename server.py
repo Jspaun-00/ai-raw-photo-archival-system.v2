@@ -5967,6 +5967,21 @@ class SamsungTvReorderArtRequest(BaseModel):
     select_first: bool = False
 
 
+class SamsungTvBrightnessRequest(BaseModel):
+    ip: Optional[str] = None
+    brightness: int  # 0 to 10 scale
+    apply_to_all: bool = False
+    disarm_auto_brightness: bool = True
+
+
+class SamsungTvSensorSettingsRequest(BaseModel):
+    ip: Optional[str] = None
+    motion_timer: Optional[str] = None  # "off", "5", "15", "30", "60", "120", "240"
+    motion_sensitivity: Optional[str] = None  # "1", "2", "3"
+    brightness_sensor_setting: Optional[str] = None  # "off", "on"
+    apply_to_all: bool = False
+
+
 @app.get("/api/samsung-tvs/displays")
 async def get_samsung_tv_displays():
     """
@@ -5989,6 +6004,10 @@ async def get_samsung_tv_displays():
             display_entry["art_mode"] = "unknown"
             display_entry["current_content_id"] = None
             display_entry["slideshow"] = {"status": False, "duration": 15, "current": None}
+            display_entry["brightness"] = 4
+            display_entry["motion_timer"] = "off"
+            display_entry["brightness_sensor_setting"] = "off"
+            display_entry["motion_sensitivity"] = "2"
             display_entry["photos"] = []
 
             clean_host = ip.split(":")[0].strip() if ip else ""
@@ -6066,6 +6085,26 @@ async def get_samsung_tv_displays():
                                     "duration": _snap_samsung_slideshow_duration(dur_parsed) or 15,
                                     "current": ss.get("current_content_id"),
                                 }
+                        except Exception:
+                            pass
+
+                        try:
+                            settings_resp = art.get_artmode_settings()
+                            if isinstance(settings_resp, dict) and "data" in settings_resp:
+                                nested = settings_resp.get("data")
+                                if isinstance(nested, str):
+                                    items = json.loads(nested)
+                                    for item in items:
+                                        k = item.get("item")
+                                        v = item.get("value")
+                                        if k == "brightness" and v is not None:
+                                            display_entry["brightness"] = int(v) if str(v).isdigit() else 4
+                                        elif k == "motion_timer" and v is not None:
+                                            display_entry["motion_timer"] = str(v)
+                                        elif k == "brightness_sensor_setting" and v is not None:
+                                            display_entry["brightness_sensor_setting"] = str(v)
+                                        elif k == "motion_sensitivity" and v is not None:
+                                            display_entry["motion_sensitivity"] = str(v)
                         except Exception:
                             pass
 
@@ -6454,6 +6493,109 @@ async def set_samsung_tv_slideshow(payload: SamsungTvSlideshowRequest):
     except Exception as exc:
         logging.warning(f"Set TV slideshow error ({ip}): {exc}")
         raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/api/samsung-tvs/brightness")
+async def set_samsung_tv_brightness(payload: SamsungTvBrightnessRequest):
+    """
+    Sets Art Mode brightness level (0 to 10 scale) for a target TV or across all registered TVs.
+    Automatically disarms internal eco auto-brightness loops so static level sticks.
+    """
+    target_brightness = max(0, min(10, payload.brightness))
+    known_tvs = _deduplicate_samsung_tvs(_load_samsung_tvs())
+
+    if payload.apply_to_all or not (payload.ip or "").strip():
+        target_ips = [tv.get("ip") for tv in known_tvs if tv.get("ip")]
+    else:
+        target_ips = [payload.ip.strip()]
+
+    if not target_ips:
+        raise HTTPException(status_code=400, detail="No target TV IP specified or available")
+
+    loop = asyncio.get_running_loop()
+
+    def _set_brightness_sync(ip: str):
+        tv_lock = _get_tv_ws_lock(ip)
+        with tv_lock:
+            tv_client = None
+            art = None
+            try:
+                tv_client, art, _ = _connect_samsung_tv_art(ip, timeout=8.0)
+                if payload.disarm_auto_brightness:
+                    try:
+                        art.set_brightness_sensor_setting(False)
+                    except Exception:
+                        pass
+                art.set_brightness(target_brightness)
+                return {"ip": ip, "status": "ok", "brightness": target_brightness}
+            except Exception as e:
+                logging.warning(f"Failed to set brightness on TV ({ip}): {e}")
+                return {"ip": ip, "status": "error", "message": str(e)}
+            finally:
+                _close_samsung_art_safely(art, tv_client)
+
+    results = []
+    for target_ip in target_ips:
+        res = await loop.run_in_executor(None, _set_brightness_sync, target_ip)
+        results.append(res)
+
+    return {"status": "ok", "brightness": target_brightness, "results": results}
+
+
+@app.post("/api/samsung-tvs/sensor-settings")
+async def set_samsung_tv_sensor_settings(payload: SamsungTvSensorSettingsRequest):
+    """
+    Configures motion sensor timer ('off', '5', '15', '30', etc.) and eco light sensor
+    for a specific TV or across all registered TVs.
+    """
+    known_tvs = _deduplicate_samsung_tvs(_load_samsung_tvs())
+
+    if payload.apply_to_all or not (payload.ip or "").strip():
+        target_ips = [tv.get("ip") for tv in known_tvs if tv.get("ip")]
+    else:
+        target_ips = [payload.ip.strip()]
+
+    if not target_ips:
+        raise HTTPException(status_code=400, detail="No target TV IP specified or available")
+
+    loop = asyncio.get_running_loop()
+
+    def _set_sensors_sync(ip: str):
+        tv_lock = _get_tv_ws_lock(ip)
+        with tv_lock:
+            tv_client = None
+            art = None
+            try:
+                tv_client, art, _ = _connect_samsung_tv_art(ip, timeout=8.0)
+                if payload.motion_timer is not None:
+                    try:
+                        art.set_motion_timer(str(payload.motion_timer))
+                    except Exception as e:
+                        logging.warning(f"Failed to set motion_timer for {ip}: {e}")
+                if payload.motion_sensitivity is not None:
+                    try:
+                        art.set_motion_sensitivity(str(payload.motion_sensitivity))
+                    except Exception as e:
+                        logging.warning(f"Failed to set motion_sensitivity for {ip}: {e}")
+                if payload.brightness_sensor_setting is not None:
+                    try:
+                        is_on = str(payload.brightness_sensor_setting).lower() in ("on", "true", "1")
+                        art.set_brightness_sensor_setting(is_on)
+                    except Exception as e:
+                        logging.warning(f"Failed to set brightness_sensor_setting for {ip}: {e}")
+                return {"ip": ip, "status": "ok"}
+            except Exception as e:
+                logging.warning(f"Failed to set sensor settings on TV ({ip}): {e}")
+                return {"ip": ip, "status": "error", "message": str(e)}
+            finally:
+                _close_samsung_art_safely(art, tv_client)
+
+    results = []
+    for target_ip in target_ips:
+        res = await loop.run_in_executor(None, _set_sensors_sync, target_ip)
+        results.append(res)
+
+    return {"status": "ok", "results": results}
 
 
 @app.post("/api/samsung-tvs/update-art-mat")
