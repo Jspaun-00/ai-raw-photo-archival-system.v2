@@ -10139,17 +10139,30 @@ def _sync_lr_plugin_to_adobe_modules() -> Tuple[bool, str]:
         dest_dir.mkdir(parents=True, exist_ok=True)
         dest_plugin = dest_dir / "MRKeepersTransfer.lrplugin"
         res = subprocess.run(
-            ["rsync", "-a", "--delete", f"{src_plugin}/", f"{dest_plugin}/"],
+            ["rsync", "-a", "--delete", "--exclude=._*", f"{src_plugin}/", f"{dest_plugin}/"],
             capture_output=True,
             text=True,
             timeout=15.0,
         )
         if res.returncode == 0:
+            subprocess.run(
+                ["chmod", "+x", str(dest_plugin / "scanner.py"), str(dest_plugin / "switch_catalog.sh")],
+                capture_output=True,
+                check=False,
+            )
+            subprocess.run(["xattr", "-cr", str(dest_plugin)], capture_output=True, check=False)
             return True, f"Successfully deployed Lightroom plugin to {dest_plugin}"
         else:
             return False, f"rsync error: {res.stderr}"
     except Exception as exc:
         return False, str(exc)
+
+
+# Automatically keep Adobe Lightroom Modules plugin synchronized on server startup
+try:
+    _sync_lr_plugin_to_adobe_modules()
+except Exception:
+    pass
 
 
 @app.post("/api/system/install-lr-plugin")
@@ -10229,11 +10242,19 @@ async def get_system_diagnostics():
     adobe_modules = Path.home() / "Library" / "Application Support" / "Adobe" / "Lightroom" / "Modules"
     installed_plugin = adobe_modules / "MRKeepersTransfer.lrplugin"
     src_plugin = PROJECT_ROOT / "MRKeepersTransfer.lrplugin"
+    lr_log_file = Path.home() / "Library" / "Application Support" / "MRDarkroom" / "lr_plugin.log"
+    lr_plugin_logs: List[str] = []
+    if lr_log_file.exists():
+        try:
+            lr_plugin_logs = lr_log_file.read_text(encoding="utf-8", errors="ignore").splitlines()[-100:]
+        except Exception:
+            pass
     lr_status = {
         "installed_at_adobe": installed_plugin.exists() and installed_plugin.is_dir(),
         "adobe_plugin_path": str(installed_plugin),
         "source_plugin_path": str(src_plugin),
         "source_exists": src_plugin.exists(),
+        "plugin_logs": lr_plugin_logs,
     }
 
     recent_logs = list(_RECENT_LOG_BUFFER)[-250:]
