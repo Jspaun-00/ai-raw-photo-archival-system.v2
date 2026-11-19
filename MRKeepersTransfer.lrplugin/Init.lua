@@ -22,6 +22,21 @@ local function logMsg(msg)
     end)
 end
 
+local function readTextFile(filePath)
+    if not filePath or not LrFileUtils.exists(filePath) then return nil end
+    local content = nil
+    pcall(function()
+        local f = io.open(filePath, "rb")
+        if f then
+            content = f:read("*all")
+            f:close()
+        elseif LrFileUtils.readFile then
+            content = LrFileUtils.readFile(filePath)
+        end
+    end)
+    return content
+end
+
 local function findActiveQueuePath(currentCatPath)
     if LrFileUtils.exists(localQueuePath) then
         return localQueuePath
@@ -86,7 +101,7 @@ local function checkAndImportQueue()
     local queuePath = findActiveQueuePath(currentCatPath)
     if not queuePath then return end
 
-    local content = LrFileUtils.readFile(queuePath)
+    local content = readTextFile(queuePath)
     if not content or #content == 0 then return end
 
     local targetCat = string.match(content, '"target_catalog":%s*"([^"]+)"')
@@ -106,16 +121,11 @@ local function checkAndImportQueue()
     local catalogName = string.match(content, '"catalog_name":%s*"([^"]+)"') or LrPathUtils.leafName(currentCatPath)
 
     local photoPaths = {}
-    for p in string.gmatch(content, '"([^"]+%.dng)"') do
-        if LrFileUtils.exists(p) then
+    local photosBlock = string.match(content, '"photos"%s*:%s*%[(.-)%]') or content
+    for p in string.gmatch(photosBlock, '"([^"]+)"') do
+        local ext = string.lower(LrPathUtils.extension(p) or "")
+        if (ext == "dng" or ext == "tif" or ext == "tiff" or ext == "jpg" or ext == "jpeg") and LrFileUtils.exists(p) then
             table.insert(photoPaths, p)
-        end
-    end
-    if #photoPaths == 0 then
-        for p in string.gmatch(content, '"([^"]+%.DNG)"') do
-            if LrFileUtils.exists(p) then
-                table.insert(photoPaths, p)
-            end
         end
     end
 

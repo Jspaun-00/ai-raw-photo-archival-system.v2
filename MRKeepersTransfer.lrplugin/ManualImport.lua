@@ -4,14 +4,42 @@ local LrFileUtils = import 'LrFileUtils'
 local LrPathUtils = import 'LrPathUtils'
 local LrDialogs = import 'LrDialogs'
 
-local homeDir = LrPathUtils.getStandardFilePath('home') or '/Users/mitch'
+local taskPcall = LrTasks.pcall or pcall
+local homeDir = LrPathUtils.getStandardFilePath('home') or os.getenv("HOME") or '/Users/mitch'
 local localQueuePath = LrPathUtils.child(homeDir, "Library/Application Support/MRDarkroom/keeper_import_queue.json")
 
+local function readTextFile(filePath)
+    if not filePath or not LrFileUtils.exists(filePath) then return nil end
+    local content = nil
+    pcall(function()
+        local f = io.open(filePath, "rb")
+        if f then
+            content = f:read("*all")
+            f:close()
+        elseif LrFileUtils.readFile then
+            content = LrFileUtils.readFile(filePath)
+        end
+    end)
+    return content
+end
+
 LrTasks.startAsyncTask(function()
+    local catalog = LrApplication.activeCatalog()
+    local currentCatPath = catalog and catalog:getPath() or ""
+
     local queuePath = nil
     if LrFileUtils.exists(localQueuePath) then
         queuePath = localQueuePath
-    else
+    elseif #currentCatPath > 0 then
+        local catDir = LrPathUtils.parent(currentCatPath)
+        if catDir then
+            local catQueue = LrPathUtils.child(catDir, ".keeper_import_queue.json")
+            if LrFileUtils.exists(catQueue) then
+                queuePath = catQueue
+            end
+        end
+    end
+    if not queuePath then
         -- Check any mounted volume
         pcall(function()
             if LrFileUtils.exists("/Volumes") then
@@ -31,19 +59,17 @@ LrTasks.startAsyncTask(function()
         return
     end
 
-    local content = LrFileUtils.readFile(queuePath)
+    local content = readTextFile(queuePath)
     if not content or #content == 0 then
         LrDialogs.message("Keepers Transfer", "The keepers queue file was empty.", "info")
         return
     end
 
-    local catalog = LrApplication.activeCatalog()
     if not catalog then
         LrDialogs.message("Keepers Transfer", "No active catalog is currently open in Lightroom.", "warning")
         return
     end
 
-    local currentCatPath = catalog:getPath()
     local targetCat = string.match(content, '"target_catalog":%s*"([^"]+)"') or ""
     local catalogName = string.match(content, '"catalog_name":%s*"([^"]+)"') or "Destination Catalog"
 
@@ -65,8 +91,10 @@ LrTasks.startAsyncTask(function()
     if LrFileUtils.exists(localQueuePath) then pcall(function() LrFileUtils.delete(localQueuePath) end) end
 
     local photoPaths = {}
-    for p in string.gmatch(content, '"([^"]+%.dng)"') do
-        if LrFileUtils.exists(p) then
+    local photosBlock = string.match(content, '"photos"%s*:%s*%[(.-)%]') or content
+    for p in string.gmatch(photosBlock, '"([^"]+)"') do
+        local ext = string.lower(LrPathUtils.extension(p) or "")
+        if (ext == "dng" or ext == "tif" or ext == "tiff" or ext == "jpg" or ext == "jpeg") and LrFileUtils.exists(p) then
             table.insert(photoPaths, p)
         end
     end
@@ -77,23 +105,30 @@ LrTasks.startAsyncTask(function()
     end
 
     local importedPhotos = {}
-    catalog:withWriteAccessDo("Manual Import Keepers", function(context)
-        for _, p in ipairs(photoPaths) do
-            local photo = catalog:addPhoto(p)
-            if photo then
-                table.insert(importedPhotos, photo)
+    taskPcall(function()
+        catalog:withWriteAccessDo("Manual Import Keepers", function(context)
+            for _, p in ipairs(photoPaths) do
+                local photo = catalog:addPhoto(p)
+                if photo then
+                    table.insert(importedPhotos, photo)
+                else
+                    local existing = catalog:findPhotoByPath(p)
+                    if existing then
+                        table.insert(importedPhotos, existing)
+                    end
+                end
             end
-        end
 
-        if #importedPhotos > 0 then
-            local colName = "Keepers Imported - " .. os.date("%Y-%m-%d %H:%M")
-            local col = catalog:createCollection(colName, nil, true)
-            if col then col:addPhotos(importedPhotos) end
-        end
+            if #importedPhotos > 0 then
+                local colName = "Keepers Imported - " .. os.date("%Y-%m-%d %H:%M")
+                local col = catalog:createCollection(colName, nil, true)
+                if col then col:addPhotos(importedPhotos) end
+            end
+        end, { timeout = 30 })
     end)
 
     if #importedPhotos > 0 then
-        pcall(function()
+        taskPcall(function()
             catalog:setSelectedPhotos(importedPhotos[1], importedPhotos)
         end)
         LrDialogs.showBezel(string.format("✓ %d Keepers successfully imported into %s!", #importedPhotos, catalogName), 4)

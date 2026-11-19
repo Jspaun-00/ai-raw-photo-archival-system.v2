@@ -34,6 +34,41 @@ local function logMsg(msg)
     end)
 end
 
+-- Safe file I/O helpers using standard Lua io.open (note: LrFileUtils does NOT have writeFile!)
+local function writeTextFile(filePath, textContent)
+    if not filePath then return false end
+    local ok, written = pcall(function()
+        local parentDir = LrPathUtils.parent(filePath)
+        if parentDir then
+            LrFileUtils.createAllDirectories(parentDir)
+        end
+        local f, err = io.open(filePath, "wb")
+        if not f then
+            logMsg("writeTextFile failed for " .. tostring(filePath) .. ": " .. tostring(err))
+            return false
+        end
+        f:write(tostring(textContent or ""))
+        f:close()
+        return true
+    end)
+    return ok and (written == true)
+end
+
+local function readTextFile(filePath)
+    if not filePath or not LrFileUtils.exists(filePath) then return nil end
+    local content = nil
+    pcall(function()
+        local f = io.open(filePath, "rb")
+        if f then
+            content = f:read("*all")
+            f:close()
+        elseif LrFileUtils.readFile then
+            content = LrFileUtils.readFile(filePath)
+        end
+    end)
+    return content
+end
+
 -- Picks the active/newest .lrcat file in a directory (prefers highest -v12/-v13 suffix and newest mtime)
 local function scanDirectoryForBestLrcat(dirPath)
     if not dirPath or not LrFileUtils.exists(dirPath) then return nil end
@@ -340,7 +375,7 @@ local function checkPendingQueueForCurrentCatalog(catalog)
     local content = nil
     for _, qp in ipairs(candidateQueues) do
         if LrFileUtils.exists(qp) then
-            local c = LrFileUtils.readFile(qp)
+            local c = readTextFile(qp)
             if c and #c > 0 then
                 local targetCat = string.match(c, '"target_catalog":%s*"([^"]+)"') or ""
                 local curLeaf = string.lower(LrPathUtils.leafName(currentCatPath) or "")
@@ -357,12 +392,11 @@ local function checkPendingQueueForCurrentCatalog(catalog)
     if not activeQueue or not content then return false end
 
     local photoPaths = {}
-    for p in string.gmatch(content, '"([^"]+%.dng)"') do
-        if LrFileUtils.exists(p) then table.insert(photoPaths, p) end
-    end
-    if #photoPaths == 0 then
-        for p in string.gmatch(content, '"([^"]+%.DNG)"') do
-            if LrFileUtils.exists(p) then table.insert(photoPaths, p) end
+    local photosBlock = string.match(content, '"photos"%s*:%s*%[(.-)%]') or content
+    for p in string.gmatch(photosBlock, '"([^"]+)"') do
+        local ext = string.lower(LrPathUtils.extension(p) or "")
+        if (ext == "dng" or ext == "tif" or ext == "tiff" or ext == "jpg" or ext == "jpeg") and LrFileUtils.exists(p) then
+            table.insert(photoPaths, p)
         end
     end
 
@@ -745,12 +779,16 @@ LrFunctionContext.postAsyncTaskWithContext("MRKeepersTransferTask", function(con
         end
         queueData = queueData .. '  ]\n}\n'
 
-        LrFileUtils.createAllDirectories(LrPathUtils.parent(localQueuePath))
-        LrFileUtils.writeFile(localQueuePath, queueData)
+        writeTextFile(localQueuePath, queueData)
+
+        local catParentDir = (#chosenCatalog.catalog_path > 0) and LrPathUtils.parent(chosenCatalog.catalog_path) or nil
+        if catParentDir and LrFileUtils.exists(catParentDir) then
+            writeTextFile(LrPathUtils.child(catParentDir, ".keeper_import_queue.json"), queueData)
+        end
 
         local parentDir = LrPathUtils.parent(chosenCatalog.images_folder)
-        if parentDir and LrFileUtils.exists(parentDir) then
-            LrFileUtils.writeFile(LrPathUtils.child(parentDir, ".keeper_import_queue.json"), queueData)
+        if parentDir and parentDir ~= catParentDir and LrFileUtils.exists(parentDir) then
+            writeTextFile(LrPathUtils.child(parentDir, ".keeper_import_queue.json"), queueData)
         end
 
         -- 9. If current catalog is already the destination catalog, import directly
