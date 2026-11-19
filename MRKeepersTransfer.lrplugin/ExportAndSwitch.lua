@@ -227,6 +227,7 @@ local function discoverCatalogs(currentCatPath)
                         catalog_path = lrcat,
                         images_folder = imgFolder,
                         display_label = string.format("%s  [%s]", def.name, rootName),
+                        is_master_keeper = true,
                     })
                 end
             end
@@ -630,7 +631,7 @@ LrFunctionContext.postAsyncTaskWithContext("MRKeepersTransferTask", function(con
         props.customChosenPath = prefs.customCatalogPath or ""
         props.customPathDisplay = (prefs.customCatalogPath and ("Selected: " .. prefs.customCatalogPath)) or "Click 'Browse...' to select any .lrcat catalog or destination folder"
 
-        -- 4. Build catalog radio rows
+        -- 4. Build catalog radio rows with organized sections
         local catalogColumnSpec = { spacing = 3 }
 
         if #availableCatalogs == 0 then
@@ -642,7 +643,29 @@ LrFunctionContext.postAsyncTaskWithContext("MRKeepersTransferTask", function(con
             table.insert(catalogColumnSpec, f:spacer { height = 4 })
         end
 
+        local hasShownMasterHeader = false
+        local hasShownExternalHeader = false
+
         for _, c in ipairs(availableCatalogs) do
+            if c.is_master_keeper and not hasShownMasterHeader then
+                hasShownMasterHeader = true
+                table.insert(catalogColumnSpec, f:static_text {
+                    title = "★ 2TB ARCHIVE KEEPERS:",
+                    font = "<system/bold>",
+                    text_color = LrColor(0.1, 0.4, 0.8),
+                })
+                table.insert(catalogColumnSpec, f:spacer { height = 2 })
+            elseif not c.is_master_keeper and not hasShownExternalHeader then
+                hasShownExternalHeader = true
+                table.insert(catalogColumnSpec, f:spacer { height = 6 })
+                table.insert(catalogColumnSpec, f:static_text {
+                    title = "📁 CONNECTED EXTERNAL & TRAVEL CATALOGS:",
+                    font = "<system/bold>",
+                    text_color = LrColor(0.15, 0.55, 0.25),
+                })
+                table.insert(catalogColumnSpec, f:spacer { height = 2 })
+            end
+
             table.insert(catalogColumnSpec, f:row {
                 f:radio_button {
                     title = c.display_label,
@@ -660,45 +683,61 @@ LrFunctionContext.postAsyncTaskWithContext("MRKeepersTransferTask", function(con
                     fill_horizontal = 1,
                 },
             })
-            table.insert(catalogColumnSpec, f:spacer { height = 4 })
+            table.insert(catalogColumnSpec, f:spacer { height = 3 })
         end
 
-        -- Manual Browse option (always visible)
-        table.insert(catalogColumnSpec, f:row {
-            f:radio_button {
-                title = "Choose Another Catalog (.lrcat) or Folder Manually...",
-                value = LrView.bind 'selectedKey',
-                checked_value = 'custom_manual',
-                font = "<system/bold>",
-            },
-            f:push_button {
-                title = "Browse...",
-                action = function()
-                    local picked = LrDialogs.runOpenPanel {
-                        title = "Select Destination Catalog (.lrcat) or Folder",
-                        canChooseFiles = true,
-                        canChooseDirectories = true,
-                        allowsMultipleSelection = false,
-                        fileTypes = { "lrcat" },
-                    }
-                    if picked and #picked > 0 then
-                        local p = picked[1]
-                        props.customChosenPath = p
-                        props.selectedKey = 'custom_manual'
-                        props.customPathDisplay = "Selected: " .. p
+        local catalogContainer
+        if #availableCatalogs > 4 then
+            catalogContainer = f:scrolled_view {
+                width = 570,
+                height = 200,
+                horizontal_scroller = false,
+                vertical_scroller = true,
+                f:column(catalogColumnSpec),
+            }
+        else
+            catalogContainer = f:column(catalogColumnSpec)
+        end
+
+        -- Manual Browse option (always visible below the list)
+        local manualBrowseRow = f:column {
+            spacing = 2,
+            f:row {
+                f:radio_button {
+                    title = "Choose Another Catalog (.lrcat) or Folder Manually...",
+                    value = LrView.bind 'selectedKey',
+                    checked_value = 'custom_manual',
+                    font = "<system/bold>",
+                },
+                f:push_button {
+                    title = "Browse...",
+                    action = function()
+                        local picked = LrDialogs.runOpenPanel {
+                            title = "Select Destination Catalog (.lrcat) or Folder",
+                            canChooseFiles = true,
+                            canChooseDirectories = true,
+                            allowsMultipleSelection = false,
+                            fileTypes = { "lrcat" },
+                        }
+                        if picked and #picked > 0 then
+                            local p = picked[1]
+                            props.customChosenPath = p
+                            props.selectedKey = 'custom_manual'
+                            props.customPathDisplay = "Selected: " .. p
+                        end
                     end
-                end
+                }
+            },
+            f:row {
+                margin_left = 22,
+                f:static_text {
+                    title = LrView.bind 'customPathDisplay',
+                    font = "<system/small>",
+                    text_color = LrColor(0.2, 0.45, 0.8),
+                    fill_horizontal = 1,
+                }
             }
-        })
-        table.insert(catalogColumnSpec, f:row {
-            margin_left = 22,
-            f:static_text {
-                title = LrView.bind 'customPathDisplay',
-                font = "<system/small>",
-                text_color = LrColor(0.2, 0.45, 0.8),
-                fill_horizontal = 1,
-            }
-        })
+        }
 
         local countText = string.format("Ready to transfer %d 5★ Keeper photo(s) as full-resolution DNG", #photosToExport)
         if #selectedFiveStars > 0 and #selectedFiveStars < #allFiveStarPhotos then
@@ -750,7 +789,9 @@ LrFunctionContext.postAsyncTaskWithContext("MRKeepersTransferTask", function(con
             title = "Select Destination Catalog:",
             font = "<system/bold>",
         })
-        table.insert(dialogRows, f:column(catalogColumnSpec))
+        table.insert(dialogRows, catalogContainer)
+        table.insert(dialogRows, f:spacer { height = 4 })
+        table.insert(dialogRows, manualBrowseRow)
         table.insert(dialogRows, f:separator { fill_horizontal = 1 })
         table.insert(dialogRows, f:spacer { height = 2 })
         table.insert(dialogRows, f:checkbox {
