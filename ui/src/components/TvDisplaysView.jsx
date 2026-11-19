@@ -881,11 +881,13 @@ export default function TvDisplaysView({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ip: activeDisplay.ip, content_id: contentId }),
       });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
       showGlobalToast(`Displaying artwork ${contentId} on TV`);
       await fetchDisplays();
     } catch (err) {
       showGlobalToast(`Failed to select artwork: ${err.message}`);
+      await fetchDisplays();
     } finally {
       setActionBusy(false);
     }

@@ -6014,14 +6014,18 @@ async def get_samsung_tv_displays():
 
             # Stored local sync records for this TV (preserves user's custom sequence order!)
             # Matches by full ip key or clean host to guarantee sync data is never lost across ports
+            sync_tv_entry = None
             local_tv_photos = []
             deleted_cids_set = set()
             for k, v in sync_data.items():
                 if k == ip or (clean_host and k and k.split(":")[0].strip() == clean_host):
+                    sync_tv_entry = v
                     local_tv_photos = v.get("photos", [])
                     deleted_cids_set.update(v.get("deleted_cids", []))
                     if local_tv_photos:
                         break
+
+            display_entry["brightness"] = sync_tv_entry.get("brightness", 4) if sync_tv_entry else 4
 
             # Ensure every local photo has its thumb_url and mat defaults populated
             normalized_local_photos = []
@@ -6094,17 +6098,24 @@ async def get_samsung_tv_displays():
                                 nested = settings_resp.get("data")
                                 if isinstance(nested, str):
                                     items = json.loads(nested)
+                                    sync_data_changed = False
                                     for item in items:
                                         k = item.get("item")
                                         v = item.get("value")
                                         if k == "brightness" and v is not None:
-                                            display_entry["brightness"] = int(v) if str(v).isdigit() else 4
+                                            b_val = int(v) if str(v).isdigit() else 4
+                                            display_entry["brightness"] = b_val
+                                            if sync_tv_entry is not None and sync_tv_entry.get("brightness") != b_val:
+                                                sync_tv_entry["brightness"] = b_val
+                                                sync_data_changed = True
                                         elif k == "motion_timer" and v is not None:
                                             display_entry["motion_timer"] = str(v)
                                         elif k == "brightness_sensor_setting" and v is not None:
                                             display_entry["brightness_sensor_setting"] = str(v)
                                         elif k == "motion_sensitivity" and v is not None:
                                             display_entry["motion_sensitivity"] = str(v)
+                                    if sync_data_changed:
+                                        _save_tv_sync_data(sync_data)
                         except Exception:
                             pass
 
@@ -6393,6 +6404,22 @@ async def select_samsung_tv_art(payload: SamsungTvArtActionRequest):
                 _ensure_samsung_art_display_awake(art)
                 art.select_image(cid, show=True)
                 return {"status": "ok", "content_id": cid}
+            except Exception as e_sel:
+                err_msg = str(e_sel)
+                if "-10" in err_msg or "failed" in err_msg.lower():
+                    logging.warning(f"Orphaned/deleted CID {cid} on TV {ip}: {err_msg}. Auto-purging ghost CID.")
+                    sync_data = _load_tv_sync_data()
+                    tv_entry = _resolve_tv_sync_entry(sync_data, ip)
+                    prev_deleted = set(tv_entry.get("deleted_cids", []))
+                    prev_deleted.add(cid)
+                    tv_entry["deleted_cids"] = list(prev_deleted)[-200:]
+                    tv_entry["photos"] = [p for p in tv_entry.get("photos", []) if p.get("content_id") != cid]
+                    _save_tv_sync_data(sync_data)
+                    raise HTTPException(
+                        status_code=404,
+                        detail=f"Artwork ({cid}) is no longer available on TV hardware. Auto-removed from list."
+                    )
+                raise
             finally:
                 _close_samsung_art_safely(art, tv_client)
 
@@ -6531,6 +6558,13 @@ async def set_samsung_tv_brightness(payload: SamsungTvBrightnessRequest):
                     except Exception:
                         pass
                 art.set_brightness(target_brightness)
+
+                # Persist target brightness immediately to tv_displays_sync.json
+                sync_data = _load_tv_sync_data()
+                tv_entry = _resolve_tv_sync_entry(sync_data, ip)
+                tv_entry["brightness"] = target_brightness
+                _save_tv_sync_data(sync_data)
+
                 return {"ip": ip, "status": "ok", "brightness": target_brightness}
             except Exception as e:
                 logging.warning(f"Failed to set brightness on TV ({ip}): {e}")
