@@ -105,16 +105,26 @@ LrTasks.startAsyncTask(function()
     end
 
     local importedPhotos = {}
+    local newlyAddedCount = 0
+    local skippedExistingCount = 0
     taskPcall(function()
         catalog:withWriteAccessDo("Manual Import Keepers", function(context)
             for _, p in ipairs(photoPaths) do
-                local photo = catalog:addPhoto(p)
-                if photo then
-                    table.insert(importedPhotos, photo)
+                local existing = nil
+                taskPcall(function()
+                    existing = catalog:findPhotoByPath(p)
+                end)
+                if existing then
+                    skippedExistingCount = skippedExistingCount + 1
+                    table.insert(importedPhotos, existing)
                 else
-                    local existing = catalog:findPhotoByPath(p)
-                    if existing then
-                        table.insert(importedPhotos, existing)
+                    local photo = nil
+                    taskPcall(function()
+                        photo = catalog:addPhoto(p)
+                    end)
+                    if photo then
+                        newlyAddedCount = newlyAddedCount + 1
+                        table.insert(importedPhotos, photo)
                     end
                 end
             end

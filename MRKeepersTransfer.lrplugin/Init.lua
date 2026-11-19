@@ -140,17 +140,31 @@ local function checkAndImportQueue()
     LrTasks.sleep(2.0)
 
     local importedPhotos = {}
+    local newlyAddedCount = 0
+    local skippedExistingCount = 0
     -- IMPORTANT: Use LrTasks.pcall (not standard Lua pcall) because catalog:withWriteAccessDo yields!
+    -- Also check catalog:findPhotoByPath(p) FIRST before catalog:addPhoto(p) because Lightroom Classic
+    -- throws an AgError if you call catalog:addPhoto(p) on a file that is already in the catalog!
     local okWrite, errWrite = taskPcall(function()
         catalog:withWriteAccessDo("Import 5★ Keepers", function(context)
             for _, p in ipairs(photoPaths) do
-                local photo = catalog:addPhoto(p)
-                if photo then
-                    table.insert(importedPhotos, photo)
+                local existing = nil
+                taskPcall(function()
+                    existing = catalog:findPhotoByPath(p)
+                end)
+                if existing then
+                    skippedExistingCount = skippedExistingCount + 1
+                    table.insert(importedPhotos, existing)
                 else
-                    local existing = catalog:findPhotoByPath(p)
-                    if existing then
-                        table.insert(importedPhotos, existing)
+                    local photo = nil
+                    local okAdd, addErr = taskPcall(function()
+                        photo = catalog:addPhoto(p)
+                    end)
+                    if okAdd and photo then
+                        newlyAddedCount = newlyAddedCount + 1
+                        table.insert(importedPhotos, photo)
+                    else
+                        logMsg("addPhoto warning for " .. tostring(p) .. ": " .. tostring(addErr))
                     end
                 end
             end
@@ -176,8 +190,12 @@ local function checkAndImportQueue()
         taskPcall(function()
             catalog:setSelectedPhotos(importedPhotos[1], importedPhotos)
         end)
-        LrDialogs.showBezel(string.format("✓ %d Keepers imported into %s!", #importedPhotos, catalogName), 4)
-        logMsg(string.format("Imported %d keepers into %s", #importedPhotos, catalogName))
+        local bezelMsg = string.format("✓ %d Keepers imported into %s!", newlyAddedCount > 0 and newlyAddedCount or #importedPhotos, catalogName)
+        if skippedExistingCount > 0 and newlyAddedCount > 0 then
+            bezelMsg = string.format("✓ %d new Keepers imported (%d already in %s)!", newlyAddedCount, skippedExistingCount, catalogName)
+        end
+        LrDialogs.showBezel(bezelMsg, 4)
+        logMsg(string.format("Imported %d new keepers (%d already existed) into %s", newlyAddedCount, skippedExistingCount, catalogName))
     end
 
     isImporting = false

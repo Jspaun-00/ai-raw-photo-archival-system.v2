@@ -294,27 +294,103 @@ local function isPhotoFiveStars(photo)
     return false
 end
 
+-- Unique key for a Lightroom photo object (by file path first, fallback to localIdentifier/tostring)
+local function getPhotoUniqueKey(photo)
+    if not photo then return "" end
+    local pPath = photo:getRawMetadata("path")
+    if pPath and #pPath > 0 then
+        return pPath
+    end
+    if photo.localIdentifier then
+        return "id:" .. tostring(photo.localIdentifier)
+    end
+    return tostring(photo)
+end
+
+-- Checks if a photo has already been exported as DNG (or original filename) into destImagesFolder
+local function getExistingExportedPathInFolder(photo, destImagesFolder)
+    if not photo or not destImagesFolder or not LrFileUtils.exists(destImagesFolder) then
+        return nil
+    end
+    local srcPath = photo:getRawMetadata("path")
+    if not srcPath or #srcPath == 0 then return nil end
+    local leaf = LrPathUtils.leafName(srcPath) or ""
+    local stem = LrPathUtils.removeExtension(leaf) or leaf
+    if #stem == 0 then return nil end
+
+    for _, ext in ipairs({ ".dng", ".DNG" }) do
+        local cand = LrPathUtils.child(destImagesFolder, stem .. ext)
+        if LrFileUtils.exists(cand) == "file" then
+            return cand
+        end
+    end
+    local origCand = LrPathUtils.child(destImagesFolder, leaf)
+    if LrFileUtils.exists(origCand) == "file" then
+        return origCand
+    end
+    return nil
+end
+
 local function findFiveStarPhotosInCatalog(catalog)
     local foundMap = {}
     local allFiveStars = {}
     local selectedFiveStars = {}
+    local selectedMap = {}
     local targetPhotos = {}
 
-    -- 1. Check user's current selection / target photos first (using taskPcall so coroutine yields work!)
+    local function addFiveStar(p, isSelected)
+        if not p then return end
+        local key = getPhotoUniqueKey(p)
+        if not foundMap[key] then
+            foundMap[key] = true
+            table.insert(allFiveStars, p)
+        end
+        if isSelected and not selectedMap[key] then
+            selectedMap[key] = true
+            table.insert(selectedFiveStars, p)
+        end
+    end
+
+    -- 1. Check user's current selection / target photos first
     taskPcall(function()
         targetPhotos = catalog:getTargetPhotos() or {}
         for _, p in ipairs(targetPhotos) do
             if isPhotoFiveStars(p) then
-                table.insert(selectedFiveStars, p)
-                if not foundMap[p] then
-                    foundMap[p] = true
-                    table.insert(allFiveStars, p)
+                addFiveStar(p, true)
+            end
+        end
+    end)
+
+    -- 2. Also check catalog:getMultipleSelectedOrAllPhotos() in case Loupe view only returned 1 target photo
+    taskPcall(function()
+        local multiSel = catalog:getMultipleSelectedOrAllPhotos() or {}
+        local everyCount = #(catalog:getAllPhotos() or {})
+        local isExplicitMultiSelection = (#multiSel > 1 and #multiSel < everyCount)
+        if isExplicitMultiSelection and #multiSel > #targetPhotos then
+            targetPhotos = multiSel
+        end
+        for _, p in ipairs(multiSel) do
+            if isPhotoFiveStars(p) then
+                addFiveStar(p, isExplicitMultiSelection)
+            end
+        end
+    end)
+
+    -- 3. ALWAYS scan catalog:getAllPhotos() across the entire catalog so we NEVER stop after just 1 selected photo!
+    taskPcall(function()
+        local everyPhoto = catalog:getAllPhotos() or {}
+        if #everyPhoto > 0 then
+            local batchRatings = catalog:batchGetRawMetadata(everyPhoto, { "rating" })
+            for _, p in ipairs(everyPhoto) do
+                local r = batchRatings and batchRatings[p] and batchRatings[p].rating
+                if tonumber(r) == 5 or isPhotoFiveStars(p) then
+                    addFiveStar(p, false)
                 end
             end
         end
     end)
 
-    -- 2. Query catalog via findPhotos (using taskPcall so coroutine yields work!)
+    -- 4. Also run catalog:findPhotos as an additional check
     taskPcall(function()
         local searched = catalog:findPhotos {
             searchDesc = {
@@ -325,32 +401,10 @@ local function findFiveStarPhotosInCatalog(catalog)
         }
         if searched then
             for _, p in ipairs(searched) do
-                if not foundMap[p] then
-                    foundMap[p] = true
-                    table.insert(allFiveStars, p)
-                end
+                addFiveStar(p, false)
             end
         end
     end)
-
-    -- 3. Guaranteed fallback: scan catalog:getAllPhotos() directly via batchGetRawMetadata / getRawMetadata
-    if #allFiveStars == 0 then
-        taskPcall(function()
-            local everyPhoto = catalog:getAllPhotos() or {}
-            if #everyPhoto > 0 then
-                local batchRatings = catalog:batchGetRawMetadata(everyPhoto, { "rating" })
-                for _, p in ipairs(everyPhoto) do
-                    local r = batchRatings and batchRatings[p] and batchRatings[p].rating
-                    if tonumber(r) == 5 or isPhotoFiveStars(p) then
-                        if not foundMap[p] then
-                            foundMap[p] = true
-                            table.insert(allFiveStars, p)
-                        end
-                    end
-                end
-            end
-        end)
-    end
 
     return allFiveStars, selectedFiveStars, targetPhotos
 end
@@ -411,14 +465,26 @@ local function checkPendingQueueForCurrentCatalog(catalog)
 
     local catalogName = string.match(content, '"catalog_name":%s*"([^"]+)"') or LrPathUtils.leafName(currentCatPath)
     local importedPhotos = {}
+    local newlyAddedCount = 0
+    local skippedExistingCount = 0
     catalog:withWriteAccessDo("Import Pending 5★ Keepers", function()
         for _, p in ipairs(photoPaths) do
-            local photo = catalog:addPhoto(p)
-            if photo then
-                table.insert(importedPhotos, photo)
+            local existing = nil
+            taskPcall(function()
+                existing = catalog:findPhotoByPath(p)
+            end)
+            if existing then
+                skippedExistingCount = skippedExistingCount + 1
+                table.insert(importedPhotos, existing)
             else
-                local existing = catalog:findPhotoByPath(p)
-                if existing then table.insert(importedPhotos, existing) end
+                local photo = nil
+                taskPcall(function()
+                    photo = catalog:addPhoto(p)
+                end)
+                if photo then
+                    newlyAddedCount = newlyAddedCount + 1
+                    table.insert(importedPhotos, photo)
+                end
             end
         end
         if #importedPhotos > 0 then
@@ -515,7 +581,10 @@ LrFunctionContext.postAsyncTaskWithContext("MRKeepersTransferTask", function(con
 
         props.selectedKey = initialKey
         props.autoSwitch = (prefs.lastAutoSwitch ~= false)
-        props.useSelectedOnly = (#selectedFiveStars > 0 and #selectedFiveStars < #allFiveStarPhotos)
+        -- Default to exporting ALL 5-star photos in the catalog (never limit to 1 highlighted photo by accident!)
+        props.useSelectedOnly = false
+        props.skipDuplicates = true
+        props.includeAllSelectedInView = false
         props.customChosenPath = prefs.customCatalogPath or ""
         props.customPathDisplay = (prefs.customCatalogPath and ("Selected: " .. prefs.customCatalogPath)) or "Click 'Browse...' to select any .lrcat catalog or destination folder"
 
@@ -591,7 +660,7 @@ LrFunctionContext.postAsyncTaskWithContext("MRKeepersTransferTask", function(con
 
         local countText = string.format("Ready to transfer %d 5★ Keeper photo(s) as full-resolution DNG", #photosToExport)
         if #selectedFiveStars > 0 and #selectedFiveStars < #allFiveStarPhotos then
-            countText = string.format("Found %d total 5★ photos in catalog (%d currently selected)", #allFiveStarPhotos, #selectedFiveStars)
+            countText = string.format("Found %d total 5★ photos in catalog (%d currently highlighted)", #allFiveStarPhotos, #selectedFiveStars)
         end
 
         local dialogRows = {
@@ -606,13 +675,29 @@ LrFunctionContext.postAsyncTaskWithContext("MRKeepersTransferTask", function(con
                     fill_horizontal = 1,
                 },
             },
+            f:row {
+                f:checkbox {
+                    title = "Skip duplicate exports (automatically skip 5★ photos already in destination catalog)",
+                    value = LrView.bind 'skipDuplicates',
+                    font = "<system/bold>",
+                },
+            },
         }
 
-        if #selectedFiveStars > 0 and #selectedFiveStars < #allFiveStarPhotos then
+        if #selectedFiveStars > 1 and #selectedFiveStars < #allFiveStarPhotos then
             table.insert(dialogRows, f:row {
                 f:checkbox {
-                    title = string.format("Transfer only the %d currently selected 5★ photo(s) (uncheck for all %d)", #selectedFiveStars, #allFiveStarPhotos),
+                    title = string.format("Transfer only the %d currently selected 5★ photos (uncheck to transfer all %d new 5★ photos)", #selectedFiveStars, #allFiveStarPhotos),
                     value = LrView.bind 'useSelectedOnly',
+                },
+            })
+        end
+
+        if #targetPhotos > 1 and #targetPhotos > #selectedFiveStars and #targetPhotos < 100 then
+            table.insert(dialogRows, f:row {
+                f:checkbox {
+                    title = string.format("Also include all %d currently selected photos in view (even if rated under 5★)", #targetPhotos),
+                    value = LrView.bind 'includeAllSelectedInView',
                 },
             })
         end
@@ -722,44 +807,113 @@ LrFunctionContext.postAsyncTaskWithContext("MRKeepersTransferTask", function(con
             photosToExport = selectedFiveStars
         end
 
+        if props.includeAllSelectedInView and #targetPhotos > 1 then
+            local merged = {}
+            local seenKey = {}
+            for _, p in ipairs(photosToExport) do
+                local k = getPhotoUniqueKey(p)
+                seenKey[k] = true
+                table.insert(merged, p)
+            end
+            for _, p in ipairs(targetPhotos) do
+                local k = getPhotoUniqueKey(p)
+                if not seenKey[k] then
+                    seenKey[k] = true
+                    table.insert(merged, p)
+                end
+            end
+            photosToExport = merged
+        end
+
         if #photosToExport == 0 then
             LrDialogs.message("MR Keepers Transfer", "No photos available to export.", "warning")
             return
         end
 
         LrFileUtils.createAllDirectories(chosenCatalog.images_folder)
-        logMsg(string.format("Exporting %d photo(s) as DNG to %s (catalog: %s)", #photosToExport, chosenCatalog.images_folder, chosenCatalog.catalog_path))
 
-        -- 7. Export photos as DNG with all Lightroom develop edits embedded
-        local exportSettings = {
-            LR_format = 'DNG',
-            LR_export_destinationType = 'specificFolder',
-            LR_export_destinationPathPrefix = chosenCatalog.images_folder,
-            LR_export_useSubfolder = false,
-            LR_collisionHandling = 'rename',
-            LR_reimportExportedPhoto = false,
-        }
-
-        local exportSession = LrExportSession {
-            photosToExport = photosToExport,
-            exportSettings = exportSettings,
-        }
-
-        local progressScope = LrProgressScope {
-            title = string.format("Exporting %d 5★ Keepers as DNG to %s...", #photosToExport, chosenCatalog.name),
-        }
+        -- Filter out photos that have ALREADY been exported to chosenCatalog.images_folder
+        -- so we only export NEW Keepers and never create duplicate -2.dng files!
+        local newPhotosToExport = {}
+        local alreadyExportedPaths = {}
+        for _, p in ipairs(photosToExport) do
+            local existingDng = getExistingExportedPathInFolder(p, chosenCatalog.images_folder)
+            if existingDng then
+                table.insert(alreadyExportedPaths, existingDng)
+                if not props.skipDuplicates then
+                    table.insert(newPhotosToExport, p)
+                end
+            else
+                table.insert(newPhotosToExport, p)
+            end
+        end
 
         local exportedDngs = {}
         local exportErrors = {}
-        for _, rendition in exportSession:renditions({ stopIfCanceled = true }) do
-            local success, pathOrMsg = rendition:waitForRender()
-            if success then
-                table.insert(exportedDngs, pathOrMsg)
+
+        if #newPhotosToExport == 0 and #alreadyExportedPaths > 0 then
+            local choice = LrDialogs.confirm(
+                "All 5★ Keepers Already Exported",
+                string.format("All %d 5★ Keeper(s) already exist in '%s'.\n\nWould you like to open '%s' (making sure all %d are imported without duplicating) or re-export and overwrite the DNG files?", #alreadyExportedPaths, chosenCatalog.images_folder, chosenCatalog.name, #alreadyExportedPaths),
+                "Open Catalog (Skip Re-Export)",
+                "Cancel",
+                "Re-Export & Overwrite DNGs"
+            )
+            if choice == "cancel" then
+                return
+            elseif choice == "other" then
+                newPhotosToExport = photosToExport
             else
-                table.insert(exportErrors, tostring(pathOrMsg))
+                exportedDngs = alreadyExportedPaths
             end
         end
-        progressScope:done()
+
+        if #newPhotosToExport > 0 then
+            logMsg(string.format("Exporting %d NEW photo(s) as DNG to %s (skipped %d already on disk; catalog: %s)", #newPhotosToExport, chosenCatalog.images_folder, #alreadyExportedPaths, chosenCatalog.catalog_path))
+
+            -- 7. Export photos as DNG with all Lightroom develop edits embedded
+            -- Use 'overwrite' instead of 'rename' so we never create duplicate -2.dng files!
+            local exportSettings = {
+                LR_format = 'DNG',
+                LR_export_destinationType = 'specificFolder',
+                LR_export_destinationPathPrefix = chosenCatalog.images_folder,
+                LR_export_useSubfolder = false,
+                LR_collisionHandling = 'overwrite',
+                LR_reimportExportedPhoto = false,
+            }
+
+            local exportSession = LrExportSession {
+                photosToExport = newPhotosToExport,
+                exportSettings = exportSettings,
+            }
+
+            local progressScope = LrProgressScope {
+                title = string.format("Exporting %d 5★ Keepers as DNG to %s...", #newPhotosToExport, chosenCatalog.name),
+            }
+
+            for _, rendition in exportSession:renditions({ stopIfCanceled = true }) do
+                local success, pathOrMsg = rendition:waitForRender()
+                if success then
+                    table.insert(exportedDngs, pathOrMsg)
+                else
+                    table.insert(exportErrors, tostring(pathOrMsg))
+                end
+            end
+            progressScope:done()
+        end
+
+        -- Also include any previously exported DNGs in the queue manifest so Init.lua ensures
+        -- they are present in the destination catalog (Init.lua skips any already in the catalog)
+        if #alreadyExportedPaths > 0 then
+            local inManifest = {}
+            for _, p in ipairs(exportedDngs) do inManifest[p] = true end
+            for _, p in ipairs(alreadyExportedPaths) do
+                if not inManifest[p] then
+                    inManifest[p] = true
+                    table.insert(exportedDngs, p)
+                end
+            end
+        end
 
         if #exportedDngs == 0 then
             local errDetail = (#exportErrors > 0) and ("\n\nDetails: " .. table.concat(exportErrors, "; ")) or ""
@@ -767,7 +921,7 @@ LrFunctionContext.postAsyncTaskWithContext("MRKeepersTransferTask", function(con
             return
         end
 
-        logMsg(string.format("Successfully exported %d DNG file(s).", #exportedDngs))
+        logMsg(string.format("Prepared %d DNG file(s) for destination catalog (%d newly rendered).", #exportedDngs, #newPhotosToExport))
 
         -- 8. Write queue manifest to local App Support AND destination catalog folder
         local queueData = string.format('{\n  "target_catalog": "%s",\n  "catalog_name": "%s",\n  "photos": [\n',
@@ -801,9 +955,20 @@ LrFunctionContext.postAsyncTaskWithContext("MRKeepersTransferTask", function(con
             local importedPhotos = {}
             catalog:withWriteAccessDo("Import Keepers Directly", function()
                 for _, dngPath in ipairs(exportedDngs) do
-                    local photo = catalog:addPhoto(dngPath)
-                    if photo then
-                        table.insert(importedPhotos, photo)
+                    local existing = nil
+                    taskPcall(function()
+                        existing = catalog:findPhotoByPath(dngPath)
+                    end)
+                    if existing then
+                        table.insert(importedPhotos, existing)
+                    else
+                        local photo = nil
+                        taskPcall(function()
+                            photo = catalog:addPhoto(dngPath)
+                        end)
+                        if photo then
+                            table.insert(importedPhotos, photo)
+                        end
                     end
                 end
                 if #importedPhotos > 0 then
